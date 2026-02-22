@@ -42,6 +42,8 @@ flowchart TD
 
 Copy `.env.example` to `.env` and fill in values.
 
+Provider auth is done inside sandbox (for example via `/exec pi-ai login <provider>`) and persisted under `/root/dreclaw`.
+
 ### Deploy
 
 Use route from `.env` (keeps route out of repo config):
@@ -56,6 +58,7 @@ pnpm dlx wrangler deploy --route "${CF_WORKER_ROUTE}"
 - Message the bot in a private Telegram chat.
 - `/status` shows runtime/session health.
 - `/reset` clears current session context.
+- `/exec <command>` runs an owner-only command in sandbox (bootstrap/debug).
 
 ## Filesystem persistence
 
