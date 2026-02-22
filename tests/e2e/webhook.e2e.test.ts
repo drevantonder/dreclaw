@@ -1,0 +1,95 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import worker from "../../src/index";
+import { createEnv } from "../helpers/fakes";
+
+function makeUpdate(updateId: number, text: string, userId = 42) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: 1,
+      date: 170000,
+      chat: { id: 777, type: "private" },
+      from: { id: userId },
+      text,
+    },
+  };
+}
+
+describe("telegram webhook e2e", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("executes webhook -> session -> telegram send", async () => {
+    const { env, db } = createEnv();
+    const sends: Array<{ url: string; body: unknown }> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/sendMessage")) {
+          sends.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const req = new Request("https://test.local/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify(makeUpdate(1001, "/status")),
+    });
+
+    const res = await worker.fetch(req, env, {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    expect(db.updates.has(1001)).toBe(true);
+    expect(sends.length).toBe(1);
+    const sent = sends[0].body as { text: string };
+    expect(sent.text).toContain("model:");
+    expect(sent.text).toContain("provider_auth:");
+  });
+
+  it("ignores duplicate update id", async () => {
+    const { env } = createEnv();
+    const sendMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", sendMock);
+
+    const headers = {
+      "content-type": "application/json",
+      "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+    };
+    const body = JSON.stringify(makeUpdate(1002, "hello"));
+
+    await worker.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
+    await worker.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects invalid webhook secret", async () => {
+    const { env } = createEnv();
+    const sendMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", sendMock);
+
+    const res = await worker.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": "bad",
+        },
+        body: JSON.stringify(makeUpdate(1003, "hello")),
+      }),
+      env,
+      {} as ExecutionContext,
+    );
+
+    expect(res.status).toBe(401);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+});

@@ -66,6 +66,13 @@ set -a; source .env; set +a
 pnpm dlx wrangler deploy --route "${CF_WORKER_ROUTE}"
 ```
 
+### Test
+
+```bash
+pnpm test
+pnpm check
+```
+
 ## Usage
 
 - Message the bot in a private Telegram chat.
