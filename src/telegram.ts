@@ -1,0 +1,72 @@
+import type { TelegramMessage, TelegramUpdate } from "./types";
+
+const TELEGRAM_API = "https://api.telegram.org";
+
+export function parseUpdate(body: unknown): TelegramUpdate | null {
+  if (!body || typeof body !== "object") return null;
+  const data = body as Record<string, unknown>;
+  if (typeof data.update_id !== "number") return null;
+  return {
+    update_id: data.update_id,
+    message: isTelegramMessage(data.message) ? data.message : undefined,
+  };
+}
+
+function isTelegramMessage(value: unknown): value is TelegramMessage {
+  if (!value || typeof value !== "object") return false;
+  const msg = value as Record<string, unknown>;
+  const chat = msg.chat as Record<string, unknown> | undefined;
+  return typeof msg.message_id === "number" && typeof msg.date === "number" && Boolean(chat && typeof chat.id === "number");
+}
+
+export async function sendTelegramMessage(
+  token: string,
+  chatId: number,
+  text: string,
+): Promise<void> {
+  const url = `${TELEGRAM_API}/bot${token}/sendMessage`;
+  const body = {
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: true,
+  };
+
+  await withRetry(async () => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const payload = await response.text();
+      throw new Error(`Telegram send failed (${response.status}): ${payload}`);
+    }
+  });
+}
+
+export async function fetchImageAsDataUrl(token: string, fileId: string): Promise<string | null> {
+  const getFileUrl = `${TELEGRAM_API}/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`;
+  const getFileResponse = await fetch(getFileUrl);
+  if (!getFileResponse.ok) return null;
+  const fileJson = (await getFileResponse.json()) as { result?: { file_path?: string } };
+  const filePath = fileJson.result?.file_path;
+  if (!filePath) return null;
+
+  const downloadUrl = `${TELEGRAM_API}/file/bot${token}/${filePath}`;
+  const imageResponse = await fetch(downloadUrl);
+  if (!imageResponse.ok) return null;
+
+  const contentType = imageResponse.headers.get("content-type") ?? "image/jpeg";
+  const bytes = await imageResponse.arrayBuffer();
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+  return `data:${contentType};base64,${base64}`;
+}
+
+async function withRetry(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await fn();
+  }
+}
