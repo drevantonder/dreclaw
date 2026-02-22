@@ -50,8 +50,8 @@ Copy `.env.example` to `.env` and fill in values.
 
 ## Filesystem persistence
 
-- Persistent files live under `/data`.
-- Anything outside `/data` should be treated as ephemeral.
+- Persistent runtime root is `/root/dreclaw`.
+- It is synced to mounted storage at `/persist/dreclaw` between turns.
 
 ## Security
 
