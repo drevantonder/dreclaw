@@ -5,6 +5,10 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_ALLOWED_USER_ID: string;
+  WORKSPACE_BUCKET_NAME?: string;
+  R2_ENDPOINT?: string;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
   DRECLAW_DB: D1Database;
   WORKSPACE_BUCKET: R2Bucket;
   SESSION_RUNTIME: DurableObjectNamespace;

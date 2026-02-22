@@ -1,43 +1,54 @@
 import { WORKSPACE_ROOT, type RunResult, type ToolCall } from "./types";
-import { Workspace } from "./workspace";
+import type { SandboxClient } from "@cloudflare/sandbox";
 
-export function parseToolCall(text: string): ToolCall | null {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("/tool ")) return null;
-  const rest = trimmed.slice(6).trim();
-  const firstSpace = rest.indexOf(" ");
-  const name = (firstSpace === -1 ? rest : rest.slice(0, firstSpace)) as ToolCall["name"];
-  if (!["read", "write", "edit", "bash"].includes(name)) return null;
-  const argsText = firstSpace === -1 ? "{}" : rest.slice(firstSpace + 1).trim();
-  try {
-    const args = JSON.parse(argsText) as Record<string, unknown>;
-    return { name, args };
-  } catch {
-    return null;
+export function extractToolCall(output: string): ToolCall | null {
+  const trimmed = output.trim();
+  if (!trimmed) return null;
+
+  const direct = tryParseJson(trimmed);
+  if (direct) return normalizeToolCall(direct);
+
+  const fenced = /```json\s*([\s\S]*?)\s*```/i.exec(trimmed)?.[1];
+  if (fenced) {
+    const parsed = tryParseJson(fenced);
+    if (parsed) return normalizeToolCall(parsed);
   }
+
+  return null;
 }
 
-export function runTool(tool: ToolCall, workspace: Workspace): RunResult {
+export async function runToolInSandbox(tool: ToolCall, sandbox: SandboxClient): Promise<RunResult> {
   try {
+    const env = sandboxEnv();
+
     if (tool.name === "read") {
-      const path = String(tool.args.path ?? "");
-      return { ok: true, output: workspace.read(path) };
+      const path = normalizePath(String(tool.args.path ?? ""));
+      const file = await sandbox.readFile(path);
+      return { ok: true, output: file.content ?? "" };
     }
+
     if (tool.name === "write") {
-      const path = String(tool.args.path ?? "");
+      const path = normalizePath(String(tool.args.path ?? ""));
       const content = String(tool.args.content ?? "");
-      workspace.write(path, content);
+      await sandbox.writeFile(path, content);
       return { ok: true, output: `Wrote ${path}` };
     }
+
     if (tool.name === "edit") {
-      const path = String(tool.args.path ?? "");
+      const path = normalizePath(String(tool.args.path ?? ""));
       const find = String(tool.args.find ?? "");
       const replace = String(tool.args.replace ?? "");
-      workspace.edit(path, find, replace);
+      const current = await sandbox.readFile(path);
+      if (!current.content.includes(find)) {
+        return { ok: false, output: "", error: `Text not found in ${path}` };
+      }
+      await sandbox.writeFile(path, current.content.replace(find, replace));
       return { ok: true, output: `Edited ${path}` };
     }
+
     const cmd = String(tool.args.command ?? "");
-    return runBashLike(cmd, workspace);
+    const result = await sandbox.exec(`bash -lc ${shellQuote(cmd)}`, { cwd: WORKSPACE_ROOT, env });
+    return toRunResult(result);
   } catch (error) {
     return {
       ok: false,
@@ -47,20 +58,56 @@ export function runTool(tool: ToolCall, workspace: Workspace): RunResult {
   }
 }
 
-function runBashLike(command: string, workspace: Workspace): RunResult {
-  const trimmed = command.trim();
-  if (!trimmed) return { ok: true, output: "" };
-
-  if (trimmed === "pwd") return { ok: true, output: WORKSPACE_ROOT };
-  if (trimmed === "ls") return { ok: true, output: workspace.list().join("\n") || "" };
-  if (trimmed.startsWith("cat ")) {
-    const path = trimmed.slice(4).trim();
-    return { ok: true, output: workspace.read(path) };
+function tryParseJson(input: string): unknown | null {
+  try {
+    return JSON.parse(input);
+  } catch {
+    return null;
   }
+}
 
-  const envBanner = `HOME=${WORKSPACE_ROOT}\nXDG_CONFIG_HOME=${WORKSPACE_ROOT}/.config\nXDG_CACHE_HOME=${WORKSPACE_ROOT}/.cache`;
+function normalizeToolCall(input: unknown): ToolCall | null {
+  if (!input || typeof input !== "object") return null;
+  const data = input as Record<string, unknown>;
+  const root = (data.tool && typeof data.tool === "object" ? data.tool : data) as Record<string, unknown>;
+  const name = String(root.name ?? "");
+  if (!isToolName(name)) return null;
+  const args = (root.args && typeof root.args === "object" ? root.args : {}) as Record<string, unknown>;
+  return { name, args };
+}
+
+function isToolName(value: string): value is ToolCall["name"] {
+  return value === "read" || value === "write" || value === "edit" || value === "bash";
+}
+
+function sandboxEnv(): Record<string, string> {
   return {
-    ok: true,
-    output: `${envBanner}\nSimulated bash execution:\n$ ${trimmed}`,
+    HOME: WORKSPACE_ROOT,
+    XDG_CONFIG_HOME: `${WORKSPACE_ROOT}/.config`,
+    XDG_CACHE_HOME: `${WORKSPACE_ROOT}/.cache`,
+  };
+}
+
+function normalizePath(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return WORKSPACE_ROOT;
+  if (trimmed.startsWith("/")) return trimmed;
+  return `${WORKSPACE_ROOT}/${trimmed}`.replace(/\/{2,}/g, "/");
+}
+
+function shellQuote(input: string): string {
+  return `'${input.replace(/'/g, `'"'"'`)}'`;
+}
+
+function toRunResult(result: { success: boolean; stdout?: string; stderr?: string; exitCode?: number }): RunResult {
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  const output = [stdout, stderr].filter(Boolean).join("\n").trim();
+  if (result.success) return { ok: true, output };
+  const code = typeof result.exitCode === "number" ? ` (exit ${result.exitCode})` : "";
+  return {
+    ok: false,
+    output,
+    error: `Command failed${code}`,
   };
 }

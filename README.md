@@ -43,6 +43,12 @@ flowchart TD
 
 Copy `.env.example` to `.env` and fill in values.
 
+For `/persist` mount+sync, also set R2 S3 credentials in `.env`:
+
+- `R2_ENDPOINT`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+
 Provider auth is done inside sandbox (for example via `/exec pi-ai login <provider>`) and persisted under `/root/dreclaw`.
 
 ### Cloudflare resources
@@ -79,14 +85,6 @@ pnpm check
 - `/status` shows model/session/workspace/auth readiness.
 - `/reset` clears current session context.
 - `/exec <command>` runs directly in Cloudflare Sandbox and returns command stdout/stderr.
-- `/tool <name> <json>` runs one tool call (`read`, `write`, `edit`, `bash`).
-
-Examples:
-
-```text
-/tool write {"path":"notes.txt","content":"hello"}
-/tool read {"path":"notes.txt"}
-```
 
 ## Filesystem persistence
 

@@ -5,6 +5,9 @@ compatibility_date = "2026-02-22"
 [observability]
 enabled = true
 
+[vars]
+WORKSPACE_BUCKET_NAME = "dreclaw-workspace"
+
 [[d1_databases]]
 binding = "DRECLAW_DB"
 database_name = "dreclaw"
