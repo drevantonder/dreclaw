@@ -48,6 +48,11 @@ Copy `.env.example` to `.env` and fill in values.
 - `/status` shows runtime/session health.
 - `/reset` clears current session context.
 
+## Filesystem persistence
+
+- Persistent files live under `/data`.
+- Anything outside `/data` should be treated as ephemeral.
+
 ## Security
 
 See `docs/security.md`.
