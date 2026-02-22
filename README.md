@@ -36,13 +36,26 @@ flowchart TD
 
 - Cloudflare account
 - Telegram bot
-- Node.js and Wrangler CLI
+- Node.js and pnpm
+- Wrangler auth (`pnpm dlx wrangler whoami`)
 
 ### Environment
 
 Copy `.env.example` to `.env` and fill in values.
 
 Provider auth is done inside sandbox (for example via `/exec pi-ai login <provider>`) and persisted under `/root/dreclaw`.
+
+### Cloudflare resources
+
+- Create D1 DB `dreclaw`
+- Create R2 bucket `dreclaw-workspace`
+- Put resulting IDs/names in `wrangler.toml`
+- Apply migrations:
+
+```bash
+pnpm install
+pnpm dlx wrangler d1 migrations apply DRECLAW_DB
+```
 
 ### Deploy
 
@@ -56,9 +69,17 @@ pnpm dlx wrangler deploy --route "${CF_WORKER_ROUTE}"
 ## Usage
 
 - Message the bot in a private Telegram chat.
-- `/status` shows runtime/session health.
+- `/status` shows model/session/workspace/auth readiness.
 - `/reset` clears current session context.
-- `/exec <command>` runs command in sandbox
+- `/exec <command>` owner-only bootstrap path (ex: `pi-ai login openai-codex`).
+- `/tool <name> <json>` runs one tool call (`read`, `write`, `edit`, `bash`).
+
+Examples:
+
+```text
+/tool write {"path":"notes.txt","content":"hello"}
+/tool read {"path":"notes.txt"}
+```
 
 ## Filesystem persistence
 
