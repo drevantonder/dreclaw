@@ -58,7 +58,7 @@ pnpm dlx wrangler deploy --route "${CF_WORKER_ROUTE}"
 - Message the bot in a private Telegram chat.
 - `/status` shows runtime/session health.
 - `/reset` clears current session context.
-- `/exec <command>` runs an owner-only command in sandbox (bootstrap/debug).
+- `/exec <command>` runs command in sandbox
 
 ## Filesystem persistence
 
