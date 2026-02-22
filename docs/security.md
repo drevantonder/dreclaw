@@ -2,8 +2,8 @@
 
 v0 security model is intentionally simple.
 
-- Accept only Discord webhook requests with valid Discord signature verification.
-- Accept only DMs.
-- Accept only one user: `DISCORD_ALLOWED_USER_ID`.
+- Accept only Telegram webhook requests with a valid webhook secret.
+- Accept only private chat messages.
+- Accept only one user: `TELEGRAM_ALLOWED_USER_ID`.
 - Ignore all other events/users.
-- Keep a single public endpoint for Discord ingress.
+- Keep a single public endpoint for Telegram ingress.

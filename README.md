@@ -5,7 +5,7 @@ It is Cloudflare-first: Workers for control flow, Sandbox for OS-level execution
 
 ## v0 Scope
 
-- Discord DM-only, single-user (me)
+- Telegram private chat-only, single-user (me)
 - Tools: `read`, `write`, `edit`, `bash`
 - Minimal surface: no guild mode, no extra tool wrappers
 
@@ -15,7 +15,7 @@ It is Cloudflare-first: Workers for control flow, Sandbox for OS-level execution
 
 ```mermaid
 flowchart TD
-  U[Discord DM] --> W[Worker Gateway]
+  U[Telegram Chat] --> W[Worker Gateway]
   W --> DO[Durable Object Session]
   DO --> L[LLM via pi-ai]
   DO --> S[Cloudflare Sandbox]
@@ -44,7 +44,7 @@ Copy `.env.example` to `.env` and fill in values.
 
 ## Usage
 
-- Send the bot a DM to chat.
+- Message the bot in a private Telegram chat.
 - `/status` shows runtime/session health.
 - `/reset` clears current session context.
 
