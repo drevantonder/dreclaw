@@ -25,7 +25,7 @@ flowchart TD
   DO --> W --> U
 ```
 
-- Worker verifies Discord requests and routes messages.
+- Worker verifies Telegram requests and routes messages.
 - Durable Object processes one turn at a time per session.
 - Sandbox executes filesystem and CLI tasks via pi tools.
 - D1 stores minimal session/run metadata; R2 stores larger artifacts.
@@ -35,12 +35,21 @@ flowchart TD
 ### Prereqs
 
 - Cloudflare account
-- Discord bot
+- Telegram bot
 - Node.js and Wrangler CLI
 
 ### Environment
 
 Copy `.env.example` to `.env` and fill in values.
+
+### Deploy
+
+Use route from `.env` (keeps route out of repo config):
+
+```bash
+set -a; source .env; set +a
+pnpm dlx wrangler deploy --route "${CF_WORKER_ROUTE}"
+```
 
 ## Usage
 
@@ -59,4 +68,4 @@ See `docs/security.md`.
 
 ## Future plans
 
-- Discord `/model` selector
+- Telegram `/model` selector
