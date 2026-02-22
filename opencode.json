@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cloudflare-api": {
+      "type": "remote",
+      "enabled": true,
+      "url": "https://mcp.cloudflare.com/mcp"
+    },
+    "linear": {
+      "type": "remote",
+      "enabled": true,
+		"url": "https://mcp.linear.app/mcp"
+		}
+  }
+}
