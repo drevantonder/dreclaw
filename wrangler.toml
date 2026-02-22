@@ -1,0 +1,23 @@
+name = "dreclaw"
+main = "src/index.ts"
+compatibility_date = "2026-02-22"
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DRECLAW_DB"
+database_name = "dreclaw"
+database_id = "24da6057-43e2-4997-a96d-843b746ab001"
+
+[[r2_buckets]]
+binding = "WORKSPACE_BUCKET"
+bucket_name = "dreclaw-workspace"
+
+[[durable_objects.bindings]]
+name = "SESSION_RUNTIME"
+class_name = "SessionRuntime"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionRuntime"]

@@ -1,0 +1,16 @@
+{
+  "name": "dreclaw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "deploy": "pnpm dlx wrangler deploy --route \"${CF_WORKER_ROUTE}\"",
+    "dev": "pnpm dlx wrangler dev",
+    "d1:migrate": "pnpm dlx wrangler d1 migrations apply DRECLAW_DB"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260215.0",
+    "typescript": "^5.9.3"
+  }
+}
