@@ -18,6 +18,14 @@ bucket_name = "dreclaw-workspace"
 name = "SESSION_RUNTIME"
 class_name = "SessionRuntime"
 
+[[durable_objects.bindings]]
+name = "SANDBOX"
+class_name = "Sandbox"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionRuntime"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Sandbox"]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseToolCall, runOwnerExec, runTool } from "../../src/tools";
+import { parseToolCall, runTool } from "../../src/tools";
 import { Workspace } from "../../src/workspace";
 import { FakeR2 } from "../helpers/fakes";
 
@@ -22,24 +22,4 @@ describe("tools", () => {
     expect(runTool({ name: "read", args: { path: "a.txt" } }, workspace).output).toBe("yello");
   });
 
-  it("stores auth marker via /exec pi-ai login", () => {
-    const workspace = makeWorkspace("s2");
-    const result = runOwnerExec("pi-ai login openai-codex", workspace);
-    expect(result.ok).toBe(true);
-    expect(workspace.authReady()).toBe(true);
-  });
-
-  it("accepts /exec pi-ai openai-codex shorthand", () => {
-    const workspace = makeWorkspace("s3");
-    const result = runOwnerExec("pi-ai openai-codex", workspace);
-    expect(result.ok).toBe(true);
-    expect(workspace.authReady()).toBe(true);
-  });
-
-  it("rejects unknown pi-ai command with guidance", () => {
-    const workspace = makeWorkspace("s4");
-    const result = runOwnerExec("pi-ai openai", workspace);
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("Use: /exec pi-ai login openai-codex");
-  });
 });

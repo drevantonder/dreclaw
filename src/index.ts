@@ -2,11 +2,16 @@ import { markUpdateSeen } from "./db";
 import { SessionRuntime } from "./session";
 import { parseUpdate, sendTelegramMessage } from "./telegram";
 import type { Env } from "./types";
+import { proxyToSandbox, Sandbox } from "@cloudflare/sandbox";
 
 export { SessionRuntime };
+export { Sandbox };
 
 export default {
   async fetch(request, env): Promise<Response> {
+    const proxyResponse = await proxyToSandbox(request, env);
+    if (proxyResponse) return proxyResponse;
+
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {

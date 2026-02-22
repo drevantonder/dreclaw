@@ -1,8 +1,9 @@
 import { DEFAULT_MODEL, WORKSPACE_ROOT, type Env, type SessionRequest, type SessionResponse } from "./types";
 import { finishRun, startRun, upsertSessionMeta } from "./db";
-import { parseToolCall, runOwnerExec, runTool } from "./tools";
+import { parseToolCall, runTool } from "./tools";
 import { Workspace } from "./workspace";
 import { fetchImageAsDataUrl } from "./telegram";
+import { getSandbox } from "@cloudflare/sandbox";
 
 interface SessionState {
   history: Array<{ role: "user" | "assistant"; content: string }>;
@@ -55,6 +56,7 @@ export class SessionRuntime implements DurableObject {
   private async handleMessage(payload: SessionRequest, sessionId: string): Promise<SessionResponse> {
     const workspace = new Workspace(this.env.WORKSPACE_BUCKET, sessionId);
     await workspace.restore();
+    const sandbox = getSandbox(this.env.SANDBOX, `session-${payload.message.chat.id}`);
 
     const userText = payload.message.text ?? payload.message.caption ?? "";
     const imageBlocks = await this.loadImages(payload.message);
@@ -69,29 +71,31 @@ export class SessionRuntime implements DurableObject {
     }
 
     if (text.startsWith("/status")) {
+      const authReady = await this.sandboxAuthReady(sandbox);
       const summary = [
         `model: ${DEFAULT_MODEL}`,
         `session: healthy`,
         `workspace: ${WORKSPACE_ROOT}`,
-        `provider_auth: ${workspace.authReady() ? "present" : "missing"}`,
+        `provider_auth: ${authReady ? "present" : "missing"}`,
         `history_messages: ${this.stateData.history.length}`,
       ].join("\n");
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, workspace.authReady());
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, authReady);
       return { ok: true, text: summary };
     }
 
     if (text.startsWith("/exec ")) {
       const command = text.slice(6).trim();
-      const result = runOwnerExec(command, workspace);
-      await workspace.checkpoint();
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, workspace.authReady());
-      if (result.ok) return { ok: true, text: result.output };
-      return { ok: false, text: `exec error: ${result.error}` };
+      const result = await this.execInSandbox(command, sandbox);
+      const authReady = await this.sandboxAuthReady(sandbox);
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, authReady);
+      if (result.ok) return { ok: true, text: result.output || "" };
+      return { ok: false, text: result.output || `exec error: ${result.error}` };
     }
 
     this.stateData.history.push({ role: "user", content: text || "[image]" });
 
-    const finalText = await this.runAgentLoop(text, imageBlocks, workspace);
+    const authReady = await this.sandboxAuthReady(sandbox);
+    const finalText = await this.runAgentLoop(text, imageBlocks, workspace, authReady);
     this.stateData.history.push({ role: "assistant", content: finalText });
     if (this.stateData.history.length > 20) {
       this.stateData.history = this.stateData.history.slice(-20);
@@ -99,16 +103,16 @@ export class SessionRuntime implements DurableObject {
 
     await this.save();
     await workspace.checkpoint();
-    await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, workspace.authReady());
+    await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, authReady);
     return { ok: true, text: finalText };
   }
 
-  private async runAgentLoop(text: string, imageBlocks: string[], workspace: Workspace): Promise<string> {
+  private async runAgentLoop(text: string, imageBlocks: string[], workspace: Workspace, authReady: boolean): Promise<string> {
     let workingText = text;
     for (let i = 0; i < 4; i += 1) {
       const toolCall = parseToolCall(workingText);
       if (!toolCall) {
-        return this.makeFinalResponse(workingText, imageBlocks, workspace.authReady());
+        return this.makeFinalResponse(workingText, imageBlocks, authReady);
       }
       const result = runTool(toolCall, workspace);
       if (!result.ok) {
@@ -140,4 +144,45 @@ export class SessionRuntime implements DurableObject {
     const dataUrl = await fetchImageAsDataUrl(this.env.TELEGRAM_BOT_TOKEN, best.file_id);
     return dataUrl ? [dataUrl] : [];
   }
+
+  private async sandboxAuthReady(sandbox: ReturnType<typeof getSandbox>): Promise<boolean> {
+    try {
+      await sandbox.readFile(`${WORKSPACE_ROOT}/.pi-ai/auth.json`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async execInSandbox(
+    command: string,
+    sandbox: ReturnType<typeof getSandbox>,
+  ): Promise<{ ok: boolean; output: string; error?: string }> {
+    if (!command.trim()) return { ok: true, output: "" };
+
+    const wrapped = [
+      "mkdir -p /root/dreclaw /root/dreclaw/.config /root/dreclaw/.cache",
+      "export HOME=/root/dreclaw XDG_CONFIG_HOME=/root/dreclaw/.config XDG_CACHE_HOME=/root/dreclaw/.cache",
+      "cd /root/dreclaw",
+      command,
+    ].join("; ");
+
+    const result = await sandbox.exec(`bash -lc ${shellQuote(wrapped)}`);
+    const stdout = result.stdout ?? "";
+    const stderr = result.stderr ?? "";
+    const merged = [stdout, stderr].filter(Boolean).join("\n").trim();
+
+    if (result.success) return { ok: true, output: merged };
+
+    const exitCode = typeof result.exitCode === "number" ? ` (exit ${result.exitCode})` : "";
+    return {
+      ok: false,
+      output: merged || `Command failed${exitCode}`,
+      error: `Command failed${exitCode}`,
+    };
+  }
+}
+
+function shellQuote(input: string): string {
+  return `'${input.replace(/'/g, `'"'"'`)}'`;
 }

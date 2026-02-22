@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 import { createEnv } from "../helpers/fakes";
 
+const app = worker as unknown as {
+  fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response>;
+};
+
 function makeUpdate(updateId: number, text: string, userId = 42) {
   return {
     update_id: updateId,
@@ -45,7 +49,7 @@ describe("telegram webhook e2e", () => {
       body: JSON.stringify(makeUpdate(1001, "/status")),
     });
 
-    const res = await worker.fetch(req, env, {} as ExecutionContext);
+    const res = await app.fetch(req, env, {} as ExecutionContext);
     expect(res.status).toBe(200);
     expect(db.updates.has(1001)).toBe(true);
     expect(sends.length).toBe(1);
@@ -65,8 +69,8 @@ describe("telegram webhook e2e", () => {
     };
     const body = JSON.stringify(makeUpdate(1002, "hello"));
 
-    await worker.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
-    await worker.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
+    await app.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
+    await app.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
 
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
@@ -92,10 +96,10 @@ describe("telegram webhook e2e", () => {
       body: JSON.stringify(makeUpdate(1004, "/exec pi-ai openai-codex")),
     });
 
-    const res = await worker.fetch(req, env, {} as ExecutionContext);
+    const res = await app.fetch(req, env, {} as ExecutionContext);
     expect(res.status).toBe(200);
     const sent = sends[0].body as { text: string };
-    expect(sent.text).toContain("Provider auth stored for openai-codex");
+    expect(sent.text).toContain("pi-ai login success");
   });
 
   it("rejects invalid webhook secret", async () => {
@@ -103,7 +107,7 @@ describe("telegram webhook e2e", () => {
     const sendMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", sendMock);
 
-    const res = await worker.fetch(
+    const res = await app.fetch(
       new Request("https://test.local/telegram/webhook", {
         method: "POST",
         headers: {

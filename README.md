@@ -78,7 +78,7 @@ pnpm check
 - Message the bot in a private Telegram chat.
 - `/status` shows model/session/workspace/auth readiness.
 - `/reset` clears current session context.
-- `/exec <command>` owner-only bootstrap path (ex: `pi-ai login openai-codex`).
+- `/exec <command>` runs directly in Cloudflare Sandbox and returns command stdout/stderr.
 - `/tool <name> <json>` runs one tool call (`read`, `write`, `edit`, `bash`).
 
 Examples:

@@ -113,6 +113,7 @@ export function createEnv() {
     TELEGRAM_ALLOWED_USER_ID: "42",
     DRECLAW_DB: db as unknown as D1Database,
     WORKSPACE_BUCKET: bucket as unknown as R2Bucket,
+    SANDBOX: {} as DurableObjectNamespace,
   };
 
   const namespace = {
@@ -126,6 +127,7 @@ export function createEnv() {
         runtime = new SessionRuntime(new FakeDurableObjectState(key) as unknown as DurableObjectState, {
           ...base,
           SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
+          SANDBOX: {} as DurableObjectNamespace,
         } as Env);
         runtimes.set(key, runtime);
       }
@@ -138,6 +140,7 @@ export function createEnv() {
   const env: Env = {
     ...base,
     SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
+    SANDBOX: {} as DurableObjectNamespace,
   };
 
   return { env, db, bucket };

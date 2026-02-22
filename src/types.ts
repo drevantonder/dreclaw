@@ -8,6 +8,7 @@ export interface Env {
   DRECLAW_DB: D1Database;
   WORKSPACE_BUCKET: R2Bucket;
   SESSION_RUNTIME: DurableObjectNamespace;
+  SANDBOX: DurableObjectNamespace;
 }
 
 export interface TelegramUpdate {
