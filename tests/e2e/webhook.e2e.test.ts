@@ -71,6 +71,33 @@ describe("telegram webhook e2e", () => {
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
 
+  it("supports pi-ai shorthand exec command", async () => {
+    const { env } = createEnv();
+    const sends: Array<{ body: unknown }> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        sends.push({ body: init?.body ? JSON.parse(String(init.body)) : null });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }),
+    );
+
+    const req = new Request("https://test.local/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify(makeUpdate(1004, "/exec pi-ai openai-codex")),
+    });
+
+    const res = await worker.fetch(req, env, {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const sent = sends[0].body as { text: string };
+    expect(sent.text).toContain("Provider auth stored for openai-codex");
+  });
+
   it("rejects invalid webhook secret", async () => {
     const { env } = createEnv();
     const sendMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));

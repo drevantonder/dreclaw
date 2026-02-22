@@ -48,11 +48,27 @@ export function runTool(tool: ToolCall, workspace: Workspace): RunResult {
 }
 
 export function runOwnerExec(command: string, workspace: Workspace): RunResult {
-  if (command.startsWith("pi-ai login ")) {
-    const provider = command.replace("pi-ai login ", "").trim() || "openai-codex";
+  const trimmed = command.trim();
+  const loginMatch = /^pi-ai\s+login(?:\s+(.+))?$/i.exec(trimmed);
+  const shorthandMatch = /^pi-ai\s+openai-codex$/i.exec(trimmed);
+
+  if (loginMatch || shorthandMatch) {
+    const provider = (loginMatch?.[1]?.trim() || "openai-codex").toLowerCase();
     workspace.write(`${WORKSPACE_ROOT}/.pi-ai/auth.json`, JSON.stringify({ provider, at: Date.now() }));
-    return { ok: true, output: `Provider auth stored for ${provider}` };
+    return {
+      ok: true,
+      output: [`Provider auth stored for ${provider}.`, "Run /status to confirm provider_auth: present."].join("\n"),
+    };
   }
+
+  if (/^pi-ai\b/i.test(trimmed)) {
+    return {
+      ok: false,
+      output: "",
+      error: "Unsupported pi-ai command. Use: /exec pi-ai login openai-codex",
+    };
+  }
+
   return runBashLike(command, workspace);
 }
 
