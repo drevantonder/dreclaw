@@ -4,7 +4,7 @@ import { R2FilesystemService } from "./filesystem";
 import { getModel, type ModelMessage } from "./model";
 import { TOOL_SPECS } from "./tool-schema";
 import { runTool, SessionShell } from "./tools";
-import { fetchImageAsDataUrl } from "./telegram";
+import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
 
 type SessionHistoryEntry = { role: "user" | "assistant" | "tool"; content: string };
 
@@ -110,7 +110,7 @@ export class SessionRuntime implements DurableObject {
 
     const runtime = this.getRuntimeConfig();
 
-    const run = await this.runAgentLoop(shell, runtime, text, imageBlocks);
+    const run = await this.runAgentLoop(shell, runtime, text, imageBlocks, payload.message.chat.id);
     const responseText = formatUserFacingResponse(run.finalText, run.toolEvents);
     this.pushHistory({ role: "user", content: text || "[image]" });
     for (const toolError of run.toolErrors) {
@@ -128,6 +128,7 @@ export class SessionRuntime implements DurableObject {
     runtime: RuntimeConfig,
     userText: string,
     imageBlocks: string[],
+    chatId: number,
   ): Promise<AgentRunResult> {
     let activeModel = runtime.model;
     const fallbackModel = resolveFallbackModel(runtime.model);
@@ -161,6 +162,10 @@ export class SessionRuntime implements DurableObject {
         }
       }
 
+      for (const block of completion.thinking) {
+        await this.sendProgress(chatId, `Thinking:\n${truncateForLog(block, 1200)}`);
+      }
+
       if (!completion.toolCalls.length) {
         const text = completion.text.trim();
         return { finalText: text || "(empty response)", toolErrors, toolEvents };
@@ -180,6 +185,7 @@ export class SessionRuntime implements DurableObject {
       });
 
       for (const call of completion.toolCalls) {
+        await this.sendProgress(chatId, `Tool call: ${call.name} ${truncateForLog(JSON.stringify(call.args), 420)}`);
         const result = await runTool({ name: call.name, args: call.args }, { shell });
         toolEvents.push(formatToolEvent(call.name, call.args, result.ok, result.output, result.error));
         const toolResponse = [
@@ -192,6 +198,13 @@ export class SessionRuntime implements DurableObject {
           .join("\n");
 
         messages.push({ role: "tool", content: toolResponse, tool_call_id: call.id });
+
+        await this.sendProgress(
+          chatId,
+          result.ok
+            ? `Tool ok: ${call.name} ${truncateForLog(result.output, 700)}`
+            : `Tool error: ${call.name} ${truncateForLog(result.error || result.output || "error", 700)}`,
+        );
 
         if (!result.ok) {
           console.error("tool-call-failed", { tool: call.name, error: result.error });
@@ -206,6 +219,19 @@ export class SessionRuntime implements DurableObject {
   private pushHistory(entry: SessionHistoryEntry): void {
     this.stateData.history.push(entry);
     if (this.stateData.history.length > 24) this.stateData.history = this.stateData.history.slice(-24);
+  }
+
+  private async sendProgress(chatId: number, text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    try {
+      await sendTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, chatId, trimmed);
+    } catch (error) {
+      console.warn("telegram-progress-send-failed", {
+        chatId,
+        error: error instanceof Error ? error.message : String(error ?? "unknown"),
+      });
+    }
   }
 
   private async loadImages(message: SessionRequest["message"]): Promise<string[]> {

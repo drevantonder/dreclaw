@@ -25,6 +25,7 @@ export interface ModelToolCall {
 
 export interface ModelCompletion {
   text: string;
+  thinking: string[];
   toolCalls: ModelToolCall[];
 }
 
@@ -61,6 +62,7 @@ async function complete(
     const assistant = await piComplete(piModel, context, {
       apiKey: params.apiKey,
       transport: params.transport ?? "sse",
+      reasoningEffort: "medium",
     });
 
     if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
@@ -72,6 +74,11 @@ async function complete(
       .map((block) => block.text)
       .join("\n")
       .trim();
+
+    const thinking = assistant.content
+      .filter((block): block is { type: "thinking"; thinking: string } => block.type === "thinking")
+      .map((block) => block.thinking)
+      .filter((value) => value.trim().length > 0);
 
     const toolCalls = assistant.content
       .filter((block): block is { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> } =>
@@ -89,7 +96,7 @@ async function complete(
       })
       .filter((value): value is ModelToolCall => Boolean(value));
 
-    return { text, toolCalls };
+    return { text, thinking, toolCalls };
   });
 }
 

@@ -8,17 +8,23 @@ type MockContext = {
   tools: Array<Record<string, unknown>>;
 };
 
+type MockOptions = {
+  reasoningEffort?: string;
+};
+
 type MockAssistant = {
   stopReason: "endTurn" | "toolUse" | "error" | "aborted";
   content: Array<Record<string, unknown>>;
   errorMessage?: string;
 };
 
-const { modelCallContext, modelQueue, piCompleteMock } = vi.hoisted(() => {
+const { modelCallContext, modelCallOptions, modelQueue, piCompleteMock } = vi.hoisted(() => {
   const callContext: MockContext[] = [];
+  const callOptions: MockOptions[] = [];
   const queue: Array<MockAssistant | Error | ((context: MockContext) => MockAssistant | Error)> = [];
-  const completeMock = vi.fn(async (_model: unknown, context: MockContext) => {
+  const completeMock = vi.fn(async (_model: unknown, context: MockContext, options: MockOptions) => {
     callContext.push(context);
+    callOptions.push(options ?? {});
     const next = queue.shift();
     if (!next) throw new Error("Missing mocked model response");
 
@@ -28,6 +34,7 @@ const { modelCallContext, modelQueue, piCompleteMock } = vi.hoisted(() => {
   });
   return {
     modelCallContext: callContext,
+    modelCallOptions: callOptions,
     modelQueue: queue,
     piCompleteMock: completeMock,
   };
@@ -99,6 +106,7 @@ async function callWebhook(env: ReturnType<typeof createEnv>["env"], updateId: n
 describe("conversation e2e", () => {
   beforeEach(() => {
     modelCallContext.length = 0;
+    modelCallOptions.length = 0;
     modelQueue.length = 0;
   });
 
@@ -120,11 +128,13 @@ describe("conversation e2e", () => {
     await callWebhook(env, 4001, "remember my name");
 
     expect(actions).toEqual(["typing"]);
-    expect(sends).toHaveLength(1);
-    expect(sends[0].text).toContain("Saved it.");
-    expect(sends[0].text).toContain("Tools used:");
-    expect(sends[0].text).toContain("- write");
-    expect(sends[0].text).toContain("-> ok");
+    expect(sends.some((message) => message.text.includes("Tool call: write"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool ok: write"))).toBe(true);
+    const final = sends.at(-1)!;
+    expect(final.text).toContain("Saved it.");
+    expect(final.text).toContain("Tools used:");
+    expect(final.text).toContain("- write");
+    expect(final.text).toContain("-> ok");
   });
 
   it("persists tool errors in history so next turn can react", async () => {
@@ -156,11 +166,32 @@ describe("conversation e2e", () => {
     );
 
     await callWebhook(env, 4002, "read /missing.md");
-    expect(sends[0].text).toContain("Tools used:");
-    expect(sends[0].text).toContain("-> failed");
+    expect(sends.some((message) => message.text.includes("Tool call: read"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool error: read"))).toBe(true);
+    const firstFinal = sends.find((message) => message.text.includes("Tools used:"));
+    expect(firstFinal?.text).toContain("-> failed");
 
     await callWebhook(env, 4003, "what failed earlier?");
-    expect(sends[1].text).toContain("I can see the previous tool error.");
+    expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
+  });
+
+  it("sends thinking updates and enables reasoning", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push({
+      stopReason: "endTurn",
+      content: [
+        { type: "thinking", thinking: "Check memory note then answer briefly." },
+        { type: "text", text: "Done." },
+      ],
+    });
+
+    await callWebhook(env, 4006, "think then answer");
+
+    expect(modelCallOptions[0]?.reasoningEffort).toBe("medium");
+    expect(sends.some((message) => message.text.includes("Thinking:"))).toBe(true);
+    expect(sends.at(-1)?.text).toContain("Done.");
   });
 
   it("persists runtime failures in history for future turns", async () => {
