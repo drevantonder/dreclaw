@@ -1,5 +1,6 @@
 import { Bash } from "just-bash";
 import { R2FilesystemService } from "./filesystem";
+import { isToolName } from "./tool-schema";
 import { VFS_ROOT, type RunResult, type ToolCall } from "./types";
 
 export function extractToolCall(output: string): ToolCall | null {
@@ -93,29 +94,32 @@ export class SessionShell {
 
 export async function runTool(tool: ToolCall, context: ToolRuntimeContext): Promise<RunResult> {
   try {
-    if (tool.name === "read") {
-      const path = String(tool.args.path ?? "");
-      const output = await context.shell.readText(path);
-      return { ok: true, output };
-    }
+    const handlers = {
+      read: async (): Promise<RunResult> => {
+        const path = String(tool.args.path ?? "");
+        const output = await context.shell.readText(path);
+        return { ok: true, output };
+      },
+      write: async (): Promise<RunResult> => {
+        const path = String(tool.args.path ?? "");
+        const content = String(tool.args.content ?? "");
+        await context.shell.writeText(path, content);
+        return { ok: true, output: `Wrote ${context.shell.normalizePath(path)}` };
+      },
+      edit: async (): Promise<RunResult> => {
+        const path = String(tool.args.path ?? "");
+        const find = String(tool.args.find ?? "");
+        const replace = String(tool.args.replace ?? "");
+        await context.shell.edit(path, find, replace);
+        return { ok: true, output: `Edited ${path}` };
+      },
+      bash: async (): Promise<RunResult> => {
+        const command = String(tool.args.command ?? "");
+        return context.shell.run(command);
+      },
+    } as const;
 
-    if (tool.name === "write") {
-      const path = String(tool.args.path ?? "");
-      const content = String(tool.args.content ?? "");
-      await context.shell.writeText(path, content);
-      return { ok: true, output: `Wrote ${context.shell.normalizePath(path)}` };
-    }
-
-    if (tool.name === "edit") {
-      const path = String(tool.args.path ?? "");
-      const find = String(tool.args.find ?? "");
-      const replace = String(tool.args.replace ?? "");
-      await context.shell.edit(path, find, replace);
-      return { ok: true, output: `Edited ${path}` };
-    }
-
-    const cmd = String(tool.args.command ?? "");
-    return context.shell.run(cmd);
+    return handlers[tool.name]();
   } catch (error) {
     return {
       ok: false,
@@ -141,10 +145,6 @@ function normalizeToolCall(input: unknown): ToolCall | null {
   if (!isToolName(name)) return null;
   const args = (root.args && typeof root.args === "object" ? root.args : {}) as Record<string, unknown>;
   return { name, args };
-}
-
-function isToolName(value: string): value is ToolCall["name"] {
-  return value === "read" || value === "write" || value === "edit" || value === "bash";
 }
 
 function shellEnv(): Record<string, string> {

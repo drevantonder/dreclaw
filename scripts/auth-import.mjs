@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -32,11 +34,47 @@ function normalizePayload(rawText) {
 
   if (!parsed || typeof parsed !== "object") fail("Payload must be a JSON object");
 
-  if (typeof parsed.provider === "string" && typeof parsed.accessToken === "string") {
-    return { [parsed.provider]: parsed };
+  if (typeof parsed.provider === "string") {
+    const single = normalizeCredential(parsed);
+    if (!single) fail("Credential payload missing access token");
+    return { [parsed.provider]: single };
   }
 
-  return parsed;
+  const output = {};
+  for (const [provider, value] of Object.entries(parsed)) {
+    const normalized = normalizeCredential(value);
+    if (normalized) {
+      output[provider] = normalized;
+    }
+  }
+
+  if (Object.keys(output).length === 0) {
+    fail("No valid credentials found in payload");
+  }
+
+  return output;
+}
+
+function normalizeCredential(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const value = raw;
+  const access = String(value.access ?? value.accessToken ?? "").trim();
+  if (!access) return null;
+
+  const refresh = String(value.refresh ?? value.refreshToken ?? "").trim();
+  let expires = Number(value.expires ?? 0);
+  if (!Number.isFinite(expires) || expires <= 0) {
+    const expiresAt = toOptionalString(value.expiresAt);
+    expires = expiresAt ? Date.parse(expiresAt) : Date.now() + 3600_000;
+  }
+
+  return { ...value, access, refresh, expires };
+}
+
+function toOptionalString(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized || undefined;
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -56,9 +94,16 @@ if (!source) {
 
 const map = normalizePayload(source);
 const value = JSON.stringify(map);
-const run = spawnSync("pnpm", ["dlx", "wrangler", "kv", "key", "put", "--binding", "AUTH_KV", "provider-auth-map", value], {
-  stdio: "inherit",
-});
+const tempFile = join(tmpdir(), `dreclaw-auth-import-${Date.now()}.json`);
+writeFileSync(tempFile, value);
+
+const run = spawnSync(
+  "pnpm",
+  ["dlx", "wrangler", "kv", "key", "put", "provider-auth-map", "--binding", "AUTH_KV", "--path", tempFile, "--remote"],
+  { stdio: "inherit" },
+);
+
+unlinkSync(tempFile);
 
 if (run.status !== 0) {
   process.exit(run.status ?? 1);

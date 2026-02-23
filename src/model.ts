@@ -1,4 +1,6 @@
+import { complete as piComplete, getModel as piGetModel, type Context, type Message } from "@mariozechner/pi-ai";
 import { runWithRetry } from "./db";
+import { isToolName, type ToolName } from "./tool-schema";
 
 export interface ModelMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -8,7 +10,7 @@ export interface ModelMessage {
     id: string;
     type: "function";
     function: {
-      name: "read" | "write" | "edit" | "bash";
+      name: ToolName;
       arguments: string;
     };
   }>;
@@ -16,7 +18,7 @@ export interface ModelMessage {
 
 export interface ModelToolCall {
   id: string;
-  name: "read" | "write" | "edit" | "bash";
+  name: ToolName;
   args: Record<string, unknown>;
   rawArguments: string;
 }
@@ -30,7 +32,6 @@ export function getModel(provider: string, model: string) {
   return {
     complete: (params: {
       apiKey: string;
-      apiBaseUrl?: string;
       messages: ModelMessage[];
       tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
     }) => complete(provider, model, params),
@@ -42,7 +43,6 @@ async function complete(
   model: string,
   params: {
     apiKey: string;
-    apiBaseUrl?: string;
     messages: ModelMessage[];
     tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
   },
@@ -51,70 +51,147 @@ async function complete(
     throw new Error(`Unsupported model provider: ${provider}`);
   }
 
-  const endpoint = `${(params.apiBaseUrl || "https://api.openai.com").replace(/\/+$/, "")}/v1/chat/completions`;
-  const body = {
-    model,
-    messages: params.messages,
-    temperature: 0,
-    tools: (params.tools ?? []).map((tool) => ({
-      type: "function",
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-      },
-    })),
-    tool_choice: "auto",
-  };
+  const piModel = piGetModel("openai-codex", model as "gpt-5.3-codex");
+  const context = toContext(params.messages, params.tools ?? []);
 
   return runWithRetry(async () => {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${params.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
+    const assistant = await piComplete(piModel, context, {
+      apiKey: params.apiKey,
+      transport: "auto",
     });
 
-    const payload = (await response.json()) as {
-      choices?: Array<{
-        message?: {
-          content?: string;
-          tool_calls?: Array<{
-            id?: string;
-            function?: { name?: string; arguments?: string };
-          }>;
-        };
-      }>;
-      error?: { message?: string };
-    };
-
-    if (!response.ok) {
-      throw new Error(payload.error?.message || `Model call failed with status ${response.status}`);
+    if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
+      throw new Error(assistant.errorMessage || "Model call failed");
     }
 
-    const message = payload.choices?.[0]?.message;
-    const text = typeof message?.content === "string" ? message.content : "";
-    const toolCalls = (message?.tool_calls ?? [])
-      .map((call): ModelToolCall | null => {
-        const name = String(call.function?.name ?? "");
-        if (name !== "read" && name !== "write" && name !== "edit" && name !== "bash") return null;
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(call.function?.arguments || "{}") as Record<string, unknown>;
-        } catch {
-          args = {};
-        }
+    const text = assistant.content
+      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .map((block) => block.text)
+      .join("\n")
+      .trim();
+
+    const toolCalls = assistant.content
+      .filter((block): block is { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> } =>
+        block.type === "toolCall",
+      )
+      .map((block): ModelToolCall | null => {
+        if (!isToolName(block.name)) return null;
+
         return {
-          id: call.id || crypto.randomUUID(),
-          name,
-          args,
-          rawArguments: call.function?.arguments || "{}",
+          id: block.id,
+          name: block.name,
+          args: block.arguments ?? {},
+          rawArguments: JSON.stringify(block.arguments ?? {}),
         };
       })
       .filter((value): value is ModelToolCall => Boolean(value));
 
     return { text, toolCalls };
   });
+}
+
+function toContext(
+  messages: ModelMessage[],
+  tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>,
+): Context {
+  const contextMessages: Message[] = [];
+  let systemPrompt = "";
+
+  for (const message of messages) {
+    if (message.role === "system") {
+      systemPrompt = typeof message.content === "string" ? message.content : "";
+      continue;
+    }
+
+    if (message.role === "user") {
+      contextMessages.push({
+        role: "user",
+        content: toUserContent(message.content),
+        timestamp: Date.now(),
+      });
+      continue;
+    }
+
+    if (message.role === "assistant") {
+      const content: Array<{ type: "text"; text: string } | { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> }> =
+        [];
+
+      if (typeof message.content === "string" && message.content.trim()) {
+        content.push({ type: "text", text: message.content });
+      }
+
+      for (const call of message.tool_calls ?? []) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
+        } catch {
+          args = {};
+        }
+
+        content.push({
+          type: "toolCall",
+          id: call.id,
+          name: call.function.name,
+          arguments: args,
+        });
+      }
+
+      if (content.length) {
+        contextMessages.push({
+          role: "assistant",
+          content,
+          api: "openai-codex-responses",
+          provider: "openai-codex",
+          model: "unknown",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          stopReason: "toolUse",
+          timestamp: Date.now(),
+        });
+      }
+      continue;
+    }
+
+    if (message.role === "tool") {
+      contextMessages.push({
+        role: "toolResult",
+        toolCallId: message.tool_call_id || "unknown-tool-call",
+        toolName: "tool",
+        content: [{ type: "text", text: String(message.content ?? "") }],
+        isError: false,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  return {
+    systemPrompt,
+    messages: contextMessages,
+    tools: tools as Context["tools"],
+  };
+}
+
+function toUserContent(
+  content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>,
+): string | Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> {
+  if (typeof content === "string") return content;
+
+  const result: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+  for (const block of content) {
+    if (block.type === "text") {
+      result.push({ type: "text", text: block.text });
+      continue;
+    }
+
+    const parsed = parseDataUrl(block.image_url.url);
+    if (parsed) {
+      result.push({ type: "image", data: parsed.data, mimeType: parsed.mimeType });
+    }
+  }
+  return result;
+}
+
+function parseDataUrl(url: string): { mimeType: string; data: string } | null {
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(url.trim());
+  if (!match) return null;
+  return { mimeType: match[1], data: match[2] };
 }

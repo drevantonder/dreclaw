@@ -71,7 +71,7 @@ describe("telegram webhook e2e", () => {
       "content-type": "application/json",
       "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
     };
-    const body = JSON.stringify(makeUpdate(1002, "hello"));
+    const body = JSON.stringify(makeUpdate(1002, "/status"));
 
     await app.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
     await app.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);

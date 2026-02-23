@@ -1,8 +1,8 @@
-import type { OAuthCredential } from "./oauth";
+import type { OAuthCredentials } from "@mariozechner/pi-ai";
 
 const AUTH_MAP_KEY = "provider-auth-map";
 
-export type CredentialMap = Record<string, OAuthCredential>;
+export type CredentialMap = Record<string, OAuthCredentials>;
 
 export async function loadCredentialMap(kv: KVNamespace): Promise<CredentialMap> {
   const raw = await kv.get(AUTH_MAP_KEY);
@@ -21,8 +21,13 @@ export async function saveCredentialMap(kv: KVNamespace, map: CredentialMap): Pr
   await kv.put(AUTH_MAP_KEY, JSON.stringify(map));
 }
 
-export async function upsertCredential(kv: KVNamespace, map: CredentialMap, credential: OAuthCredential): Promise<CredentialMap> {
-  const next = { ...map, [credential.provider]: credential };
+export async function upsertCredential(
+  kv: KVNamespace,
+  map: CredentialMap,
+  provider: string,
+  credential: OAuthCredentials,
+): Promise<CredentialMap> {
+  const next = { ...map, [provider]: credential };
   await saveCredentialMap(kv, next);
   return next;
 }

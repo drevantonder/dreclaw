@@ -1,5 +1,5 @@
 import { parseUpdate } from "./telegram";
-import type { SessionRequest, SessionResponse, TelegramMessage } from "./types";
+import type { SessionRequest, SessionResponse } from "./types";
 
 export interface TelegramProcessorDeps {
   markUpdateSeen(updateId: number): Promise<boolean>;
@@ -44,8 +44,4 @@ export async function processTelegramUpdate(
       text: response.text || "Done.",
     },
   };
-}
-
-export function buildSessionRequest(updateId: number, message: TelegramMessage): SessionRequest {
-  return { updateId, message };
 }

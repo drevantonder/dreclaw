@@ -17,6 +17,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@mariozechner/pi-ai": "^0.54.2",
     "just-bash": "^2.10.2"
   }
 }

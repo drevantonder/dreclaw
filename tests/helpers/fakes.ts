@@ -159,8 +159,6 @@ export function createEnv() {
     TELEGRAM_BOT_TOKEN: "test-bot-token",
     TELEGRAM_WEBHOOK_SECRET: "secret-1",
     TELEGRAM_ALLOWED_USER_ID: "42",
-    OPENAI_API_KEY: "test-openai-key",
-    OPENAI_API_BASE_URL: "https://api.openai.com",
     DRECLAW_DB: db as unknown as D1Database,
     WORKSPACE_BUCKET: bucket as unknown as R2Bucket,
     AUTH_KV: authKv as unknown as KVNamespace,

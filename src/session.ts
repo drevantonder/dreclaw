@@ -3,56 +3,14 @@ import { finishRun, startRun, upsertSessionMeta } from "./db";
 import { loadCredentialMap, upsertCredential, type CredentialMap } from "./auth-store";
 import { R2FilesystemService } from "./filesystem";
 import { getModel, type ModelMessage } from "./model";
-import { getOAuthApiKey } from "./oauth";
+import { getOAuthApiKey } from "@mariozechner/pi-ai";
+import { TOOL_SPECS } from "./tool-schema";
 import { runTool, SessionShell } from "./tools";
 import { fetchImageAsDataUrl } from "./telegram";
 
 interface SessionState {
   history: Array<{ role: "user" | "assistant"; content: string }>;
 }
-
-const TOOL_SPECS = [
-  {
-    name: "read",
-    description: "Read file content from active workspace",
-    parameters: {
-      type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "write",
-    description: "Write file content to active workspace",
-    parameters: {
-      type: "object",
-      properties: { path: { type: "string" }, content: { type: "string" } },
-      required: ["path", "content"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "edit",
-    description: "Replace text within a file",
-    parameters: {
-      type: "object",
-      properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" } },
-      required: ["path", "find", "replace"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "bash",
-    description: "Run shell command in /workspace",
-    parameters: {
-      type: "object",
-      properties: { command: { type: "string" } },
-      required: ["command"],
-      additionalProperties: false,
-    },
-  },
-] as const;
 
 export class SessionRuntime implements DurableObject {
   private readonly state: DurableObjectState;
@@ -137,12 +95,16 @@ export class SessionRuntime implements DurableObject {
       return { ok: true, text: summary };
     }
 
-    const authMap = await this.getAuthMap();
-    const auth = this.env.OPENAI_API_KEY
-      ? { apiKey: this.env.OPENAI_API_KEY }
-      : await getOAuthApiKey("openai-codex", authMap);
-    if ("updated" in auth && auth.updated) {
-      this.authMap = await upsertCredential(this.env.AUTH_KV, authMap, auth.updated);
+    let authMap = await this.getAuthMap();
+    if (!authMap["openai-codex"]?.access) {
+      authMap = await this.getAuthMap(true);
+    }
+    const auth = await getOAuthApiKey("openai-codex", authMap);
+    if (!auth) {
+      throw new Error("Missing OAuth credential for provider: openai-codex");
+    }
+    if (auth.newCredentials) {
+      this.authMap = await upsertCredential(this.env.AUTH_KV, authMap, "openai-codex", auth.newCredentials);
     }
 
     const finalText = await this.runAgentLoop(shell, auth.apiKey, text, imageBlocks);
@@ -162,7 +124,6 @@ export class SessionRuntime implements DurableObject {
     for (let i = 0; i < 6; i += 1) {
       const completion = await model.complete({
         apiKey,
-        apiBaseUrl: this.env.OPENAI_API_BASE_URL,
         messages,
         tools: [...TOOL_SPECS],
       });
@@ -215,16 +176,15 @@ export class SessionRuntime implements DurableObject {
     return dataUrl ? [dataUrl] : [];
   }
 
-  private async getAuthMap(): Promise<CredentialMap> {
-    if (this.authMap) return this.authMap;
+  private async getAuthMap(forceRefresh = false): Promise<CredentialMap> {
+    if (this.authMap && !forceRefresh) return this.authMap;
     this.authMap = await loadCredentialMap(this.env.AUTH_KV);
     return this.authMap;
   }
 
   private async workerAuthReady(): Promise<boolean> {
-    if (this.env.OPENAI_API_KEY) return true;
-    const map = await this.getAuthMap();
-    return Boolean(map["openai-codex"]?.accessToken);
+    const map = await this.getAuthMap(true);
+    return Boolean(map["openai-codex"]?.access);
   }
 }
 

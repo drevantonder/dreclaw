@@ -5,12 +5,6 @@ const LEGACY_ROOT = "/root/dreclaw";
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 const textEncoder = new TextEncoder();
 
-export interface SearchMatch {
-  path: string;
-  line: number;
-  text: string;
-}
-
 export class R2FilesystemService {
   private readonly prefix: string;
 
@@ -89,30 +83,6 @@ export class R2FilesystemService {
     } while (cursor);
 
     return output.sort();
-  }
-
-  async search(query: string, prefix = VFS_ROOT): Promise<SearchMatch[]> {
-    const needle = query.trim();
-    if (!needle) return [];
-
-    const matches: SearchMatch[] = [];
-    for (const path of await this.list(prefix)) {
-      let text: string;
-      try {
-        text = await this.readText(path);
-      } catch {
-        continue;
-      }
-
-      const lines = text.split("\n");
-      for (let i = 0; i < lines.length; i += 1) {
-        if (lines[i].includes(needle)) {
-          matches.push({ path, line: i + 1, text: lines[i] });
-        }
-      }
-    }
-
-    return matches;
   }
 
   async replaceAll(files: Record<string, Uint8Array>): Promise<void> {

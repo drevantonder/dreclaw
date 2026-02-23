@@ -1,3 +1,5 @@
+import type { ToolName } from "./tool-schema";
+
 export const VFS_ROOT = "/workspace";
 export const DEFAULT_MODEL = "gpt-5.3-codex";
 
@@ -5,8 +7,6 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_ALLOWED_USER_ID: string;
-  OPENAI_API_KEY?: string;
-  OPENAI_API_BASE_URL?: string;
   DRECLAW_DB: D1Database;
   WORKSPACE_BUCKET: R2Bucket;
   AUTH_KV: KVNamespace;
@@ -45,6 +45,6 @@ export interface RunResult {
 }
 
 export interface ToolCall {
-  name: "read" | "write" | "edit" | "bash";
+  name: ToolName;
   args: Record<string, unknown>;
 }

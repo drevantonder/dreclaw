@@ -1,4 +1,5 @@
 .env
+auth.json
 wrangler.toml
 node_modules/
 .wrangler/

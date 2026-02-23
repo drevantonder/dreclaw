@@ -67,6 +67,20 @@ pnpm deploy
 - `/status` shows runtime/session/auth readiness.
 - `/reset` clears current session context.
 
+## OAuth auth setup (pi-ai)
+
+```bash
+mkdir -p ~/.dreclaw-auth
+cd ~/.dreclaw-auth
+pnpm dlx @mariozechner/pi-ai login openai-codex
+
+cd /Users/drevan/projects/dreclaw
+pnpm auth:import -- --file ~/.dreclaw-auth/auth.json
+```
+
+- Import writes to remote `AUTH_KV` key `provider-auth-map`.
+- Runtime uses only OAuth map for `openai-codex` (no `OPENAI_API_KEY` path).
+
 ## Testing
 
 - Run full tests: `pnpm test`
