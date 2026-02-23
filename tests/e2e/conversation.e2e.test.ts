@@ -175,7 +175,6 @@ function makeUpdate(updateId: number, text: string, userId = 42) {
 
 function setupTelegramFetch() {
   const sends: Array<{ text: string; messageId: number }> = [];
-  const edits: Array<{ text: string; messageId: number }> = [];
   const actions: string[] = [];
   let nextMessageId = 100;
 
@@ -194,18 +193,11 @@ function setupTelegramFetch() {
         sends.push({ text: body.text ?? "", messageId });
         return new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), { status: 200 });
       }
-      if (url.includes("/editMessageText")) {
-        const body = init?.body
-          ? JSON.parse(String(init.body)) as { text?: string; message_id?: number }
-          : {};
-        edits.push({ text: body.text ?? "", messageId: body.message_id ?? -1 });
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
       return new Response("{}", { status: 200 });
     }),
   );
 
-  return { sends, edits, actions };
+  return { sends, actions };
 }
 
 async function callWebhook(env: ReturnType<typeof createEnv>["env"], updateId: number, text: string) {
@@ -230,7 +222,7 @@ describe("conversation e2e", () => {
 
   it("uses compact progress and final tool summary by default", async () => {
     const { env } = createEnv();
-    const { sends, edits, actions } = setupTelegramFetch();
+    const { sends, actions } = setupTelegramFetch();
 
     modelQueue.push(
       {
@@ -246,7 +238,7 @@ describe("conversation e2e", () => {
     await callWebhook(env, 4001, "remember my name");
 
     expect(actions).toEqual(["typing"]);
-    expect(edits.some((message) => message.text.includes("Working..."))).toBe(true);
+    expect(sends.some((message) => message.text === "Working..." || message.text === "Wrapping up...")).toBe(false);
     expect(sends.some((message) => message.text.includes("Tool call:"))).toBe(false);
     const final = sends.at(-1)!;
     expect(final.text).toContain("Saved it.");

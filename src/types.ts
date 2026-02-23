@@ -33,7 +33,6 @@ export interface TelegramMessage {
 export interface SessionRequest {
   updateId: number;
   message: TelegramMessage;
-  progressMessageId?: number;
 }
 
 export type ProgressMode = "compact" | "verbose" | "debug";

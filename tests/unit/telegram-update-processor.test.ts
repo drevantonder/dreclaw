@@ -21,7 +21,6 @@ function loadFixture(name: string): unknown {
 function makeDeps() {
   const seen = new Set<number>();
   const sendTyping = vi.fn(async () => {});
-  const sendProgressMessage = vi.fn(async () => 77);
   const runSession = vi.fn(async (request: SessionRequest): Promise<SessionResponse> => {
     const text = request.message.text ?? request.message.caption ?? "";
     if (text === "/status") return { ok: true, text: "model: gpt-5.3-codex" };
@@ -32,7 +31,6 @@ function makeDeps() {
   return {
     runSession,
     sendTyping,
-    sendProgressMessage,
     markUpdateSeen: async (updateId: number) => {
       if (seen.has(updateId)) return false;
       seen.add(updateId);
@@ -56,11 +54,7 @@ describe("processTelegramUpdate", () => {
     }
     expect(deps.sendTyping).toHaveBeenCalledTimes(1);
     expect(deps.sendTyping).toHaveBeenCalledWith(777);
-    expect(deps.sendProgressMessage).toHaveBeenCalledTimes(1);
-    expect(deps.sendProgressMessage).toHaveBeenCalledWith(777, "Working...");
     expect(deps.runSession).toHaveBeenCalledTimes(1);
-    const firstCall = deps.runSession.mock.calls[0][0];
-    expect(firstCall.progressMessageId).toBe(77);
   });
 
   it("handles /status message", async () => {
@@ -74,7 +68,6 @@ describe("processTelegramUpdate", () => {
     if (result.status === "reply") {
       expect(result.reply.text).toContain("model:");
     }
-    expect(deps.sendProgressMessage).toHaveBeenCalledTimes(0);
   });
 
   it("handles /reset message", async () => {
@@ -88,7 +81,6 @@ describe("processTelegramUpdate", () => {
     if (result.status === "reply") {
       expect(result.reply.text).toContain("Session reset");
     }
-    expect(deps.sendProgressMessage).toHaveBeenCalledTimes(0);
   });
 
   it("dedupes duplicate update ids", async () => {

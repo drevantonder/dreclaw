@@ -215,7 +215,6 @@ export class SessionRuntime implements DurableObject {
     if (eventTasks.length) {
       await Promise.all(eventTasks);
     }
-    await shell.flush();
     if (this.shouldShowThinking()) {
       await progress.sendThinkingSummary(readFinalAssistantThinking(agent.state.messages));
     }
@@ -455,7 +454,7 @@ async function executeSessionTool(
   args: Record<string, unknown>,
   options?: { timeoutMs?: number },
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
-  const runner = runTool({ name, args }, { shell, deferPersistence: true });
+  const runner = runTool({ name, args }, { shell });
   const result = options?.timeoutMs ? await withTimeout(runner, options.timeoutMs) : await runner;
   const text = truncateForLog(result.output || result.error || "(no output)", 2000) || "(no output)";
 
