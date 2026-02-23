@@ -6,14 +6,22 @@ import { TOOL_SPECS } from "./tool-schema";
 import { runTool, SessionShell } from "./tools";
 import { fetchImageAsDataUrl } from "./telegram";
 
+type SessionHistoryEntry = { role: "user" | "assistant" | "tool"; content: string };
+
 interface SessionState {
-  history: Array<{ role: "user" | "assistant"; content: string }>;
+  history: SessionHistoryEntry[];
 }
 
 interface RuntimeConfig {
   model: string;
   baseUrl: string;
   apiKey: string;
+}
+
+interface AgentRunResult {
+  finalText: string;
+  toolErrors: string[];
+  toolEvents: string[];
 }
 
 export class SessionRuntime implements DurableObject {
@@ -45,6 +53,8 @@ export class SessionRuntime implements DurableObject {
     } catch (error) {
       const message = compactErrorMessage(error);
       console.error("session-run-failed", { sessionId, message });
+      this.pushHistory({ role: "assistant", content: `Failed: ${message}` });
+      await this.save();
       await finishRun(this.env.DRECLAW_DB, runId, message);
       return Response.json({ ok: false, text: `Failed: ${message}` } satisfies SessionResponse);
     }
@@ -100,20 +110,30 @@ export class SessionRuntime implements DurableObject {
 
     const runtime = this.getRuntimeConfig();
 
-    const finalText = await this.runAgentLoop(shell, runtime, text, imageBlocks);
-    this.stateData.history.push({ role: "user", content: text || "[image]" });
-    this.stateData.history.push({ role: "assistant", content: finalText });
-    if (this.stateData.history.length > 24) this.stateData.history = this.stateData.history.slice(-24);
+    const run = await this.runAgentLoop(shell, runtime, text, imageBlocks);
+    const responseText = formatUserFacingResponse(run.finalText, run.toolEvents);
+    this.pushHistory({ role: "user", content: text || "[image]" });
+    for (const toolError of run.toolErrors) {
+      this.pushHistory({ role: "tool", content: toolError });
+    }
+    this.pushHistory({ role: "assistant", content: responseText });
 
     await this.save();
     await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, runtime.model, true);
-    return { ok: true, text: finalText };
+    return { ok: true, text: responseText };
   }
 
-  private async runAgentLoop(shell: SessionShell, runtime: RuntimeConfig, userText: string, imageBlocks: string[]): Promise<string> {
+  private async runAgentLoop(
+    shell: SessionShell,
+    runtime: RuntimeConfig,
+    userText: string,
+    imageBlocks: string[],
+  ): Promise<AgentRunResult> {
     let activeModel = runtime.model;
     const fallbackModel = resolveFallbackModel(runtime.model);
     const messages: ModelMessage[] = buildModelMessages(this.stateData.history, userText, imageBlocks);
+    const toolErrors: string[] = [];
+    const toolEvents: string[] = [];
 
     for (let i = 0; i < 6; i += 1) {
       let completion;
@@ -143,7 +163,7 @@ export class SessionRuntime implements DurableObject {
 
       if (!completion.toolCalls.length) {
         const text = completion.text.trim();
-        return text || "(empty response)";
+        return { finalText: text || "(empty response)", toolErrors, toolEvents };
       }
 
       messages.push({
@@ -161,6 +181,7 @@ export class SessionRuntime implements DurableObject {
 
       for (const call of completion.toolCalls) {
         const result = await runTool({ name: call.name, args: call.args }, { shell });
+        toolEvents.push(formatToolEvent(call.name, call.args, result.ok, result.output, result.error));
         const toolResponse = [
           `tool=${call.name}`,
           `ok=${result.ok ? "true" : "false"}`,
@@ -174,11 +195,17 @@ export class SessionRuntime implements DurableObject {
 
         if (!result.ok) {
           console.error("tool-call-failed", { tool: call.name, error: result.error });
+          toolErrors.push(toolResponse);
         }
       }
     }
 
-    return "Reached tool loop limit.";
+    return { finalText: "Reached tool loop limit.", toolErrors, toolEvents };
+  }
+
+  private pushHistory(entry: SessionHistoryEntry): void {
+    this.stateData.history.push(entry);
+    if (this.stateData.history.length > 24) this.stateData.history = this.stateData.history.slice(-24);
   }
 
   private async loadImages(message: SessionRequest["message"]): Promise<string[]> {
@@ -228,8 +255,35 @@ function compactErrorMessage(error: unknown): string {
   return `${compact.slice(0, 319)}…`;
 }
 
+function formatToolEvent(
+  name: string,
+  args: Record<string, unknown>,
+  ok: boolean,
+  output: string,
+  error?: string,
+): string {
+  const argsText = truncateForLog(JSON.stringify(args), 180);
+  const status = ok ? "ok" : "failed";
+  const detail = ok ? truncateForLog(output, 220) : truncateForLog(error || output || "error", 220);
+  return `${name} ${argsText} -> ${status}${detail ? `: ${detail}` : ""}`;
+}
+
+function formatUserFacingResponse(finalText: string, toolEvents: string[]): string {
+  const response = finalText.trim() || "(empty response)";
+  if (!toolEvents.length) return response;
+  const rendered = toolEvents.map((event) => `- ${event}`).join("\n");
+  return `${response}\n\nTools used:\n${rendered}`;
+}
+
+function truncateForLog(input: string, max: number): string {
+  const compact = String(input ?? "").replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  if (compact.length <= max) return compact;
+  return `${compact.slice(0, max - 1)}…`;
+}
+
 function buildModelMessages(
-  history: Array<{ role: "user" | "assistant"; content: string }>,
+  history: SessionHistoryEntry[],
   userText: string,
   imageBlocks: string[],
 ): ModelMessage[] {
@@ -237,7 +291,7 @@ function buildModelMessages(
     {
       role: "system",
       content:
-        "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. Proactively use /memory for durable, decision-useful context: read it when useful, write/update .md files when important new context appears, keep it clean by merging duplicates/removing stale info, and never store secrets or credentials.",
+        "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. If a tool fails, briefly explain what failed, then recover or propose the next best action. Proactively use /memory for durable, decision-useful context: read it when useful, write/update .md files when important new context appears, keep it clean by merging duplicates/removing stale info, and never store secrets or credentials.",
     },
   ];
 

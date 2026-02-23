@@ -168,12 +168,13 @@ function toContext(
     }
 
     if (message.role === "tool") {
+      const toolText = String(message.content ?? "");
       contextMessages.push({
         role: "toolResult",
         toolCallId: message.tool_call_id || "unknown-tool-call",
         toolName: "tool",
-        content: [{ type: "text", text: String(message.content ?? "") }],
-        isError: false,
+        content: [{ type: "text", text: toolText }],
+        isError: /(^|\n)ok=false(\n|$)/.test(toolText),
         timestamp: Date.now(),
       });
     }
