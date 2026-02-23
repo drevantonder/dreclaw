@@ -8,9 +8,15 @@ importers:
 
   .:
     dependencies:
+      '@mariozechner/pi-agent-core':
+        specifier: ^0.54.2
+        version: 0.54.2(ws@8.19.0)(zod@3.25.76)
       '@mariozechner/pi-ai':
         specifier: ^0.54.2
         version: 0.54.2(ws@8.19.0)(zod@3.25.76)
+      '@sinclair/typebox':
+        specifier: ^0.34.48
+        version: 0.34.48
       just-bash:
         specifier: ^2.10.2
         version: 2.10.2
@@ -366,6 +372,10 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+
+  '@mariozechner/pi-agent-core@0.54.2':
+    resolution: {integrity: sha512-dSg5tl3SGdrTFeTxfifvHjZ39M8k4jQ0ogTDtVeP7Pi3A3Whw4W1o6pYzTjX285CLxxqKiJS6MkwoElQHFwH1A==}
+    engines: {node: '>=20.0.0'}
 
   '@mariozechner/pi-ai@0.54.2':
     resolution: {integrity: sha512-QKQV8iT7afwdaOiLDPTPyQcsGw4ulxBjAI0GvgvowAuqy9UbDeKFSdQYLmjVt7CtnJD1Z8zMjQQ4SLigdZ6dRQ==}
@@ -2225,6 +2235,18 @@ snapshots:
       wrap-ansi-cjs: wrap-ansi@7.0.0
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
+
+  '@mariozechner/pi-agent-core@0.54.2(ws@8.19.0)(zod@3.25.76)':
+    dependencies:
+      '@mariozechner/pi-ai': 0.54.2(ws@8.19.0)(zod@3.25.76)
+    transitivePeerDependencies:
+      - '@modelcontextprotocol/sdk'
+      - aws-crt
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+      - ws
+      - zod
 
   '@mariozechner/pi-ai@0.54.2(ws@8.19.0)(zod@3.25.76)':
     dependencies:

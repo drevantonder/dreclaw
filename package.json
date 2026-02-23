@@ -19,7 +19,9 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@mariozechner/pi-agent-core": "^0.54.2",
     "@mariozechner/pi-ai": "^0.54.2",
+    "@sinclair/typebox": "^0.34.48",
     "just-bash": "^2.10.2"
   }
 }

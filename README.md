@@ -28,7 +28,7 @@ flowchart TD
 
 - Worker verifies Telegram requests and routes updates.
 - Durable Object serializes turns.
-- Model loop runs in Worker and drives tool calls.
+- Agent loop runs via `@mariozechner/pi-agent-core` and drives tool calls.
 - Files/memory/scripts persist in R2.
 - Auth is `OPENCODE_ZEN_API_KEY` Worker secret.
 

@@ -9,7 +9,7 @@ type MockContext = {
 };
 
 type MockOptions = {
-  reasoningEffort?: string;
+  thinkingLevel?: string;
 };
 
 type MockAssistant = {
@@ -18,36 +18,130 @@ type MockAssistant = {
   errorMessage?: string;
 };
 
-const { modelCallContext, modelCallOptions, modelQueue, piCompleteMock } = vi.hoisted(() => {
+const { modelCallContext, modelCallOptions, modelQueue } = vi.hoisted(() => {
   const callContext: MockContext[] = [];
   const callOptions: MockOptions[] = [];
   const queue: Array<MockAssistant | Error | ((context: MockContext) => MockAssistant | Error)> = [];
-  const completeMock = vi.fn(async (_model: unknown, context: MockContext, options: MockOptions) => {
-    callContext.push(context);
-    callOptions.push(options ?? {});
-    const next = queue.shift();
-    if (!next) throw new Error("Missing mocked model response");
-
-    const resolved = typeof next === "function" ? next(context) : next;
-    if (resolved instanceof Error) throw resolved;
-    return resolved;
-  });
   return {
     modelCallContext: callContext,
     modelCallOptions: callOptions,
     modelQueue: queue,
-    piCompleteMock: completeMock,
   };
 });
 
 vi.mock("@mariozechner/pi-ai", () => ({
-  complete: piCompleteMock,
   getModel: (_provider: string, id: string) => ({
     id,
     name: id,
+    provider: "opencode",
+    api: "openai-completions",
     baseUrl: "https://opencode.ai/zen/v1",
   }),
 }));
+
+vi.mock("@mariozechner/pi-agent-core", () => {
+  class MockAgent {
+    state: { messages: Array<Record<string, unknown>>; thinkingLevel?: string };
+
+    private listeners = new Set<(event: Record<string, unknown>) => void>();
+
+    constructor(options?: { initialState?: { systemPrompt?: string; messages?: Array<Record<string, unknown>>; tools?: Array<Record<string, unknown>>; thinkingLevel?: string } }) {
+      this.state = {
+        messages: [...(options?.initialState?.messages ?? [])],
+        thinkingLevel: options?.initialState?.thinkingLevel,
+      };
+      (this as unknown as { __systemPrompt?: string }).__systemPrompt = options?.initialState?.systemPrompt ?? "";
+      (this as unknown as { __tools?: Array<Record<string, unknown>> }).__tools = options?.initialState?.tools ?? [];
+    }
+
+    subscribe(listener: (event: Record<string, unknown>) => void) {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    }
+
+    private emit(event: Record<string, unknown>) {
+      for (const listener of this.listeners) listener(event);
+    }
+
+    async prompt(input: string) {
+      const userMessage = {
+        role: "user",
+        content: [{ type: "text", text: input }],
+        timestamp: Date.now(),
+      };
+      this.state.messages.push(userMessage);
+
+      while (true) {
+        const context: MockContext = {
+          systemPrompt: (this as unknown as { __systemPrompt?: string }).__systemPrompt ?? "",
+          messages: this.state.messages,
+          tools: (this as unknown as { __tools?: Array<Record<string, unknown>> }).__tools ?? [],
+        };
+        modelCallContext.push(context);
+        modelCallOptions.push({ thinkingLevel: this.state.thinkingLevel });
+
+        const next = modelQueue.shift();
+        if (!next) throw new Error("Missing mocked model response");
+        const resolved = typeof next === "function" ? next(context) : next;
+        if (resolved instanceof Error) throw resolved;
+
+        const assistantMessage = {
+          role: "assistant",
+          content: resolved.content,
+          timestamp: Date.now(),
+        };
+        this.emit({ type: "message_start", message: assistantMessage });
+        for (const block of resolved.content) {
+          if (block.type === "thinking") {
+            this.emit({
+              type: "message_update",
+              message: assistantMessage,
+              assistantMessageEvent: { type: "thinking_delta", delta: block.thinking ?? "" },
+            });
+          }
+        }
+        this.emit({ type: "message_end", message: assistantMessage });
+        this.state.messages.push(assistantMessage);
+
+        const toolCalls = resolved.content.filter((block) => block.type === "toolCall");
+        for (const toolCall of toolCalls) {
+          const toolArgs = (toolCall.arguments ?? {}) as Record<string, unknown>;
+          this.emit({
+            type: "tool_execution_start",
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            args: toolArgs,
+          });
+          const isReadMissing = toolCall.name === "read" && toolArgs.path === "/missing.md";
+          const resultText = isReadMissing
+            ? "tool=read\nok=false\nerror=ENOENT: no such file or directory, open '/missing.md'"
+            : "ok";
+          this.emit({
+            type: "tool_execution_end",
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            result: { content: [{ type: "text", text: resultText }], details: {} },
+            isError: isReadMissing,
+          });
+          this.state.messages.push({
+            role: "toolResult",
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            content: [{ type: "text", text: resultText }],
+            isError: isReadMissing,
+            timestamp: Date.now(),
+          });
+        }
+
+        if (resolved.stopReason === "toolUse") continue;
+        if (resolved.stopReason === "endTurn") return;
+        throw new Error(resolved.errorMessage || "Agent failed");
+      }
+    }
+  }
+
+  return { Agent: MockAgent };
+});
 
 const app = worker as unknown as {
   fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response>;
@@ -185,12 +279,7 @@ describe("conversation e2e", () => {
         content: [{ type: "text", text: "I could not read that file." }],
       },
       (context: MockContext) => {
-        const hasToolError = context.messages.some((message) => {
-          if (message.role !== "toolResult") return false;
-          if (message.isError !== true) return false;
-          const text = JSON.stringify(message.content ?? "");
-          return text.includes("tool=read") && text.includes("ok=false");
-        });
+        const hasToolError = context.systemPrompt.includes("tool=read") && context.systemPrompt.includes("ok=false");
         expect(hasToolError).toBe(true);
         return {
           stopReason: "endTurn",
@@ -227,7 +316,7 @@ describe("conversation e2e", () => {
     await callWebhook(env, 4006, "think then answer");
 
     const lastCall = modelCallOptions.at(-1);
-    expect(lastCall?.reasoningEffort).toBe("medium");
+    expect(lastCall?.thinkingLevel).toBe("medium");
     expect(sends.some((message) => message.text.includes("Thinking:"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Done.");
   });
@@ -238,13 +327,8 @@ describe("conversation e2e", () => {
 
     modelQueue.push(
       new Error("boom"),
-      new Error("boom"),
       (context: MockContext) => {
-        const hasPriorFailure = context.messages.some((message) => {
-          if (message.role !== "assistant") return false;
-          const content = JSON.stringify(message.content ?? "");
-          return content.includes("Failed: boom");
-        });
+        const hasPriorFailure = context.systemPrompt.includes("Failed: boom");
         expect(hasPriorFailure).toBe(true);
         return {
           stopReason: "endTurn",

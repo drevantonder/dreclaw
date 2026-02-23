@@ -1,8 +1,9 @@
 import { DEFAULT_BASE_URL, VFS_ROOT, type Env, type ProgressMode, type SessionRequest, type SessionResponse } from "./types";
+import { Agent, type AgentEvent, type AgentTool } from "@mariozechner/pi-agent-core";
+import { getModel as piGetModel, type ImageContent } from "@mariozechner/pi-ai";
+import { Type } from "@sinclair/typebox";
 import { finishRun, startRun, upsertSessionMeta } from "./db";
 import { R2FilesystemService } from "./filesystem";
-import { getModel, type ModelMessage } from "./model";
-import { TOOL_SPECS } from "./tool-schema";
 import { runTool, SessionShell } from "./tools";
 import { editTelegramMessage, fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
 
@@ -33,6 +34,9 @@ interface ToolEvent {
   ok: boolean;
   detail: string;
 }
+
+const SYSTEM_PROMPT =
+  "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. If a tool fails, briefly explain what failed, then recover or propose the next best action. Proactively use /memory for durable, decision-useful context: read it when useful, write/update .md files when important new context appears, keep it clean by merging duplicates/removing stale info, and never store secrets or credentials.";
 
 export class SessionRuntime implements DurableObject {
   private readonly state: DurableObjectState;
@@ -176,88 +180,72 @@ export class SessionRuntime implements DurableObject {
     imageBlocks: string[],
     progress: TelegramProgressReporter,
   ): Promise<AgentRunResult> {
-    let activeModel = runtime.model;
-    const fallbackModel = resolveFallbackModel(runtime.model);
-    const messages: ModelMessage[] = buildModelMessages(this.stateData.history, userText, imageBlocks);
+    const model = resolvePiModel(runtime.model, runtime.baseUrl);
+    const historyContext = renderHistoryContext(this.stateData.history);
+    const tools = createAgentTools(shell);
+    const agent = new Agent({
+      initialState: {
+        systemPrompt: historyContext ? `${SYSTEM_PROMPT}\n\nRecent context:\n${historyContext}` : SYSTEM_PROMPT,
+        model,
+        thinkingLevel: this.shouldShowThinking() ? "medium" : "off",
+        tools,
+      },
+      getApiKey: async () => runtime.apiKey,
+      transport: "sse",
+    });
     const toolErrors: string[] = [];
     const toolEvents: ToolEvent[] = [];
 
+    agent.subscribe((event: AgentEvent) => {
+      void this.handleAgentEvent(event, progress, toolEvents, toolErrors);
+    });
+
     await progress.setStatus("Working...", true);
+    const images = imageBlocks.map(toPiImageContent).filter((item): item is ImageContent => Boolean(item));
+    await agent.prompt(userText || "[image message]", images);
+    await progress.setStatus("Wrapping up...", true);
 
-    for (let i = 0; i < 6; i += 1) {
-      let completion;
-      try {
-        completion = await getModel(activeModel).complete({
-          apiKey: runtime.apiKey,
-          messages,
-          tools: [...TOOL_SPECS],
-          baseUrl: runtime.baseUrl,
-          transport: "sse",
-        });
-      } catch (error) {
-        if (fallbackModel && activeModel !== fallbackModel && isRateLimitError(error)) {
-          console.warn("model-rate-limited-fallback", { from: activeModel, to: fallbackModel });
-          activeModel = fallbackModel;
-          completion = await getModel(activeModel).complete({
-            apiKey: runtime.apiKey,
-            messages,
-            tools: [...TOOL_SPECS],
-            baseUrl: runtime.baseUrl,
-            transport: "sse",
-          });
-        } else {
-          throw error;
-        }
-      }
+    const finalText = readFinalAssistantText(agent.state.messages);
+    return { finalText: finalText || "(empty response)", toolErrors, toolEvents };
+  }
 
-      for (const block of completion.thinking) {
-        await progress.onThinking(block);
-      }
-
-      if (!completion.toolCalls.length) {
-        const text = completion.text.trim();
-        await progress.setStatus("Wrapping up...", true);
-        return { finalText: text || "(empty response)", toolErrors, toolEvents };
-      }
-
-      messages.push({
-        role: "assistant",
-        content: completion.text || "",
-        tool_calls: completion.toolCalls.map((call) => ({
-          id: call.id,
-          type: "function",
-          function: {
-            name: call.name,
-            arguments: call.rawArguments,
-          },
-        })),
-      });
-
-      for (const call of completion.toolCalls) {
-        await progress.onToolStart(call.name, call.args);
-        const result = await runTool({ name: call.name, args: call.args }, { shell });
-        const toolEvent = buildToolEvent(call.name, result.ok, result.output, result.error);
-        toolEvents.push(toolEvent);
-        const toolResponse = [
-          `tool=${call.name}`,
-          `ok=${result.ok ? "true" : "false"}`,
-          result.error ? `error=${result.error}` : "",
-          `output=${result.output || ""}`,
-        ]
-          .filter(Boolean)
-          .join("\n");
-
-        messages.push({ role: "tool", content: toolResponse, tool_call_id: call.id });
-        await progress.onToolResult(call.name, result.ok, result.output, result.error);
-
-        if (!result.ok) {
-          console.error("tool-call-failed", { tool: call.name, error: result.error });
-          toolErrors.push(toolResponse);
-        }
-      }
+  private async handleAgentEvent(
+    event: AgentEvent,
+    progress: TelegramProgressReporter,
+    toolEvents: ToolEvent[],
+    toolErrors: string[],
+  ): Promise<void> {
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_delta") {
+      await progress.onThinking(event.assistantMessageEvent.delta || "");
+      return;
     }
 
-    return { finalText: "Reached tool loop limit.", toolErrors, toolEvents };
+    if (event.type === "tool_execution_start") {
+      await progress.onToolStart(event.toolName, (event.args as Record<string, unknown>) ?? {});
+      return;
+    }
+
+    if (event.type !== "tool_execution_end") {
+      return;
+    }
+
+    const detail = extractToolContentText(event.result);
+    const ok = !event.isError;
+    toolEvents.push(buildToolEvent(event.toolName, ok, detail, ok ? undefined : detail));
+    await progress.onToolResult(event.toolName, ok, detail, ok ? undefined : detail);
+
+    if (!ok) {
+      const toolResponse = [
+        `tool=${event.toolName}`,
+        "ok=false",
+        detail ? `error=${detail}` : "",
+        `output=${detail || ""}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      toolErrors.push(toolResponse);
+      console.error("tool-call-failed", { tool: event.toolName, error: detail || "tool failed" });
+    }
   }
 
   private pushHistory(entry: SessionHistoryEntry): void {
@@ -302,14 +290,20 @@ export class SessionRuntime implements DurableObject {
   }
 }
 
-function isRateLimitError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  return message.includes("429") || message.toLowerCase().includes("rate limit");
-}
-
-function resolveFallbackModel(model: string): string | null {
-  if (!model.includes("-free")) return null;
-  return model.replace(/-free$/i, "");
+function resolvePiModel(model: string, baseUrl: string) {
+  try {
+    return {
+      ...piGetModel("opencode", model as "kimi-k2.5"),
+      baseUrl,
+    };
+  } catch {
+    return {
+      ...piGetModel("opencode", "kimi-k2.5"),
+      id: model,
+      name: model,
+      baseUrl,
+    };
+  }
 }
 
 function compactErrorMessage(error: unknown): string {
@@ -367,6 +361,145 @@ function parseThinkingFlag(text: string): boolean | null {
 
 function unique(items: string[]): string[] {
   return [...new Set(items.filter(Boolean))];
+}
+
+function renderHistoryContext(history: SessionHistoryEntry[]): string {
+  const recent = history.slice(-10);
+  if (!recent.length) {
+    return "";
+  }
+  return recent
+    .map((entry) => `${entry.role}: ${truncateForLog(entry.content, 700)}`)
+    .join("\n");
+}
+
+function toPiImageContent(dataUrl: string): ImageContent | null {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) {
+    return null;
+  }
+  return {
+    type: "image",
+    data: parsed.data,
+    mimeType: parsed.mimeType,
+  };
+}
+
+function parseDataUrl(url: string): { mimeType: string; data: string } | null {
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(url.trim());
+  if (!match) {
+    return null;
+  }
+  return { mimeType: match[1], data: match[2] };
+}
+
+function createAgentTools(shell: SessionShell): AgentTool[] {
+  return [
+    {
+      name: "read",
+      label: "Read file",
+      description: "Read file content from session filesystem",
+      parameters: Type.Object({ path: Type.String() }),
+      execute: async (_toolCallId, params) => {
+        const data = params as { path: string };
+        return executeSessionTool(shell, "read", { path: data.path });
+      },
+    },
+    {
+      name: "write",
+      label: "Write file",
+      description: "Write file content to session filesystem",
+      parameters: Type.Object({ path: Type.String(), content: Type.String() }),
+      execute: async (_toolCallId, params) => {
+        const data = params as { path: string; content: string };
+        return executeSessionTool(shell, "write", { path: data.path, content: data.content });
+      },
+    },
+    {
+      name: "edit",
+      label: "Edit file",
+      description: "Replace text in a file",
+      parameters: Type.Object({ path: Type.String(), find: Type.String(), replace: Type.String() }),
+      execute: async (_toolCallId, params) => {
+        const data = params as { path: string; find: string; replace: string };
+        return executeSessionTool(shell, "edit", { path: data.path, find: data.find, replace: data.replace });
+      },
+    },
+    {
+      name: "bash",
+      label: "Run command",
+      description: "Run shell command in session filesystem",
+      parameters: Type.Object({ command: Type.String() }),
+      execute: async (_toolCallId, params) => {
+        const data = params as { command: string };
+        return executeSessionTool(shell, "bash", { command: data.command }, { timeoutMs: 15_000 });
+      },
+    },
+  ];
+}
+
+async function executeSessionTool(
+  shell: SessionShell,
+  name: "read" | "write" | "edit" | "bash",
+  args: Record<string, unknown>,
+  options?: { timeoutMs?: number },
+): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
+  const runner = runTool({ name, args }, { shell });
+  const result = options?.timeoutMs ? await withTimeout(runner, options.timeoutMs) : await runner;
+  const text = truncateForLog(result.output || result.error || "(no output)", 2000) || "(no output)";
+
+  if (!result.ok) {
+    throw new Error(result.error || text || "Tool failed");
+  }
+
+  return {
+    content: [{ type: "text", text }],
+    details: { ok: true },
+  };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`Tool timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+function extractToolContentText(result: unknown): string {
+  const content = (result as { content?: Array<{ type?: string; text?: string }> } | null)?.content;
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text ?? "")
+    .join("\n")
+    .trim();
+}
+
+function readFinalAssistantText(messages: unknown[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as { role?: string; content?: Array<{ type?: string; text?: string }> };
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) {
+      continue;
+    }
+    const text = message.content
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text ?? "")
+      .join("\n")
+      .trim();
+    if (text) {
+      return text;
+    }
+  }
+  return "";
 }
 
 class TelegramProgressReporter {
@@ -512,32 +645,4 @@ function truncateForLog(input: string, max: number): string {
   if (!compact) return "";
   if (compact.length <= max) return compact;
   return `${compact.slice(0, max - 1)}…`;
-}
-
-function buildModelMessages(
-  history: SessionHistoryEntry[],
-  userText: string,
-  imageBlocks: string[],
-): ModelMessage[] {
-  const messages: ModelMessage[] = [
-    {
-      role: "system",
-      content:
-        "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. If a tool fails, briefly explain what failed, then recover or propose the next best action. Proactively use /memory for durable, decision-useful context: read it when useful, write/update .md files when important new context appears, keep it clean by merging duplicates/removing stale info, and never store secrets or credentials.",
-    },
-  ];
-
-  for (const item of history.slice(-10)) {
-    messages.push({ role: item.role, content: item.content });
-  }
-
-  const content: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [
-    { type: "text", text: userText || "[image message]" },
-  ];
-  for (const image of imageBlocks) {
-    content.push({ type: "image_url", image_url: { url: image } });
-  }
-
-  messages.push({ role: "user", content });
-  return messages;
 }
