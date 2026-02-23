@@ -25,6 +25,9 @@ export interface ToolRuntimeContext {
 
 export class SessionShell {
   private bash: Bash | null = null;
+  private persistedFilePaths = new Set<string>();
+  private baselinePaths = new Set<string>();
+  private changedPaths = new Set<string>();
 
   constructor(private readonly fs: R2FilesystemService) {}
 
@@ -42,6 +45,7 @@ export class SessionShell {
     await this.ensureLoaded();
     const normalized = this.fs.normalizePath(path);
     await this.bash!.writeFile(normalized, content);
+    this.changedPaths.add(normalized);
     await this.syncToPersistence();
   }
 
@@ -51,13 +55,14 @@ export class SessionShell {
     const current = await this.bash!.fs.readFile(normalized, "utf8");
     if (!current.includes(find)) throw new Error(`Text not found in ${normalized}`);
     await this.bash!.writeFile(normalized, current.replace(find, replace));
+    this.changedPaths.add(normalized);
     await this.syncToPersistence();
   }
 
   async run(command: string): Promise<RunResult> {
     await this.ensureLoaded();
     const result = await this.bash!.exec(command, { cwd: VFS_ROOT, env: shellEnv() });
-    await this.syncToPersistence();
+    await this.syncToPersistence(this.collectCandidatePaths());
     return toRunResult({ success: result.exitCode === 0, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode });
   }
 
@@ -68,27 +73,47 @@ export class SessionShell {
     const persistedPaths = await this.fs.list(VFS_ROOT);
     for (const path of persistedPaths) {
       files[path] = await this.fs.read(path);
+      this.persistedFilePaths.add(path);
     }
 
     this.bash = new Bash({ files, cwd: VFS_ROOT, env: shellEnv() });
     await this.bash.exec("mkdir -p /.config /.cache /workspace", { cwd: VFS_ROOT, env: shellEnv() });
+    this.baselinePaths = new Set(this.bash.fs.getAllPaths().filter((path) => path.startsWith("/")));
   }
 
-  private async syncToPersistence(): Promise<void> {
+  private async syncToPersistence(extraPaths: Set<string> = new Set()): Promise<void> {
     if (!this.bash) return;
 
+    const targetPaths = new Set<string>([...this.persistedFilePaths, ...this.changedPaths, ...extraPaths]);
     const files: Record<string, Uint8Array> = {};
-    for (const path of this.bash.fs.getAllPaths()) {
-      if (!path.startsWith("/")) continue;
+    const nextPersisted = new Set<string>();
+    for (const path of targetPaths) {
       try {
         const stat = await this.bash.fs.stat(path);
         if (!stat.isFile) continue;
         files[path] = await this.bash.fs.readFileBuffer(path);
+        nextPersisted.add(path);
       } catch {
         continue;
       }
     }
     await this.fs.replaceAll(files);
+    this.persistedFilePaths = nextPersisted;
+    this.changedPaths.clear();
+  }
+
+  private collectCandidatePaths(): Set<string> {
+    if (!this.bash) return new Set();
+    const allPaths = this.bash.fs.getAllPaths().filter((path) => path.startsWith("/"));
+    if (allPaths.length <= 2000) return new Set(allPaths);
+
+    const candidates = new Set<string>();
+    for (const path of allPaths) {
+      if (!this.baselinePaths.has(path) || this.persistedFilePaths.has(path) || this.changedPaths.has(path)) {
+        candidates.add(path);
+      }
+    }
+    return candidates;
   }
 }
 

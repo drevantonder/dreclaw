@@ -137,6 +137,28 @@ describe("conversation e2e", () => {
     expect(final.text).toContain("-> ok");
   });
 
+  it("streams bash tool result and still sends final reply", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls -la /memory 2>/dev/null || echo \"No memory directory found\"" } }],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "No saved memories yet." }],
+      },
+    );
+
+    await callWebhook(env, 4010, "Can you see any memories?");
+
+    expect(sends.some((message) => message.text.includes("Tool call: bash"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool ok: bash") || message.text.includes("Tool error: bash"))).toBe(true);
+    expect(sends.at(-1)?.text).toContain("No saved memories yet.");
+  });
+
   it("persists tool errors in history so next turn can react", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
