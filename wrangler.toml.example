@@ -27,3 +27,11 @@ class_name = "SessionRuntime"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionRuntime"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Sandbox"]
+
+[[migrations]]
+tag = "v3"
+deleted_classes = ["Sandbox"]
