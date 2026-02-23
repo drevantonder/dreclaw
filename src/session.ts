@@ -1,13 +1,58 @@
 import { DEFAULT_MODEL, WORKSPACE_ROOT, type Env, type SessionRequest, type SessionResponse } from "./types";
-import { finishRun, startRun, upsertSessionMeta } from "./db";
-import { extractToolCall, runToolInSandbox } from "./tools";
+import { finishRun, getCredentialMap, startRun, upsertCredential, upsertSessionMeta } from "./db";
+import { getModel, type ModelMessage } from "./model";
+import { getOAuthApiKey, normalizeImportedCredential } from "./oauth";
+import { runToolInSandbox } from "./tools";
 import { fetchImageAsDataUrl } from "./telegram";
 import { getSandbox, type SandboxClient } from "@cloudflare/sandbox";
 
 interface SessionState {
-  history: Array<{ role: "user" | "assistant" | "tool"; content: string }>;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
   persistedReady?: boolean;
 }
+
+const TOOL_SPECS = [
+  {
+    name: "read",
+    description: "Read file content from active workspace",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "write",
+    description: "Write file content to active workspace",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, content: { type: "string" } },
+      required: ["path", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "edit",
+    description: "Replace text within a file",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" } },
+      required: ["path", "find", "replace"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "bash",
+    description: "Run shell command in /root/dreclaw",
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+      additionalProperties: false,
+    },
+  },
+] as const;
 
 export class SessionRuntime implements DurableObject {
   private readonly state: DurableObjectState;
@@ -21,9 +66,7 @@ export class SessionRuntime implements DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
-    if (request.method !== "POST") {
-      return new Response("Method not allowed", { status: 405 });
-    }
+    if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
     await this.load();
     const payload = (await request.json()) as SessionRequest;
@@ -65,92 +108,117 @@ export class SessionRuntime implements DurableObject {
       this.stateData = { history: [] };
       await this.save();
       await this.checkpointSync(sandbox);
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.sandboxAuthReady(sandbox));
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.workerAuthReady());
       return { ok: true, text: "Session reset. Context cleared." };
     }
 
     if (text.startsWith("/status")) {
-      const authReady = await this.sandboxAuthReady(sandbox);
       const summary = [
         `model: ${DEFAULT_MODEL}`,
         "session: healthy",
         `workspace: ${WORKSPACE_ROOT}`,
         `persist_sync: ${this.stateData.persistedReady ? "ready" : "degraded"}`,
-        `provider_auth: ${authReady ? "present" : "missing"}`,
+        `provider_auth: ${(await this.workerAuthReady()) ? "present" : "missing"}`,
         `history_messages: ${this.stateData.history.length}`,
       ].join("\n");
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, authReady);
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.workerAuthReady());
       return { ok: true, text: summary };
-    }
-
-    if (text.startsWith("/tool ")) {
-      return { ok: false, text: "`/tool` is disabled in strict v0. Tools are model-internal only." };
     }
 
     if (text.startsWith("/exec ")) {
       const command = text.slice(6).trim();
+      const authCommand = await this.handleOwnerAuthCommand(command, sessionId, payload.message.chat.id);
+      if (authCommand) return authCommand;
+
       const result = await this.execInSandbox(command, sandbox);
       await this.checkpointSync(sandbox);
-      const authReady = await this.sandboxAuthReady(sandbox);
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, authReady);
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.workerAuthReady());
       if (result.ok) return { ok: true, text: result.output || "" };
       return { ok: false, text: result.output || `exec error: ${result.error}` };
     }
 
+    const credentials = await getCredentialMap(this.env.DRECLAW_DB);
+    const auth = this.env.OPENAI_API_KEY
+      ? { apiKey: this.env.OPENAI_API_KEY }
+      : await getOAuthApiKey("openai-codex", credentials);
+    if ("updated" in auth && auth.updated) await upsertCredential(this.env.DRECLAW_DB, auth.updated);
+
     this.stateData.history.push({ role: "user", content: text || "[image]" });
-    const finalText = await this.runAgentLoop(text, imageBlocks, sandbox);
+    const finalText = await this.runAgentLoop(sandbox, auth.apiKey, text, imageBlocks);
     this.stateData.history.push({ role: "assistant", content: finalText });
-    if (this.stateData.history.length > 20) this.stateData.history = this.stateData.history.slice(-20);
+    if (this.stateData.history.length > 24) this.stateData.history = this.stateData.history.slice(-24);
 
     await this.save();
     await this.checkpointSync(sandbox);
-    await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.sandboxAuthReady(sandbox));
+    await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, true);
     return { ok: true, text: finalText };
   }
 
-  private async runAgentLoop(text: string, imageBlocks: string[], sandbox: SandboxClient): Promise<string> {
-    if (!(await this.sandboxAuthReady(sandbox))) {
-      return ["Auth not ready for provider-backed pi-ai.", "Run: /exec pi-ai login openai-codex"].join("\n");
-    }
+  private async runAgentLoop(
+    sandbox: SandboxClient,
+    apiKey: string,
+    userText: string,
+    imageBlocks: string[],
+  ): Promise<string> {
+    const model = getModel("openai-codex", DEFAULT_MODEL);
+    const messages: ModelMessage[] = buildModelMessages(this.stateData.history, userText, imageBlocks);
 
-    let latest = text;
     for (let i = 0; i < 6; i += 1) {
-      const modelOutput = await this.invokeModel(sandbox, latest, imageBlocks);
-      const toolCall = extractToolCall(modelOutput);
-      if (!toolCall) return sanitizeModelOutput(modelOutput);
-
-      const result = await runToolInSandbox(toolCall, sandbox);
-      this.stateData.history.push({ role: "assistant", content: modelOutput });
-      this.stateData.history.push({
-        role: "tool",
-        content: [`Tool: ${toolCall.name}`, result.ok ? "Status: ok" : `Status: error (${result.error ?? "unknown"})`, `Output:\n${result.output || "(empty)"}`].join("\n"),
+      const completion = await model.complete({
+        apiKey,
+        apiBaseUrl: this.env.OPENAI_API_BASE_URL,
+        messages,
+        tools: [...TOOL_SPECS],
       });
-      if (!result.ok) return `Tool ${toolCall.name} failed: ${result.error ?? "unknown"}`;
-      latest = `Tool ${toolCall.name} succeeded.`;
+
+      if (!completion.toolCalls.length) {
+        const text = completion.text.trim();
+        return text || "(empty response)";
+      }
+
+      for (const call of completion.toolCalls) {
+        const result = await runToolInSandbox({ name: call.name, args: call.args }, sandbox);
+        const toolResponse = [
+          `tool=${call.name}`,
+          `ok=${result.ok ? "true" : "false"}`,
+          result.error ? `error=${result.error}` : "",
+          `output=${result.output || ""}`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        messages.push({ role: "assistant", content: completion.text || `Calling ${call.name}` });
+        messages.push({ role: "tool", content: toolResponse, tool_call_id: call.id });
+
+        if (!result.ok) {
+          console.error("tool-call-failed", { tool: call.name, error: result.error });
+        }
+      }
     }
 
     return "Reached tool loop limit.";
   }
 
-  private async invokeModel(sandbox: SandboxClient, userText: string, imageBlocks: string[]): Promise<string> {
-    const prompt = buildPrompt(this.stateData.history, userText, imageBlocks);
-    await sandbox.writeFile("/tmp/dreclaw_prompt.txt", prompt);
+  private async handleOwnerAuthCommand(command: string, sessionId: string, chatId: number): Promise<SessionResponse | null> {
+    if (!command.startsWith("auth ")) return null;
 
-    const command = [
-      "set -eo pipefail",
-      "MODEL='openai/gpt-5.3-codex'",
-      "if pi-ai chat --model \"$MODEL\" < /tmp/dreclaw_prompt.txt; then exit 0; fi",
-      "if pi-ai --model \"$MODEL\" < /tmp/dreclaw_prompt.txt; then exit 0; fi",
-      "pi-ai < /tmp/dreclaw_prompt.txt",
-    ].join("; ");
+    if (command === "auth status") {
+      const ready = await this.workerAuthReady();
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, chatId, DEFAULT_MODEL, ready);
+      return { ok: true, text: `Worker auth store: ${ready ? "ready" : "missing"}` };
+    }
 
-    const result = await sandbox.exec(`bash -lc ${shellQuote(command)}`, {
-      cwd: WORKSPACE_ROOT,
-      env: sandboxEnv(),
-    });
-    const output = [result.stdout ?? "", result.stderr ?? ""].filter(Boolean).join("\n").trim();
-    if (!result.success) throw new Error(output || "pi-ai inference failed");
-    return output;
+    if (command.startsWith("auth import ")) {
+      const encoded = command.slice("auth import ".length).trim();
+      if (!encoded) return { ok: false, text: "Usage: /exec auth import <base64-json>" };
+
+      const json = decodeBase64Url(encoded);
+      const credential = normalizeImportedCredential(JSON.parse(json));
+      await upsertCredential(this.env.DRECLAW_DB, credential);
+      return { ok: true, text: `Imported credential for ${credential.provider}.` };
+    }
+
+    return { ok: false, text: "Unknown auth command. Use /exec auth status or /exec auth import <base64-json>." };
   }
 
   private async loadImages(message: SessionRequest["message"]): Promise<string[]> {
@@ -161,21 +229,16 @@ export class SessionRuntime implements DurableObject {
     return dataUrl ? [dataUrl] : [];
   }
 
-  private async sandboxAuthReady(sandbox: SandboxClient): Promise<boolean> {
-    try {
-      const state = await sandbox.exists(`${WORKSPACE_ROOT}/.pi-ai/auth.json`);
-      return Boolean(state.exists);
-    } catch {
-      return false;
-    }
+  private async workerAuthReady(): Promise<boolean> {
+    if (this.env.OPENAI_API_KEY) return true;
+    const map = await getCredentialMap(this.env.DRECLAW_DB);
+    return Boolean(map["openai-codex"]?.accessToken);
   }
 
   private async execInSandbox(command: string, sandbox: SandboxClient): Promise<{ ok: boolean; output: string; error?: string }> {
     if (!command.trim()) return { ok: true, output: "" };
     const result = await sandbox.exec(`bash -lc ${shellQuote(command)}`, { cwd: WORKSPACE_ROOT, env: sandboxEnv() });
-    const stdout = result.stdout ?? "";
-    const stderr = result.stderr ?? "";
-    const merged = [stdout, stderr].filter(Boolean).join("\n").trim();
+    const merged = [result.stdout ?? "", result.stderr ?? ""].filter(Boolean).join("\n").trim();
     if (result.success) return { ok: true, output: merged };
     const exitCode = typeof result.exitCode === "number" ? ` (exit ${result.exitCode})` : "";
     return { ok: false, output: merged || `Command failed${exitCode}`, error: `Command failed${exitCode}` };
@@ -188,13 +251,13 @@ export class SessionRuntime implements DurableObject {
     });
 
     const mounted = await this.mountPersistIfConfigured(sandbox, sessionId);
-    if (mounted) {
-      const restore = await sandbox.exec("bash -lc 'mkdir -p /persist/dreclaw /root/dreclaw && cp -a /persist/dreclaw/. /root/dreclaw/ 2>/dev/null || true'", {
-        cwd: WORKSPACE_ROOT,
-        env: sandboxEnv(),
-      });
-      this.stateData.persistedReady = restore.success;
-    }
+    if (!mounted) return;
+
+    const restore = await sandbox.exec("bash -lc 'mkdir -p /persist/dreclaw /root/dreclaw && cp -a /persist/dreclaw/. /root/dreclaw/ 2>/dev/null || true'", {
+      cwd: WORKSPACE_ROOT,
+      env: sandboxEnv(),
+    });
+    this.stateData.persistedReady = restore.success;
   }
 
   private async checkpointSync(sandbox: SandboxClient): Promise<void> {
@@ -234,6 +297,34 @@ export class SessionRuntime implements DurableObject {
   }
 }
 
+function buildModelMessages(
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+  userText: string,
+  imageBlocks: string[],
+): ModelMessage[] {
+  const messages: ModelMessage[] = [
+    {
+      role: "system",
+      content:
+        "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls.",
+    },
+  ];
+
+  for (const item of history.slice(-10)) {
+    messages.push({ role: item.role, content: item.content });
+  }
+
+  const content: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [
+    { type: "text", text: userText || "[image message]" },
+  ];
+  for (const image of imageBlocks) {
+    content.push({ type: "image_url", image_url: { url: image } });
+  }
+
+  messages.push({ role: "user", content });
+  return messages;
+}
+
 function shellQuote(input: string): string {
   return `'${input.replace(/'/g, `'"'"'`)}'`;
 }
@@ -246,28 +337,8 @@ function sandboxEnv(): Record<string, string> {
   };
 }
 
-function buildPrompt(
-  history: Array<{ role: "user" | "assistant" | "tool"; content: string }>,
-  userText: string,
-  imageBlocks: string[],
-): string {
-  const recent = history.slice(-10).map((item) => `${item.role.toUpperCase()}: ${item.content}`).join("\n\n");
-  const imageText = imageBlocks.map((img, idx) => `image_${idx + 1}: ${img.slice(0, 12000)}${img.length > 12000 ? "..." : ""}`).join("\n");
-
-  return [
-    "You are dreclaw running strict v0.",
-    "Use tools only by returning strict JSON when needed:",
-    '{"tool":{"name":"read|write|edit|bash","args":{...}}}',
-    "If no tool needed, return final user-facing text only.",
-    "Do not echo user input.",
-    `Model: ${DEFAULT_MODEL}`,
-    recent ? `History:\n${recent}` : "History: (empty)",
-    `User:\n${userText || "[no text]"}`,
-    imageText ? `Images:\n${imageText}` : "Images: none",
-  ].join("\n\n");
-}
-
-function sanitizeModelOutput(output: string): string {
-  const trimmed = output.trim();
-  return trimmed || "(empty response)";
+function decodeBase64Url(value: string): string {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return atob(normalized + pad);
 }

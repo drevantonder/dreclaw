@@ -60,8 +60,15 @@ describe("telegram webhook e2e", () => {
 
   it("ignores duplicate update id", async () => {
     const { env } = createEnv();
-    const sendMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
-    vi.stubGlobal("fetch", sendMock);
+    const sends: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/sendMessage")) sends.push(url);
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }),
+    );
 
     const headers = {
       "content-type": "application/json",
@@ -72,10 +79,10 @@ describe("telegram webhook e2e", () => {
     await app.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
     await app.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
 
-    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(sends.length).toBe(1);
   });
 
-  it("supports pi-ai shorthand exec command", async () => {
+  it("supports worker auth import command", async () => {
     const { env } = createEnv();
     const sends: Array<{ body: unknown }> = [];
 
@@ -93,13 +100,18 @@ describe("telegram webhook e2e", () => {
         "content-type": "application/json",
         "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
       },
-      body: JSON.stringify(makeUpdate(1004, "/exec pi-ai openai-codex")),
+      body: JSON.stringify(
+        makeUpdate(
+          1004,
+          "/exec auth import eyJwcm92aWRlciI6Im9wZW5haS1jb2RleCIsImFjY2Vzc1Rva2VuIjoidG9rZW4ifQ",
+        ),
+      ),
     });
 
     const res = await app.fetch(req, env, {} as ExecutionContext);
     expect(res.status).toBe(200);
     const sent = sends[0].body as { text: string };
-    expect(sent.text).toContain("pi-ai login success");
+    expect(sent.text).toContain("Imported credential for openai-codex");
   });
 
   it("rejects invalid webhook secret", async () => {

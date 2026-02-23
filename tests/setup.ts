@@ -24,25 +24,6 @@ vi.mock("@cloudflare/sandbox", () => {
       const state = getState(name);
       return {
         exec: async (cmd: string) => {
-          if (cmd.includes("pi-ai login openai-codex") || cmd.includes("pi-ai openai-codex")) {
-            state.files.set("/root/dreclaw/.pi-ai/auth.json", JSON.stringify({ provider: "openai-codex" }));
-            return { success: true, stdout: "pi-ai login success", stderr: "", exitCode: 0 };
-          }
-          if (cmd.includes("pi-ai chat") || cmd.includes("pi-ai --model") || /\bpi-ai\b/.test(cmd)) {
-            const prompt = state.files.get("/tmp/dreclaw_prompt.txt") ?? "";
-            if (prompt.includes("52 * 100")) {
-              return { success: true, stdout: "5200", stderr: "", exitCode: 0 };
-            }
-            if (prompt.includes("/root/dreclaw")) {
-              return {
-                success: true,
-                stdout: '{"tool":{"name":"bash","args":{"command":"pwd"}}}',
-                stderr: "",
-                exitCode: 0,
-              };
-            }
-            return { success: true, stdout: "hello from model", stderr: "", exitCode: 0 };
-          }
           return { success: true, stdout: `ran: ${cmd}`, stderr: "", exitCode: 0 };
         },
         readFile: async (path: string) => {
