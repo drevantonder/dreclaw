@@ -96,7 +96,20 @@ vi.mock("@mariozechner/pi-agent-core", () => {
             this.emit({
               type: "message_update",
               message: assistantMessage,
-              assistantMessageEvent: { type: "thinking_delta", delta: block.thinking ?? "" },
+              assistantMessageEvent: { type: "thinking_start" },
+            });
+            const chunks = String(block.thinking ?? "").split(/(\s+)/).filter(Boolean);
+            for (const chunk of chunks) {
+              this.emit({
+                type: "message_update",
+                message: assistantMessage,
+                assistantMessageEvent: { type: "thinking_delta", delta: chunk },
+              });
+            }
+            this.emit({
+              type: "message_update",
+              message: assistantMessage,
+              assistantMessageEvent: { type: "thinking_end" },
             });
           }
         }
@@ -317,7 +330,8 @@ describe("conversation e2e", () => {
 
     const lastCall = modelCallOptions.at(-1);
     expect(lastCall?.thinkingLevel).toBe("medium");
-    expect(sends.some((message) => message.text.includes("Thinking:"))).toBe(true);
+    const thinkingMessages = sends.filter((message) => message.text.startsWith("Thinking:"));
+    expect(thinkingMessages.length).toBe(1);
     expect(sends.at(-1)?.text).toContain("Done.");
   });
 
