@@ -7,13 +7,25 @@ export class FakeD1 {
   readonly updates = new Set<number>();
   readonly sessions = new Map<string, { chatId: string; model: string; authReady: boolean }>();
   readonly runs = new Map<string, { sessionId: string; status: string; error: string | null }>();
+  readonly oauth = new Map<string, string>();
 
   prepare(sql: string) {
     return {
       bind: (...args: unknown[]) => ({
         run: async () => this.run(sql, args),
+        all: async () => this.all(sql),
       }),
+      all: async () => this.all(sql),
     };
+  }
+
+  private async all(sql: string): Promise<{ results: Array<{ provider: string; payload: string }> }> {
+    if (sql.includes("SELECT provider, payload FROM oauth_credentials")) {
+      return {
+        results: [...this.oauth.entries()].map(([provider, payload]) => ({ provider, payload })),
+      };
+    }
+    return { results: [] };
   }
 
   private async run(sql: string, args: unknown[]): Promise<SqlResult> {
@@ -54,6 +66,13 @@ export class FakeD1 {
         run.error = error;
       }
       return { meta: { changes: run ? 1 : 0 } };
+    }
+
+    if (sql.includes("INSERT INTO oauth_credentials")) {
+      const provider = String(args[0]);
+      const payload = String(args[1]);
+      this.oauth.set(provider, payload);
+      return { meta: { changes: 1 } };
     }
 
     return { meta: { changes: 0 } };
@@ -111,6 +130,8 @@ export function createEnv() {
     TELEGRAM_BOT_TOKEN: "test-bot-token",
     TELEGRAM_WEBHOOK_SECRET: "secret-1",
     TELEGRAM_ALLOWED_USER_ID: "42",
+    OPENAI_API_KEY: "test-openai-key",
+    OPENAI_API_BASE_URL: "https://api.openai.com",
     WORKSPACE_BUCKET_NAME: "dreclaw-workspace",
     R2_ENDPOINT: "https://example.r2.cloudflarestorage.com",
     R2_ACCESS_KEY_ID: "test-key",

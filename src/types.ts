@@ -5,6 +5,8 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_ALLOWED_USER_ID: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_API_BASE_URL?: string;
   WORKSPACE_BUCKET_NAME?: string;
   R2_ENDPOINT?: string;
   R2_ACCESS_KEY_ID?: string;
