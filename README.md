@@ -44,6 +44,14 @@ flowchart TD
 
 Copy `.env.example` to `.env` and fill values.
 
+Create local Wrangler config from template (not committed):
+
+```bash
+cp wrangler.toml.example wrangler.toml
+```
+
+Then set your own Cloudflare resource IDs in `wrangler.toml`.
+
 ### Deploy
 
 Use route from `.env` (keeps route out of repo config):
@@ -58,6 +66,14 @@ pnpm dlx wrangler deploy --route "${CF_WORKER_ROUTE}"
 - Message the bot in a private Telegram chat.
 - `/status` shows runtime/session/auth readiness.
 - `/reset` clears current session context.
+
+## Testing
+
+- Run full tests: `pnpm test`
+- Type-check: `pnpm check`
+- Preferred local strategy is unit-first with webhook fixtures in `tests/fixtures/telegram`.
+- Use `tests/unit/telegram-update-processor.test.ts` for behavior coverage.
+- Keep e2e tests thin for route + header wiring in `tests/e2e/webhook.e2e.test.ts`.
 
 ## Persistence model
 

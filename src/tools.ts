@@ -1,5 +1,6 @@
-import { WORKSPACE_ROOT, type RunResult, type ToolCall } from "./types";
-import type { SandboxClient } from "@cloudflare/sandbox";
+import { Bash } from "just-bash";
+import { R2FilesystemService } from "./filesystem";
+import { VFS_ROOT, type RunResult, type ToolCall } from "./types";
 
 export function extractToolCall(output: string): ToolCall | null {
   const trimmed = output.trim();
@@ -17,38 +18,104 @@ export function extractToolCall(output: string): ToolCall | null {
   return null;
 }
 
-export async function runToolInSandbox(tool: ToolCall, sandbox: SandboxClient): Promise<RunResult> {
-  try {
-    const env = sandboxEnv();
+export interface ToolRuntimeContext {
+  shell: SessionShell;
+}
 
+export class SessionShell {
+  private bash: Bash | null = null;
+
+  constructor(private readonly fs: R2FilesystemService) {}
+
+  normalizePath(path: string): string {
+    return this.fs.normalizePath(path);
+  }
+
+  async readText(path: string): Promise<string> {
+    await this.ensureLoaded();
+    const normalized = this.fs.normalizePath(path);
+    return this.bash!.fs.readFile(normalized, "utf8");
+  }
+
+  async writeText(path: string, content: string): Promise<void> {
+    await this.ensureLoaded();
+    const normalized = this.fs.normalizePath(path);
+    await this.bash!.writeFile(normalized, content);
+    await this.syncToPersistence();
+  }
+
+  async edit(path: string, find: string, replace: string): Promise<void> {
+    await this.ensureLoaded();
+    const normalized = this.fs.normalizePath(path);
+    const current = await this.bash!.fs.readFile(normalized, "utf8");
+    if (!current.includes(find)) throw new Error(`Text not found in ${normalized}`);
+    await this.bash!.writeFile(normalized, current.replace(find, replace));
+    await this.syncToPersistence();
+  }
+
+  async run(command: string): Promise<RunResult> {
+    await this.ensureLoaded();
+    const result = await this.bash!.exec(command, { cwd: VFS_ROOT, env: shellEnv() });
+    await this.syncToPersistence();
+    return toRunResult({ success: result.exitCode === 0, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode });
+  }
+
+  private async ensureLoaded(): Promise<void> {
+    if (this.bash) return;
+
+    const files: Record<string, Uint8Array> = {};
+    const persistedPaths = await this.fs.list(VFS_ROOT);
+    for (const path of persistedPaths) {
+      files[path] = await this.fs.read(path);
+    }
+
+    this.bash = new Bash({ files, cwd: VFS_ROOT, env: shellEnv() });
+    await this.bash.exec("mkdir -p /workspace /workspace/.config /workspace/.cache", { cwd: VFS_ROOT, env: shellEnv() });
+  }
+
+  private async syncToPersistence(): Promise<void> {
+    if (!this.bash) return;
+
+    const files: Record<string, Uint8Array> = {};
+    for (const path of this.bash.fs.getAllPaths()) {
+      if (!path.startsWith(`${VFS_ROOT}/`)) continue;
+      try {
+        const stat = await this.bash.fs.stat(path);
+        if (!stat.isFile) continue;
+        files[path] = await this.bash.fs.readFileBuffer(path);
+      } catch {
+        continue;
+      }
+    }
+    await this.fs.replaceAll(files);
+  }
+}
+
+export async function runTool(tool: ToolCall, context: ToolRuntimeContext): Promise<RunResult> {
+  try {
     if (tool.name === "read") {
-      const path = normalizePath(String(tool.args.path ?? ""));
-      const file = await sandbox.readFile(path);
-      return { ok: true, output: file.content ?? "" };
+      const path = String(tool.args.path ?? "");
+      const output = await context.shell.readText(path);
+      return { ok: true, output };
     }
 
     if (tool.name === "write") {
-      const path = normalizePath(String(tool.args.path ?? ""));
+      const path = String(tool.args.path ?? "");
       const content = String(tool.args.content ?? "");
-      await sandbox.writeFile(path, content);
-      return { ok: true, output: `Wrote ${path}` };
+      await context.shell.writeText(path, content);
+      return { ok: true, output: `Wrote ${context.shell.normalizePath(path)}` };
     }
 
     if (tool.name === "edit") {
-      const path = normalizePath(String(tool.args.path ?? ""));
+      const path = String(tool.args.path ?? "");
       const find = String(tool.args.find ?? "");
       const replace = String(tool.args.replace ?? "");
-      const current = await sandbox.readFile(path);
-      if (!current.content.includes(find)) {
-        return { ok: false, output: "", error: `Text not found in ${path}` };
-      }
-      await sandbox.writeFile(path, current.content.replace(find, replace));
+      await context.shell.edit(path, find, replace);
       return { ok: true, output: `Edited ${path}` };
     }
 
     const cmd = String(tool.args.command ?? "");
-    const result = await sandbox.exec(`bash -lc ${shellQuote(cmd)}`, { cwd: WORKSPACE_ROOT, env });
-    return toRunResult(result);
+    return context.shell.run(cmd);
   } catch (error) {
     return {
       ok: false,
@@ -80,23 +147,12 @@ function isToolName(value: string): value is ToolCall["name"] {
   return value === "read" || value === "write" || value === "edit" || value === "bash";
 }
 
-function sandboxEnv(): Record<string, string> {
+function shellEnv(): Record<string, string> {
   return {
-    HOME: WORKSPACE_ROOT,
-    XDG_CONFIG_HOME: `${WORKSPACE_ROOT}/.config`,
-    XDG_CACHE_HOME: `${WORKSPACE_ROOT}/.cache`,
+    HOME: VFS_ROOT,
+    XDG_CONFIG_HOME: `${VFS_ROOT}/.config`,
+    XDG_CACHE_HOME: `${VFS_ROOT}/.cache`,
   };
-}
-
-function normalizePath(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) return WORKSPACE_ROOT;
-  if (trimmed.startsWith("/")) return trimmed;
-  return `${WORKSPACE_ROOT}/${trimmed}`.replace(/\/{2,}/g, "/");
-}
-
-function shellQuote(input: string): string {
-  return `'${input.replace(/'/g, `'"'"'`)}'`;
 }
 
 function toRunResult(result: { success: boolean; stdout?: string; stderr?: string; exitCode?: number }): RunResult {

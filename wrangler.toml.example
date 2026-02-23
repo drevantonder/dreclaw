@@ -3,40 +3,29 @@ main = "src/index.ts"
 compatibility_date = "2026-02-22"
 compatibility_flags = ["nodejs_compat"]
 
-[[containers]]
-class_name = "Sandbox"
-image = "./Dockerfile"
-instance_type = "lite"
-max_instances = 2
-
 [observability]
 enabled = true
 
 [vars]
 WORKSPACE_BUCKET_NAME = "dreclaw-workspace"
-SANDBOX_TRANSPORT = "websocket"
 
 [[d1_databases]]
 binding = "DRECLAW_DB"
 database_name = "dreclaw"
-database_id = "24da6057-43e2-4997-a96d-843b746ab001"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
 [[r2_buckets]]
 binding = "WORKSPACE_BUCKET"
 bucket_name = "dreclaw-workspace"
 
+[[kv_namespaces]]
+binding = "AUTH_KV"
+id = "REPLACE_WITH_AUTH_KV_NAMESPACE_ID"
+
 [[durable_objects.bindings]]
 name = "SESSION_RUNTIME"
 class_name = "SessionRuntime"
 
-[[durable_objects.bindings]]
-name = "SANDBOX"
-class_name = "Sandbox"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionRuntime"]
-
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["Sandbox"]

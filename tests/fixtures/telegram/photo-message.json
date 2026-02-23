@@ -1,0 +1,28 @@
+{
+  "update_id": 900006,
+  "message": {
+    "message_id": 106,
+    "date": 1700000006,
+    "caption": "photo caption",
+    "photo": [
+      {
+        "file_id": "small-photo",
+        "file_size": 512
+      },
+      {
+        "file_id": "large-photo",
+        "file_size": 2048
+      }
+    ],
+    "from": {
+      "id": 42,
+      "is_bot": false,
+      "first_name": "Andre"
+    },
+    "chat": {
+      "id": 777,
+      "type": "private",
+      "first_name": "Andre"
+    }
+  }
+}

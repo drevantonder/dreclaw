@@ -7,7 +7,6 @@ export class FakeD1 {
   readonly updates = new Set<number>();
   readonly sessions = new Map<string, { chatId: string; model: string; authReady: boolean }>();
   readonly runs = new Map<string, { sessionId: string; status: string; error: string | null }>();
-  readonly oauth = new Map<string, string>();
 
   prepare(sql: string) {
     return {
@@ -19,12 +18,7 @@ export class FakeD1 {
     };
   }
 
-  private async all(sql: string): Promise<{ results: Array<{ provider: string; payload: string }> }> {
-    if (sql.includes("SELECT provider, payload FROM oauth_credentials")) {
-      return {
-        results: [...this.oauth.entries()].map(([provider, payload]) => ({ provider, payload })),
-      };
-    }
+  private async all(_sql: string): Promise<{ results: Array<{ provider: string; payload: string }> }> {
     return { results: [] };
   }
 
@@ -68,30 +62,64 @@ export class FakeD1 {
       return { meta: { changes: run ? 1 : 0 } };
     }
 
-    if (sql.includes("INSERT INTO oauth_credentials")) {
-      const provider = String(args[0]);
-      const payload = String(args[1]);
-      this.oauth.set(provider, payload);
-      return { meta: { changes: 1 } };
-    }
-
     return { meta: { changes: 0 } };
   }
 }
 
 export class FakeR2 {
-  readonly objects = new Map<string, string>();
+  readonly objects = new Map<string, Uint8Array>();
 
-  async put(key: string, value: string): Promise<void> {
-    this.objects.set(key, value);
+  async put(key: string, value: string | ArrayBuffer | ArrayBufferView): Promise<void> {
+    if (typeof value === "string") {
+      this.objects.set(key, new TextEncoder().encode(value));
+      return;
+    }
+
+    if (value instanceof ArrayBuffer) {
+      this.objects.set(key, new Uint8Array(value));
+      return;
+    }
+
+    this.objects.set(key, new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)));
   }
 
-  async get(key: string): Promise<{ json: <T>() => Promise<T> } | null> {
+  async get(key: string): Promise<{ arrayBuffer: () => Promise<ArrayBuffer>; json: <T>() => Promise<T> } | null> {
     const value = this.objects.get(key);
     if (value === undefined) return null;
+    const copy = new Uint8Array(value);
     return {
-      json: async <T>() => JSON.parse(value) as T,
+      arrayBuffer: async () => copy.buffer,
+      json: async <T>() => JSON.parse(new TextDecoder().decode(value)) as T,
     };
+  }
+
+  async list(options?: { prefix?: string; cursor?: string }): Promise<{ objects: Array<{ key: string }>; truncated: boolean; cursor: string }> {
+    const prefix = options?.prefix ?? "";
+    const objects = [...this.objects.keys()]
+      .filter((key) => key.startsWith(prefix))
+      .sort()
+      .map((key) => ({ key }));
+    return { objects, truncated: false, cursor: "" };
+  }
+
+  async delete(keys: string | string[]): Promise<void> {
+    if (Array.isArray(keys)) {
+      for (const key of keys) this.objects.delete(key);
+      return;
+    }
+    this.objects.delete(keys);
+  }
+}
+
+export class FakeKV {
+  private readonly values = new Map<string, string>();
+
+  async get(key: string): Promise<string | null> {
+    return this.values.get(key) ?? null;
+  }
+
+  async put(key: string, value: string): Promise<void> {
+    this.values.set(key, value);
   }
 }
 
@@ -124,6 +152,7 @@ class FakeDurableObjectState {
 export function createEnv() {
   const db = new FakeD1();
   const bucket = new FakeR2();
+  const authKv = new FakeKV();
   const runtimes = new Map<string, SessionRuntime>();
 
   const base = {
@@ -132,13 +161,9 @@ export function createEnv() {
     TELEGRAM_ALLOWED_USER_ID: "42",
     OPENAI_API_KEY: "test-openai-key",
     OPENAI_API_BASE_URL: "https://api.openai.com",
-    WORKSPACE_BUCKET_NAME: "dreclaw-workspace",
-    R2_ENDPOINT: "https://example.r2.cloudflarestorage.com",
-    R2_ACCESS_KEY_ID: "test-key",
-    R2_SECRET_ACCESS_KEY: "test-secret",
     DRECLAW_DB: db as unknown as D1Database,
     WORKSPACE_BUCKET: bucket as unknown as R2Bucket,
-    SANDBOX: {} as DurableObjectNamespace,
+    AUTH_KV: authKv as unknown as KVNamespace,
   };
 
   const namespace = {
@@ -152,7 +177,6 @@ export function createEnv() {
         runtime = new SessionRuntime(new FakeDurableObjectState(key) as unknown as DurableObjectState, {
           ...base,
           SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
-          SANDBOX: {} as DurableObjectNamespace,
         } as Env);
         runtimes.set(key, runtime);
       }
@@ -165,8 +189,7 @@ export function createEnv() {
   const env: Env = {
     ...base,
     SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
-    SANDBOX: {} as DurableObjectNamespace,
   };
 
-  return { env, db, bucket };
+  return { env, db, bucket, authKv };
 }

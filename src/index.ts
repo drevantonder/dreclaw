@@ -1,17 +1,13 @@
 import { markUpdateSeen } from "./db";
 import { SessionRuntime } from "./session";
-import { parseUpdate, sendTelegramMessage } from "./telegram";
+import { sendTelegramMessage } from "./telegram";
+import { processTelegramUpdate } from "./telegram-update-processor";
 import type { Env } from "./types";
-import { proxyToSandbox, Sandbox } from "@cloudflare/sandbox";
 
 export { SessionRuntime };
-export { Sandbox };
 
 export default {
   async fetch(request, env): Promise<Response> {
-    const proxyResponse = await proxyToSandbox(request, env);
-    if (proxyResponse) return proxyResponse;
-
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -32,28 +28,30 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const json = await request.json();
-  const update = parseUpdate(json);
-  if (!update) return new Response("ok");
+  const body = await request.json();
+  const result = await processTelegramUpdate(
+    {
+      body,
+      allowedUserId: env.TELEGRAM_ALLOWED_USER_ID,
+    },
+    {
+      markUpdateSeen: (updateId) => markUpdateSeen(env.DRECLAW_DB, updateId),
+      runSession: async (sessionRequest) => {
+        const id = env.SESSION_RUNTIME.idFromName(String(sessionRequest.message.chat.id));
+        const stub = env.SESSION_RUNTIME.get(id);
+        const response = await stub.fetch("https://session.local/run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(sessionRequest),
+        });
+        return (await response.json()) as { ok: boolean; text: string };
+      },
+    },
+  );
 
-  const unseen = await markUpdateSeen(env.DRECLAW_DB, update.update_id);
-  if (!unseen) return new Response("ok");
-  if (!update.message) return new Response("ok");
+  if (result.status === "reply") {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, result.reply.chatId, result.reply.text);
+  }
 
-  const message = update.message;
-  if (message.chat.type !== "private") return new Response("ok");
-  if (!message.from || String(message.from.id) !== env.TELEGRAM_ALLOWED_USER_ID) return new Response("ok");
-
-  const id = env.SESSION_RUNTIME.idFromName(String(message.chat.id));
-  const stub = env.SESSION_RUNTIME.get(id);
-  const result = await stub.fetch("https://session.local/run", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ updateId: update.update_id, message }),
-  });
-
-  const payload = (await result.json()) as { ok: boolean; text: string };
-  const text = payload.text || "Done.";
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, text);
   return new Response("ok");
 }

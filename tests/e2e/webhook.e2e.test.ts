@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 import { createEnv } from "../helpers/fakes";
 
@@ -20,10 +20,6 @@ function makeUpdate(updateId: number, text: string, userId = 42) {
 }
 
 describe("telegram webhook e2e", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it("executes webhook -> session -> telegram send", async () => {
     const { env, db } = createEnv();
     const sends: Array<{ url: string; body: unknown }> = [];
@@ -56,6 +52,7 @@ describe("telegram webhook e2e", () => {
     const sent = sends[0].body as { text: string };
     expect(sent.text).toContain("model:");
     expect(sent.text).toContain("provider_auth:");
+    expect(sent.text).toContain("workspace_files:");
   });
 
   it("ignores duplicate update id", async () => {
@@ -80,38 +77,6 @@ describe("telegram webhook e2e", () => {
     await app.fetch(new Request("https://test.local/telegram/webhook", { method: "POST", headers, body }), env, {} as ExecutionContext);
 
     expect(sends.length).toBe(1);
-  });
-
-  it("supports worker auth import command", async () => {
-    const { env } = createEnv();
-    const sends: Array<{ body: unknown }> = [];
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-        sends.push({ body: init?.body ? JSON.parse(String(init.body)) : null });
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }),
-    );
-
-    const req = new Request("https://test.local/telegram/webhook", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
-      },
-      body: JSON.stringify(
-        makeUpdate(
-          1004,
-          "/exec auth import eyJwcm92aWRlciI6Im9wZW5haS1jb2RleCIsImFjY2Vzc1Rva2VuIjoidG9rZW4ifQ",
-        ),
-      ),
-    });
-
-    const res = await app.fetch(req, env, {} as ExecutionContext);
-    expect(res.status).toBe(200);
-    const sent = sends[0].body as { text: string };
-    expect(sent.text).toContain("Imported credential for openai-codex");
   });
 
   it("rejects invalid webhook secret", async () => {

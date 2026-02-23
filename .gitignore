@@ -1,4 +1,5 @@
 .env
+wrangler.toml
 node_modules/
 .wrangler/
 dist/

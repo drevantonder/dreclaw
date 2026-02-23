@@ -1,0 +1,18 @@
+{
+  "update_id": 900004,
+  "message": {
+    "message_id": 104,
+    "date": 1700000004,
+    "text": "group hi",
+    "from": {
+      "id": 42,
+      "is_bot": false,
+      "first_name": "Andre"
+    },
+    "chat": {
+      "id": -1001,
+      "type": "group",
+      "title": "dev-room"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "update_id": 900002,
+  "message": {
+    "message_id": 102,
+    "date": 1700000002,
+    "text": "/status",
+    "from": {
+      "id": 42,
+      "is_bot": false,
+      "first_name": "Andre"
+    },
+    "chat": {
+      "id": 777,
+      "type": "private",
+      "first_name": "Andre"
+    }
+  }
+}

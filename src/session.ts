@@ -1,14 +1,14 @@
-import { DEFAULT_MODEL, WORKSPACE_ROOT, type Env, type SessionRequest, type SessionResponse } from "./types";
-import { finishRun, getCredentialMap, startRun, upsertCredential, upsertSessionMeta } from "./db";
+import { DEFAULT_MODEL, VFS_ROOT, type Env, type SessionRequest, type SessionResponse } from "./types";
+import { finishRun, startRun, upsertSessionMeta } from "./db";
+import { loadCredentialMap, upsertCredential, type CredentialMap } from "./auth-store";
+import { R2FilesystemService } from "./filesystem";
 import { getModel, type ModelMessage } from "./model";
-import { getOAuthApiKey, normalizeImportedCredential } from "./oauth";
-import { runToolInSandbox } from "./tools";
+import { getOAuthApiKey } from "./oauth";
+import { runTool, SessionShell } from "./tools";
 import { fetchImageAsDataUrl } from "./telegram";
-import { getSandbox, type SandboxClient } from "@cloudflare/sandbox";
 
 interface SessionState {
   history: Array<{ role: "user" | "assistant"; content: string }>;
-  persistedReady?: boolean;
 }
 
 const TOOL_SPECS = [
@@ -44,7 +44,7 @@ const TOOL_SPECS = [
   },
   {
     name: "bash",
-    description: "Run shell command in /root/dreclaw",
+    description: "Run shell command in /workspace",
     parameters: {
       type: "object",
       properties: { command: { type: "string" } },
@@ -59,6 +59,9 @@ export class SessionRuntime implements DurableObject {
   private readonly env: Env;
   private loaded = false;
   private stateData: SessionState = { history: [] };
+  private fs: R2FilesystemService | null = null;
+  private shell: SessionShell | null = null;
+  private authMap: CredentialMap | null = null;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -96,28 +99,36 @@ export class SessionRuntime implements DurableObject {
     await this.state.storage.put("session-state", this.stateData);
   }
 
-  private async handleMessage(payload: SessionRequest, sessionId: string): Promise<SessionResponse> {
-    const sandbox = getSandbox(this.env.SANDBOX, `session-${payload.message.chat.id}`);
-    await this.ensureSandboxReady(sandbox, sessionId);
+  private getFilesystem(sessionId: string): R2FilesystemService {
+    if (!this.fs) this.fs = new R2FilesystemService(this.env.WORKSPACE_BUCKET, sessionId);
+    return this.fs;
+  }
 
+  private getShell(sessionId: string): SessionShell {
+    if (!this.shell) this.shell = new SessionShell(this.getFilesystem(sessionId));
+    return this.shell;
+  }
+
+  private async handleMessage(payload: SessionRequest, sessionId: string): Promise<SessionResponse> {
     const userText = payload.message.text ?? payload.message.caption ?? "";
     const imageBlocks = await this.loadImages(payload.message);
     const text = userText.trim();
+    const shell = this.getShell(sessionId);
 
     if (text.startsWith("/reset")) {
       this.stateData = { history: [] };
       await this.save();
-      await this.checkpointSync(sandbox);
       await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.workerAuthReady());
       return { ok: true, text: "Session reset. Context cleared." };
     }
 
     if (text.startsWith("/status")) {
+      const files = await this.getFilesystem(sessionId).list(VFS_ROOT);
       const summary = [
         `model: ${DEFAULT_MODEL}`,
         "session: healthy",
-        `workspace: ${WORKSPACE_ROOT}`,
-        `persist_sync: ${this.stateData.persistedReady ? "ready" : "degraded"}`,
+        `workspace: ${VFS_ROOT}`,
+        `workspace_files: ${files.length}`,
         `provider_auth: ${(await this.workerAuthReady()) ? "present" : "missing"}`,
         `history_messages: ${this.stateData.history.length}`,
       ].join("\n");
@@ -125,41 +136,25 @@ export class SessionRuntime implements DurableObject {
       return { ok: true, text: summary };
     }
 
-    if (text.startsWith("/exec ")) {
-      const command = text.slice(6).trim();
-      const authCommand = await this.handleOwnerAuthCommand(command, sessionId, payload.message.chat.id);
-      if (authCommand) return authCommand;
-
-      const result = await this.execInSandbox(command, sandbox);
-      await this.checkpointSync(sandbox);
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.workerAuthReady());
-      if (result.ok) return { ok: true, text: result.output || "" };
-      return { ok: false, text: result.output || `exec error: ${result.error}` };
-    }
-
-    const credentials = await getCredentialMap(this.env.DRECLAW_DB);
+    const authMap = await this.getAuthMap();
     const auth = this.env.OPENAI_API_KEY
       ? { apiKey: this.env.OPENAI_API_KEY }
-      : await getOAuthApiKey("openai-codex", credentials);
-    if ("updated" in auth && auth.updated) await upsertCredential(this.env.DRECLAW_DB, auth.updated);
+      : await getOAuthApiKey("openai-codex", authMap);
+    if ("updated" in auth && auth.updated) {
+      this.authMap = await upsertCredential(this.env.AUTH_KV, authMap, auth.updated);
+    }
 
     this.stateData.history.push({ role: "user", content: text || "[image]" });
-    const finalText = await this.runAgentLoop(sandbox, auth.apiKey, text, imageBlocks);
+    const finalText = await this.runAgentLoop(shell, auth.apiKey, text, imageBlocks);
     this.stateData.history.push({ role: "assistant", content: finalText });
     if (this.stateData.history.length > 24) this.stateData.history = this.stateData.history.slice(-24);
 
     await this.save();
-    await this.checkpointSync(sandbox);
     await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, true);
     return { ok: true, text: finalText };
   }
 
-  private async runAgentLoop(
-    sandbox: SandboxClient,
-    apiKey: string,
-    userText: string,
-    imageBlocks: string[],
-  ): Promise<string> {
+  private async runAgentLoop(shell: SessionShell, apiKey: string, userText: string, imageBlocks: string[]): Promise<string> {
     const model = getModel("openai-codex", DEFAULT_MODEL);
     const messages: ModelMessage[] = buildModelMessages(this.stateData.history, userText, imageBlocks);
 
@@ -177,7 +172,7 @@ export class SessionRuntime implements DurableObject {
       }
 
       for (const call of completion.toolCalls) {
-        const result = await runToolInSandbox({ name: call.name, args: call.args }, sandbox);
+        const result = await runTool({ name: call.name, args: call.args }, { shell });
         const toolResponse = [
           `tool=${call.name}`,
           `ok=${result.ok ? "true" : "false"}`,
@@ -199,28 +194,6 @@ export class SessionRuntime implements DurableObject {
     return "Reached tool loop limit.";
   }
 
-  private async handleOwnerAuthCommand(command: string, sessionId: string, chatId: number): Promise<SessionResponse | null> {
-    if (!command.startsWith("auth ")) return null;
-
-    if (command === "auth status") {
-      const ready = await this.workerAuthReady();
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, chatId, DEFAULT_MODEL, ready);
-      return { ok: true, text: `Worker auth store: ${ready ? "ready" : "missing"}` };
-    }
-
-    if (command.startsWith("auth import ")) {
-      const encoded = command.slice("auth import ".length).trim();
-      if (!encoded) return { ok: false, text: "Usage: /exec auth import <base64-json>" };
-
-      const json = decodeBase64Url(encoded);
-      const credential = normalizeImportedCredential(JSON.parse(json));
-      await upsertCredential(this.env.DRECLAW_DB, credential);
-      return { ok: true, text: `Imported credential for ${credential.provider}.` };
-    }
-
-    return { ok: false, text: "Unknown auth command. Use /exec auth status or /exec auth import <base64-json>." };
-  }
-
   private async loadImages(message: SessionRequest["message"]): Promise<string[]> {
     if (!message.photo?.length) return [];
     const sorted = [...message.photo].sort((a, b) => (b.file_size ?? 0) - (a.file_size ?? 0));
@@ -229,71 +202,16 @@ export class SessionRuntime implements DurableObject {
     return dataUrl ? [dataUrl] : [];
   }
 
+  private async getAuthMap(): Promise<CredentialMap> {
+    if (this.authMap) return this.authMap;
+    this.authMap = await loadCredentialMap(this.env.AUTH_KV);
+    return this.authMap;
+  }
+
   private async workerAuthReady(): Promise<boolean> {
     if (this.env.OPENAI_API_KEY) return true;
-    const map = await getCredentialMap(this.env.DRECLAW_DB);
+    const map = await this.getAuthMap();
     return Boolean(map["openai-codex"]?.accessToken);
-  }
-
-  private async execInSandbox(command: string, sandbox: SandboxClient): Promise<{ ok: boolean; output: string; error?: string }> {
-    if (!command.trim()) return { ok: true, output: "" };
-    const result = await sandbox.exec(`bash -lc ${shellQuote(command)}`, { cwd: WORKSPACE_ROOT, env: sandboxEnv() });
-    const merged = [result.stdout ?? "", result.stderr ?? ""].filter(Boolean).join("\n").trim();
-    if (result.success) return { ok: true, output: merged };
-    const exitCode = typeof result.exitCode === "number" ? ` (exit ${result.exitCode})` : "";
-    return { ok: false, output: merged || `Command failed${exitCode}`, error: `Command failed${exitCode}` };
-  }
-
-  private async ensureSandboxReady(sandbox: SandboxClient, sessionId: string): Promise<void> {
-    await sandbox.exec("bash -lc 'mkdir -p /root/dreclaw /root/dreclaw/.config /root/dreclaw/.cache /persist /persist/dreclaw'", {
-      cwd: WORKSPACE_ROOT,
-      env: sandboxEnv(),
-    });
-
-    const mounted = await this.mountPersistIfConfigured(sandbox, sessionId);
-    if (!mounted) return;
-
-    const restore = await sandbox.exec("bash -lc 'mkdir -p /persist/dreclaw /root/dreclaw && cp -a /persist/dreclaw/. /root/dreclaw/ 2>/dev/null || true'", {
-      cwd: WORKSPACE_ROOT,
-      env: sandboxEnv(),
-    });
-    this.stateData.persistedReady = restore.success;
-  }
-
-  private async checkpointSync(sandbox: SandboxClient): Promise<void> {
-    if (!this.stateData.persistedReady) return;
-    await sandbox.exec("bash -lc 'mkdir -p /persist/dreclaw && cp -a /root/dreclaw/. /persist/dreclaw/ 2>/dev/null || true'", {
-      cwd: WORKSPACE_ROOT,
-      env: sandboxEnv(),
-    });
-  }
-
-  private async mountPersistIfConfigured(sandbox: SandboxClient, sessionId: string): Promise<boolean> {
-    if (this.stateData.persistedReady) return true;
-
-    const endpoint = this.env.R2_ENDPOINT;
-    const accessKeyId = this.env.R2_ACCESS_KEY_ID;
-    const secretAccessKey = this.env.R2_SECRET_ACCESS_KEY;
-    const bucketName = this.env.WORKSPACE_BUCKET_NAME;
-    if (!endpoint || !accessKeyId || !secretAccessKey || !bucketName) {
-      console.warn("persist-mount-config-missing", { sessionId });
-      this.stateData.persistedReady = false;
-      return false;
-    }
-
-    try {
-      await sandbox.mountBucket(bucketName, "/persist", {
-        endpoint,
-        provider: "r2",
-        credentials: { accessKeyId, secretAccessKey },
-      });
-      this.stateData.persistedReady = true;
-      return true;
-    } catch (error) {
-      console.error("persist-mount-failed", { sessionId, message: error instanceof Error ? error.message : "unknown" });
-      this.stateData.persistedReady = false;
-      return false;
-    }
   }
 }
 
@@ -323,22 +241,4 @@ function buildModelMessages(
 
   messages.push({ role: "user", content });
   return messages;
-}
-
-function shellQuote(input: string): string {
-  return `'${input.replace(/'/g, `'"'"'`)}'`;
-}
-
-function sandboxEnv(): Record<string, string> {
-  return {
-    HOME: WORKSPACE_ROOT,
-    XDG_CONFIG_HOME: `${WORKSPACE_ROOT}/.config`,
-    XDG_CACHE_HOME: `${WORKSPACE_ROOT}/.cache`,
-  };
-}
-
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
-  return atob(normalized + pad);
 }

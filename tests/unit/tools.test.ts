@@ -1,43 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { extractToolCall, runToolInSandbox } from "../../src/tools";
-
-function makeSandbox() {
-  const files = new Map<string, string>();
-
-  return {
-    files,
-    client: {
-      readFile: async (path: string) => {
-        const value = files.get(path);
-        if (value === undefined) throw new Error("ENOENT");
-        return { content: value };
-      },
-      writeFile: async (path: string, content: string) => {
-        files.set(path, content);
-        return { success: true };
-      },
-      exec: async (command: string) => ({
-        success: true,
-        stdout: `ok:${command}`,
-        stderr: "",
-        exitCode: 0,
-      }),
-    },
-  };
-}
+import { R2FilesystemService } from "../../src/filesystem";
+import { extractToolCall, runTool, SessionShell } from "../../src/tools";
+import { FakeR2 } from "../helpers/fakes";
 
 describe("tools", () => {
-  it("extracts json tool call", () => {
+  it("extracts json tool call", async () => {
     const tool = extractToolCall('{"tool":{"name":"write","args":{"path":"a.txt"}}}');
     expect(tool?.name).toBe("write");
     expect(tool?.args.path).toBe("a.txt");
   });
 
-  it("runs write/read/edit flow in sandbox", async () => {
-    const sandbox = makeSandbox();
-    expect((await runToolInSandbox({ name: "write", args: { path: "a.txt", content: "hello" } }, sandbox.client as never)).ok).toBe(true);
-    expect((await runToolInSandbox({ name: "read", args: { path: "a.txt" } }, sandbox.client as never)).output).toBe("hello");
-    expect((await runToolInSandbox({ name: "edit", args: { path: "a.txt", find: "hell", replace: "yell" } }, sandbox.client as never)).ok).toBe(true);
-    expect((await runToolInSandbox({ name: "read", args: { path: "a.txt" } }, sandbox.client as never)).output).toBe("yello");
+  it("runs write/read/edit/bash flow over persisted fs", async () => {
+    const bucket = new FakeR2();
+    const fs = new R2FilesystemService(bucket as unknown as R2Bucket, "session-1");
+    const shell = new SessionShell(fs);
+
+    expect((await runTool({ name: "write", args: { path: "a.txt", content: "hello" } }, { shell })).ok).toBe(true);
+    expect((await runTool({ name: "read", args: { path: "a.txt" } }, { shell })).output).toBe("hello");
+    expect((await runTool({ name: "edit", args: { path: "a.txt", find: "hell", replace: "yell" } }, { shell })).ok).toBe(true);
+    expect((await runTool({ name: "read", args: { path: "a.txt" } }, { shell })).output).toBe("yello");
+
+    const command = await runTool({ name: "bash", args: { command: "cat a.txt" } }, { shell });
+    expect(command.ok).toBe(true);
+    expect(command.output.trim()).toBe("yello");
+
+    const restoredShell = new SessionShell(fs);
+    expect((await runTool({ name: "read", args: { path: "a.txt" } }, { shell: restoredShell })).output).toBe("yello");
   });
 });

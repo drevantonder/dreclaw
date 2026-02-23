@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "auth:import": "node scripts/auth-import.mjs",
     "check": "tsc --noEmit",
     "deploy": "pnpm dlx wrangler deploy --route \"${CF_WORKER_ROUTE}\"",
     "dev": "pnpm dlx wrangler dev",
@@ -11,9 +12,11 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@cloudflare/sandbox": "^0.7.5",
     "@cloudflare/workers-types": "^4.20260215.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "just-bash": "^2.10.2"
   }
 }

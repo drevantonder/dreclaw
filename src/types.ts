@@ -1,5 +1,5 @@
-export const WORKSPACE_ROOT = "/root/dreclaw";
-export const DEFAULT_MODEL = "openai/gpt-5.3-codex";
+export const VFS_ROOT = "/workspace";
+export const DEFAULT_MODEL = "gpt-5.3-codex";
 
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
@@ -7,14 +7,10 @@ export interface Env {
   TELEGRAM_ALLOWED_USER_ID: string;
   OPENAI_API_KEY?: string;
   OPENAI_API_BASE_URL?: string;
-  WORKSPACE_BUCKET_NAME?: string;
-  R2_ENDPOINT?: string;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
   DRECLAW_DB: D1Database;
   WORKSPACE_BUCKET: R2Bucket;
+  AUTH_KV: KVNamespace;
   SESSION_RUNTIME: DurableObjectNamespace;
-  SANDBOX: DurableObjectNamespace;
 }
 
 export interface TelegramUpdate {

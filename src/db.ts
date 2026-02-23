@@ -1,5 +1,3 @@
-import type { OAuthCredential } from "./oauth";
-
 export async function runWithRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
@@ -7,36 +5,6 @@ export async function runWithRetry<T>(fn: () => Promise<T>): Promise<T> {
     await new Promise((resolve) => setTimeout(resolve, 150));
     return fn();
   }
-}
-
-export async function getCredentialMap(db: D1Database): Promise<Record<string, OAuthCredential>> {
-  return runWithRetry(async () => {
-    const result = await db
-      .prepare("SELECT provider, payload FROM oauth_credentials")
-      .all<{ provider: string; payload: string }>();
-
-    const map: Record<string, OAuthCredential> = {};
-    for (const row of result.results ?? []) {
-      try {
-        map[row.provider] = JSON.parse(row.payload) as OAuthCredential;
-      } catch {
-        continue;
-      }
-    }
-    return map;
-  });
-}
-
-export async function upsertCredential(db: D1Database, credential: OAuthCredential): Promise<void> {
-  await runWithRetry(async () => {
-    await db
-      .prepare(
-        "INSERT INTO oauth_credentials (provider, payload, updated_at) VALUES (?, ?, ?) " +
-          "ON CONFLICT(provider) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
-      )
-      .bind(credential.provider, JSON.stringify(credential), new Date().toISOString())
-      .run();
-  });
 }
 
 export async function markUpdateSeen(db: D1Database, updateId: number): Promise<boolean> {

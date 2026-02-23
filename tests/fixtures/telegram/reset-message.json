@@ -1,0 +1,18 @@
+{
+  "update_id": 900003,
+  "message": {
+    "message_id": 103,
+    "date": 1700000003,
+    "text": "/reset",
+    "from": {
+      "id": 42,
+      "is_bot": false,
+      "first_name": "Andre"
+    },
+    "chat": {
+      "id": 777,
+      "type": "private",
+      "first_name": "Andre"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "update_id": 900005,
+  "message": {
+    "message_id": 105,
+    "date": 1700000005,
+    "text": "should not pass",
+    "from": {
+      "id": 99,
+      "is_bot": false,
+      "first_name": "Other"
+    },
+    "chat": {
+      "id": 777,
+      "type": "private",
+      "first_name": "Andre"
+    }
+  }
+}
