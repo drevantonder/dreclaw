@@ -2,7 +2,7 @@
 
 `dreclaw` is my personal AI assistant, inspired by OpenClaw, built Cloudflare-first.
 
-v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/tool loop in Workers, and R2/KV-backed persistence.
+v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/tool loop in Workers, and R2-backed persistence.
 
 ## v0 Scope
 
@@ -10,7 +10,7 @@ v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/too
 - Commands: `/status`, `/reset`
 - Core tools: `read`, `write`, `edit`, `bash` (via just-bash)
 - R2-backed filesystem for files, memories, and saved scripts
-- Provider-agnostic auth map in KV (hot-cached in Durable Object)
+- OpenCode Zen provider (`MODEL` + `BASE_URL`)
 - No Sandbox/container dependency in v0
 
 ## Architecture (High-level)
@@ -22,15 +22,14 @@ flowchart TD
   DO --> M[Model Loop]
   M --> T[Tool Surface: read/write/edit/bash]
   T --> FS[R2 Filesystem]
-  DO --> KV[KV Auth Map]
   DO --> W --> U
 ```
 
 - Worker verifies Telegram requests and routes updates.
-- Durable Object serializes turns and keeps hot auth cache.
+- Durable Object serializes turns.
 - Model loop runs in Worker and drives tool calls.
 - Files/memory/scripts persist in R2.
-- Auth credentials persist separately in KV.
+- Auth is `OPENCODE_ZEN_API_KEY` Worker secret.
 
 ## Setup
 
@@ -53,6 +52,15 @@ cp wrangler.toml.example wrangler.toml
 Then set your own Cloudflare resource IDs in `wrangler.toml`.
 Also set `route` in `wrangler.toml`.
 
+Set Worker secret:
+
+```bash
+set -a; source .env; set +a
+pnpm secrets:sync
+```
+
+This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `OPENCODE_ZEN_API_KEY`, `MODEL`, `BASE_URL`).
+
 ### Deploy
 
 Route is read from `wrangler.toml`:
@@ -67,24 +75,12 @@ pnpm deploy
 - `/status` shows runtime/session/auth readiness.
 - `/reset` clears current session context.
 
-## OAuth auth setup (pi-ai)
-
-```bash
-mkdir -p ~/.dreclaw-auth
-cd ~/.dreclaw-auth
-pnpm dlx @mariozechner/pi-ai login openai-codex
-
-cd /Users/drevan/projects/dreclaw
-pnpm auth:import -- --file ~/.dreclaw-auth/auth.json
-```
-
-- Import writes to remote `AUTH_KV` key `provider-auth-map`.
-- Runtime uses only OAuth map for `openai-codex` (no `OPENAI_API_KEY` path).
-
 ## Testing
 
 - Run full tests: `pnpm test`
 - Type-check: `pnpm check`
+- Run live model smoke test (real Zen + tool loop): `set -a; source .env; set +a && pnpm smoke:live -- --prompt "hey"`
+- Run pre-deploy gate: `pnpm verify:predeploy`
 - Preferred local strategy is unit-first with webhook fixtures in `tests/fixtures/telegram`.
 - Use `tests/unit/telegram-update-processor.test.ts` for behavior coverage.
 - Keep e2e tests thin for route + header wiring in `tests/e2e/webhook.e2e.test.ts`.
@@ -97,9 +93,7 @@ pnpm auth:import -- --file ~/.dreclaw-auth/auth.json
 
 ## Auth model
 
-- Provider credentials are stored as a provider map in KV.
-- Runtime resolves provider dynamically from selected model.
-- Token refresh updates DO cache and writes through to KV.
+- `OPENCODE_ZEN_API_KEY` is stored as Worker secret.
 - `/status` reports readiness only (no secrets).
 
 ## Security

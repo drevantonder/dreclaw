@@ -1,9 +1,7 @@
-import { DEFAULT_MODEL, VFS_ROOT, type Env, type SessionRequest, type SessionResponse } from "./types";
+import { DEFAULT_BASE_URL, VFS_ROOT, type Env, type SessionRequest, type SessionResponse } from "./types";
 import { finishRun, startRun, upsertSessionMeta } from "./db";
-import { loadCredentialMap, upsertCredential, type CredentialMap } from "./auth-store";
 import { R2FilesystemService } from "./filesystem";
 import { getModel, type ModelMessage } from "./model";
-import { getOAuthApiKey } from "@mariozechner/pi-ai";
 import { TOOL_SPECS } from "./tool-schema";
 import { runTool, SessionShell } from "./tools";
 import { fetchImageAsDataUrl } from "./telegram";
@@ -19,7 +17,6 @@ export class SessionRuntime implements DurableObject {
   private stateData: SessionState = { history: [] };
   private fs: R2FilesystemService | null = null;
   private shell: SessionShell | null = null;
-  private authMap: CredentialMap | null = null;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -40,7 +37,7 @@ export class SessionRuntime implements DurableObject {
       await finishRun(this.env.DRECLAW_DB, runId);
       return Response.json(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unexpected runtime error";
+      const message = compactErrorMessage(error);
       console.error("session-run-failed", { sessionId, message });
       await finishRun(this.env.DRECLAW_DB, runId, message);
       return Response.json({ ok: false, text: `Failed: ${message}` } satisfies SessionResponse);
@@ -76,7 +73,7 @@ export class SessionRuntime implements DurableObject {
     if (text.startsWith("/reset")) {
       this.stateData = { history: [] };
       await this.save();
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.workerAuthReady());
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.env.MODEL, await this.workerAuthReady());
       return { ok: true, text: "Session reset. Context cleared." };
     }
 
@@ -84,41 +81,32 @@ export class SessionRuntime implements DurableObject {
       const authReady = await this.workerAuthReady();
       const files = await this.getFilesystem(sessionId).list(VFS_ROOT);
       const summary = [
-        `model: ${DEFAULT_MODEL}`,
+        `model: ${this.env.MODEL}`,
         "session: healthy",
         `workspace: ${VFS_ROOT}`,
         `workspace_files: ${files.length}`,
         `provider_auth: ${authReady ? "present" : "missing"}`,
         `history_messages: ${this.stateData.history.length}`,
       ].join("\n");
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, authReady);
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.env.MODEL, authReady);
       return { ok: true, text: summary };
     }
 
-    let authMap = await this.getAuthMap();
-    if (!authMap["openai-codex"]?.access) {
-      authMap = await this.getAuthMap(true);
-    }
-    const auth = await getOAuthApiKey("openai-codex", authMap);
-    if (!auth) {
-      throw new Error("Missing OAuth credential for provider: openai-codex");
-    }
-    if (auth.newCredentials) {
-      this.authMap = await upsertCredential(this.env.AUTH_KV, authMap, "openai-codex", auth.newCredentials);
-    }
+    const apiKey = this.env.OPENCODE_ZEN_API_KEY?.trim();
+    if (!apiKey) throw new Error("Missing OPENCODE_ZEN_API_KEY");
 
-    const finalText = await this.runAgentLoop(shell, auth.apiKey, text, imageBlocks);
+    const finalText = await this.runAgentLoop(shell, apiKey, text, imageBlocks);
     this.stateData.history.push({ role: "user", content: text || "[image]" });
     this.stateData.history.push({ role: "assistant", content: finalText });
     if (this.stateData.history.length > 24) this.stateData.history = this.stateData.history.slice(-24);
 
     await this.save();
-    await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, true);
+    await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.env.MODEL, true);
     return { ok: true, text: finalText };
   }
 
   private async runAgentLoop(shell: SessionShell, apiKey: string, userText: string, imageBlocks: string[]): Promise<string> {
-    const model = getModel("openai-codex", DEFAULT_MODEL);
+    const model = getModel(this.env.MODEL);
     const messages: ModelMessage[] = buildModelMessages(this.stateData.history, userText, imageBlocks);
 
     for (let i = 0; i < 6; i += 1) {
@@ -126,6 +114,8 @@ export class SessionRuntime implements DurableObject {
         apiKey,
         messages,
         tools: [...TOOL_SPECS],
+        baseUrl: this.env.BASE_URL?.trim() || DEFAULT_BASE_URL,
+        transport: "sse",
       });
 
       if (!completion.toolCalls.length) {
@@ -176,16 +166,17 @@ export class SessionRuntime implements DurableObject {
     return dataUrl ? [dataUrl] : [];
   }
 
-  private async getAuthMap(forceRefresh = false): Promise<CredentialMap> {
-    if (this.authMap && !forceRefresh) return this.authMap;
-    this.authMap = await loadCredentialMap(this.env.AUTH_KV);
-    return this.authMap;
-  }
-
   private async workerAuthReady(): Promise<boolean> {
-    const map = await this.getAuthMap(true);
-    return Boolean(map["openai-codex"]?.access);
+    return Boolean(this.env.OPENCODE_ZEN_API_KEY?.trim());
   }
+}
+
+function compactErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Unexpected runtime error";
+  const compact = message.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (!compact) return "Unexpected runtime error";
+  if (compact.length <= 320) return compact;
+  return `${compact.slice(0, 319)}…`;
 }
 
 function buildModelMessages(

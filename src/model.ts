@@ -28,36 +28,46 @@ export interface ModelCompletion {
   toolCalls: ModelToolCall[];
 }
 
-export function getModel(provider: string, model: string) {
+export function getModel(model: string) {
   return {
     complete: (params: {
       apiKey: string;
       messages: ModelMessage[];
       tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
-    }) => complete(provider, model, params),
+      baseUrl?: string;
+      headers?: Record<string, string>;
+      transport?: "sse" | "websocket" | "auto";
+    }) => complete(model, params),
   };
 }
 
 async function complete(
-  provider: string,
   model: string,
   params: {
     apiKey: string;
     messages: ModelMessage[];
     tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
+    baseUrl?: string;
+    headers?: Record<string, string>;
+    transport?: "sse" | "websocket" | "auto";
   },
 ): Promise<ModelCompletion> {
-  if (provider !== "openai-codex") {
-    throw new Error(`Unsupported model provider: ${provider}`);
-  }
-
-  const piModel = piGetModel("openai-codex", model as "gpt-5.3-codex");
+  const baseModel = resolveModel(model);
+  const baseHeaders = (baseModel as { headers?: Record<string, string> }).headers ?? {};
+  const piModel = {
+    ...baseModel,
+    baseUrl: params.baseUrl?.trim() || baseModel.baseUrl,
+    headers: {
+      ...baseHeaders,
+      ...(params.headers ?? {}),
+    },
+  };
   const context = toContext(params.messages, params.tools ?? []);
 
   return runWithRetry(async () => {
-    const assistant = await piComplete(piModel, context, {
+    const assistant = await piComplete(piModel as never, context, {
       apiKey: params.apiKey,
-      transport: "auto",
+      transport: params.transport ?? "sse",
     });
 
     if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
@@ -88,6 +98,25 @@ async function complete(
 
     return { text, toolCalls };
   });
+}
+
+function resolveModel(model: string) {
+  try {
+    return piGetModel("opencode", model as "kimi-k2.5");
+  } catch {
+    return {
+      id: model,
+      name: model,
+      api: "openai-completions",
+      provider: "opencode",
+      baseUrl: "https://opencode.ai/zen/v1/chat/completions",
+      reasoning: true,
+      input: ["text"] as Array<"text" | "image">,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 262144,
+      maxTokens: 32768,
+    };
+  }
 }
 
 function toContext(
@@ -140,8 +169,8 @@ function toContext(
         contextMessages.push({
           role: "assistant",
           content,
-          api: "openai-codex-responses",
-          provider: "openai-codex",
+          api: "openai-completions",
+          provider: "opencode",
           model: "unknown",
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
           stopReason: "toolUse",

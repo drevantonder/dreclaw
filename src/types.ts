@@ -1,15 +1,17 @@
 import type { ToolName } from "./tool-schema";
 
 export const VFS_ROOT = "/workspace";
-export const DEFAULT_MODEL = "gpt-5.3-codex";
+export const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
 
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_ALLOWED_USER_ID: string;
+  MODEL: string;
+  BASE_URL?: string;
+  OPENCODE_ZEN_API_KEY?: string;
   DRECLAW_DB: D1Database;
   WORKSPACE_BUCKET: R2Bucket;
-  AUTH_KV: KVNamespace;
   SESSION_RUNTIME: DurableObjectNamespace;
 }
 

@@ -1,6 +1,7 @@
 import type { TelegramMessage, TelegramUpdate } from "./types";
 
 const TELEGRAM_API = "https://api.telegram.org";
+const TELEGRAM_MAX_TEXT_LENGTH = 3900;
 
 export function parseUpdate(body: unknown): TelegramUpdate | null {
   if (!body || typeof body !== "object") return null;
@@ -25,9 +26,10 @@ export async function sendTelegramMessage(
   text: string,
 ): Promise<void> {
   const url = `${TELEGRAM_API}/bot${token}/sendMessage`;
+  const safeText = clampTelegramText(text);
   const body = {
     chat_id: chatId,
-    text,
+    text: safeText,
     disable_web_page_preview: true,
   };
 
@@ -42,6 +44,13 @@ export async function sendTelegramMessage(
       throw new Error(`Telegram send failed (${response.status}): ${payload}`);
     }
   });
+}
+
+function clampTelegramText(input: string): string {
+  const normalized = String(input ?? "").trim();
+  if (!normalized) return "Done.";
+  if (normalized.length <= TELEGRAM_MAX_TEXT_LENGTH) return normalized;
+  return `${normalized.slice(0, TELEGRAM_MAX_TEXT_LENGTH - 1)}…`;
 }
 
 export async function fetchImageAsDataUrl(token: string, fileId: string): Promise<string | null> {

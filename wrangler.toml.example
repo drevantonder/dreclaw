@@ -16,10 +16,6 @@ database_id = "REPLACE_WITH_D1_DATABASE_ID"
 binding = "WORKSPACE_BUCKET"
 bucket_name = "dreclaw-workspace"
 
-[[kv_namespaces]]
-binding = "AUTH_KV"
-id = "REPLACE_WITH_AUTH_KV_NAMESPACE_ID"
-
 [[durable_objects.bindings]]
 name = "SESSION_RUNTIME"
 class_name = "SessionRuntime"

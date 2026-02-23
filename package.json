@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "auth:import": "node scripts/auth-import.mjs",
     "check": "tsc --noEmit",
     "deploy": "pnpm dlx wrangler deploy",
     "dev": "pnpm dlx wrangler dev",
     "d1:migrate": "pnpm dlx wrangler d1 migrations apply DRECLAW_DB",
+    "secrets:sync": "set -a && source .env && set +a && node scripts/secrets-sync.mjs | pnpm dlx wrangler secret bulk",
+    "smoke:live": "node scripts/smoke-live.mjs",
+    "verify:predeploy": "pnpm check && pnpm test && pnpm smoke:live",
     "test": "vitest run"
   },
   "devDependencies": {

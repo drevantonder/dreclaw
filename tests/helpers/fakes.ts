@@ -152,16 +152,17 @@ class FakeDurableObjectState {
 export function createEnv() {
   const db = new FakeD1();
   const bucket = new FakeR2();
-  const authKv = new FakeKV();
   const runtimes = new Map<string, SessionRuntime>();
 
   const base = {
     TELEGRAM_BOT_TOKEN: "test-bot-token",
     TELEGRAM_WEBHOOK_SECRET: "secret-1",
     TELEGRAM_ALLOWED_USER_ID: "42",
+    MODEL: "kimi-k2.5-free",
+    BASE_URL: "https://opencode.ai/zen/v1/chat/completions",
+    OPENCODE_ZEN_API_KEY: "test-zen-key",
     DRECLAW_DB: db as unknown as D1Database,
     WORKSPACE_BUCKET: bucket as unknown as R2Bucket,
-    AUTH_KV: authKv as unknown as KVNamespace,
   };
 
   const namespace = {
@@ -189,5 +190,5 @@ export function createEnv() {
     SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
   };
 
-  return { env, db, bucket, authKv };
+  return { env, db, bucket };
 }
