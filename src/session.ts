@@ -162,7 +162,7 @@ export class SessionRuntime implements DurableObject {
       showThinking: this.shouldShowThinking(),
     });
 
-    const run = await this.runAgentLoop(shell, runtime, text, imageBlocks, progress);
+    const run = await this.runAgentLoop(shell, runtime, text, imageBlocks, progress, sessionId);
     const responseText = formatUserFacingResponse(run.finalText, run.toolEvents);
     this.pushHistory({ role: "user", content: text || "[image]" });
     for (const toolError of run.toolErrors) {
@@ -181,6 +181,7 @@ export class SessionRuntime implements DurableObject {
     userText: string,
     imageBlocks: string[],
     progress: TelegramProgressReporter,
+    sessionId: string,
   ): Promise<AgentRunResult> {
     const model = resolvePiModel(runtime.model, runtime.baseUrl);
     const historyContext = renderHistoryContext(this.stateData.history);
@@ -199,6 +200,7 @@ export class SessionRuntime implements DurableObject {
     const toolErrors: string[] = [];
     const toolEvents: ToolEvent[] = [];
     const eventTasks: Promise<void>[] = [];
+    const fsMetricsStart = shell.metricsSnapshot();
 
     agent.subscribe((event: AgentEvent) => {
       const task = this.handleAgentEvent(event, progress, toolEvents, toolErrors).catch((error) => {
@@ -219,6 +221,26 @@ export class SessionRuntime implements DurableObject {
       await progress.sendThinkingSummary(readFinalAssistantThinking(agent.state.messages));
     }
     await progress.setStatus("Wrapping up...", true);
+    const fsMetrics = shell.metricsDelta(fsMetricsStart);
+    console.info("session-fs-metrics", {
+      sessionId,
+      flush_calls: fsMetrics.flushCalls,
+      flush_ms_total: fsMetrics.flushMsTotal,
+      flush_ms_max: fsMetrics.flushMsMax,
+      ensure_loaded_calls: fsMetrics.ensureLoadedCalls,
+      ensure_loaded_cold_starts: fsMetrics.ensureLoadedColdStarts,
+      scan_calls: fsMetrics.captureChangesCalls,
+      scanned_paths: fsMetrics.scannedPaths,
+      changed_marks: fsMetrics.changedPathMarks,
+      deleted_marks: fsMetrics.deletedPathMarks,
+      r2_list_calls: fsMetrics.r2ListCalls,
+      r2_get_calls: fsMetrics.r2GetCalls,
+      r2_get_bytes: fsMetrics.r2GetBytes,
+      r2_put_calls: fsMetrics.r2PutCalls,
+      r2_put_bytes: fsMetrics.r2PutBytes,
+      r2_delete_batches: fsMetrics.r2DeleteBatches,
+      r2_delete_keys: fsMetrics.r2DeleteKeys,
+    });
 
     const finalText = readFinalAssistantText(agent.state.messages);
     return { finalText: finalText || "(empty response)", toolErrors, toolEvents };

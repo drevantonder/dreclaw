@@ -69,4 +69,21 @@ describe("tools", () => {
     expect(missing.ok).toBe(false);
     expect(bucket.counters.delete).toBeGreaterThan(0);
   });
+
+  it("reports filesystem metrics deltas", async () => {
+    const bucket = new FakeR2();
+    const fs = new R2FilesystemService(bucket as unknown as R2Bucket, "session-4");
+    const shell = new SessionShell(fs);
+    const start = shell.metricsSnapshot();
+
+    await runTool({ name: "write", args: { path: "a.txt", content: "hello" } }, { shell, deferPersistence: true });
+    await shell.flush();
+
+    const metrics = shell.metricsDelta(start);
+    expect(metrics.flushCalls).toBe(1);
+    expect(metrics.r2PutCalls).toBe(1);
+    expect(metrics.r2PutBytes).toBe(5);
+    expect(metrics.r2ListCalls).toBe(1);
+    expect(metrics.ensureLoadedColdStarts).toBe(1);
+  });
 });

@@ -24,6 +24,44 @@ export interface ToolRuntimeContext {
   deferPersistence?: boolean;
 }
 
+export interface FilesystemMetrics {
+  ensureLoadedCalls: number;
+  ensureLoadedColdStarts: number;
+  flushCalls: number;
+  flushMsTotal: number;
+  flushMsMax: number;
+  captureChangesCalls: number;
+  scannedPaths: number;
+  changedPathMarks: number;
+  deletedPathMarks: number;
+  r2ListCalls: number;
+  r2GetCalls: number;
+  r2GetBytes: number;
+  r2PutCalls: number;
+  r2PutBytes: number;
+  r2DeleteBatches: number;
+  r2DeleteKeys: number;
+}
+
+const EMPTY_FS_METRICS: FilesystemMetrics = {
+  ensureLoadedCalls: 0,
+  ensureLoadedColdStarts: 0,
+  flushCalls: 0,
+  flushMsTotal: 0,
+  flushMsMax: 0,
+  captureChangesCalls: 0,
+  scannedPaths: 0,
+  changedPathMarks: 0,
+  deletedPathMarks: 0,
+  r2ListCalls: 0,
+  r2GetCalls: 0,
+  r2GetBytes: 0,
+  r2PutCalls: 0,
+  r2PutBytes: 0,
+  r2DeleteBatches: 0,
+  r2DeleteKeys: 0,
+};
+
 export class SessionShell {
   private bash: Bash | null = null;
   private baselinePaths = new Set<string>();
@@ -31,11 +69,20 @@ export class SessionShell {
   private changedPaths = new Set<string>();
   private deletedPaths = new Set<string>();
   private syncedHashes = new Map<string, string>();
+  private metrics: FilesystemMetrics = { ...EMPTY_FS_METRICS };
 
   constructor(private readonly fs: R2FilesystemService) {}
 
   normalizePath(path: string): string {
     return this.fs.normalizePath(path);
+  }
+
+  metricsSnapshot(): FilesystemMetrics {
+    return { ...this.metrics };
+  }
+
+  metricsDelta(since: FilesystemMetrics): FilesystemMetrics {
+    return diffMetrics(this.metrics, since);
   }
 
   async readText(path: string): Promise<string> {
@@ -70,21 +117,31 @@ export class SessionShell {
   }
 
   async flush(): Promise<void> {
+    const startedAt = Date.now();
+    this.metrics.flushCalls += 1;
     await this.ensureLoaded();
     await this.captureBashChanges();
     await this.syncToPersistence();
+    const elapsed = Date.now() - startedAt;
+    this.metrics.flushMsTotal += elapsed;
+    if (elapsed > this.metrics.flushMsMax) this.metrics.flushMsMax = elapsed;
   }
 
   private async ensureLoaded(): Promise<void> {
+    this.metrics.ensureLoadedCalls += 1;
     if (this.bash) return;
+    this.metrics.ensureLoadedColdStarts += 1;
 
     const files: Record<string, Uint8Array> = {};
+    this.metrics.r2ListCalls += 1;
     const persistedPaths = await this.fs.list(VFS_ROOT);
     await runWithConcurrency(persistedPaths, 16, async (path) => {
       const content = await this.fs.read(path);
       files[path] = content;
       this.persistedFilePaths.add(path);
       this.syncedHashes.set(path, hashBytes(content));
+      this.metrics.r2GetCalls += 1;
+      this.metrics.r2GetBytes += content.byteLength;
     });
 
     this.bash = new Bash({ files, cwd: VFS_ROOT, env: shellEnv() });
@@ -101,11 +158,15 @@ export class SessionShell {
       await this.fs.write(path, content);
       this.persistedFilePaths.add(path);
       this.syncedHashes.set(path, hashBytes(content));
+      this.metrics.r2PutCalls += 1;
+      this.metrics.r2PutBytes += content.byteLength;
     });
 
     const deletes = [...this.deletedPaths];
     if (deletes.length) {
       await this.fs.deleteMany(deletes);
+      this.metrics.r2DeleteBatches += 1;
+      this.metrics.r2DeleteKeys += deletes.length;
       for (const path of deletes) {
         this.persistedFilePaths.delete(path);
         this.syncedHashes.delete(path);
@@ -118,8 +179,10 @@ export class SessionShell {
 
   private async captureBashChanges(): Promise<void> {
     if (!this.bash) return;
+    this.metrics.captureChangesCalls += 1;
     const currentFiles = new Set<string>();
     const allPaths = this.bash.fs.getAllPaths().filter((path) => path.startsWith("/"));
+    this.metrics.scannedPaths += allPaths.length;
     for (const path of allPaths) {
       try {
         const stat = await this.bash.fs.stat(path);
@@ -131,14 +194,20 @@ export class SessionShell {
         if (syncedHash === undefined && this.baselinePaths.has(path) && !this.changedPaths.has(path)) {
           continue;
         }
-        if (syncedHash !== currentHash) this.changedPaths.add(path);
+        if (syncedHash !== currentHash && !this.changedPaths.has(path)) {
+          this.changedPaths.add(path);
+          this.metrics.changedPathMarks += 1;
+        }
       } catch {
         continue;
       }
     }
 
     for (const path of this.persistedFilePaths) {
-      if (!currentFiles.has(path)) this.deletedPaths.add(path);
+      if (!currentFiles.has(path) && !this.deletedPaths.has(path)) {
+        this.deletedPaths.add(path);
+        this.metrics.deletedPathMarks += 1;
+      }
     }
   }
 }
@@ -205,6 +274,27 @@ function hashBytes(content: Uint8Array): string {
     hash = Math.imul(hash, 16777619);
   }
   return `${content.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function diffMetrics(current: FilesystemMetrics, since: FilesystemMetrics): FilesystemMetrics {
+  return {
+    ensureLoadedCalls: current.ensureLoadedCalls - since.ensureLoadedCalls,
+    ensureLoadedColdStarts: current.ensureLoadedColdStarts - since.ensureLoadedColdStarts,
+    flushCalls: current.flushCalls - since.flushCalls,
+    flushMsTotal: current.flushMsTotal - since.flushMsTotal,
+    flushMsMax: current.flushMsMax,
+    captureChangesCalls: current.captureChangesCalls - since.captureChangesCalls,
+    scannedPaths: current.scannedPaths - since.scannedPaths,
+    changedPathMarks: current.changedPathMarks - since.changedPathMarks,
+    deletedPathMarks: current.deletedPathMarks - since.deletedPathMarks,
+    r2ListCalls: current.r2ListCalls - since.r2ListCalls,
+    r2GetCalls: current.r2GetCalls - since.r2GetCalls,
+    r2GetBytes: current.r2GetBytes - since.r2GetBytes,
+    r2PutCalls: current.r2PutCalls - since.r2PutCalls,
+    r2PutBytes: current.r2PutBytes - since.r2PutBytes,
+    r2DeleteBatches: current.r2DeleteBatches - since.r2DeleteBatches,
+    r2DeleteKeys: current.r2DeleteKeys - since.r2DeleteKeys,
+  };
 }
 
 function tryParseJson(input: string): unknown | null {
