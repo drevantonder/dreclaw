@@ -1,11 +1,12 @@
 import { DEFAULT_BASE_URL, VFS_ROOT, type Env, type ProgressMode, type SessionRequest, type SessionResponse } from "./types";
-import { Agent, type AgentEvent, type AgentTool } from "@mariozechner/pi-agent-core";
-import { getModel as piGetModel, type ImageContent } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
+import type { AgentEvent, AgentTool } from "@mariozechner/pi-agent-core";
+import { getModel as piGetModel } from "@mariozechner/pi-ai/dist/models.js";
+import type { ImageContent } from "@mariozechner/pi-ai/dist/types.js";
 import { finishRun, startRun, upsertSessionMeta } from "./db";
 import { R2FilesystemService } from "./filesystem";
 import { runTool, SessionShell } from "./tools";
-import { editTelegramMessage, fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
+import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
 
 type SessionHistoryEntry = { role: "user" | "assistant" | "tool"; content: string };
 
@@ -37,6 +38,8 @@ interface ToolEvent {
 
 const SYSTEM_PROMPT =
   "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. If a tool fails, briefly explain what failed, then recover or propose the next best action. Proactively use /memory for durable, decision-useful context: read it when useful, write/update .md files when important new context appears, keep it clean by merging duplicates/removing stale info, and never store secrets or credentials.";
+
+let agentCtorPromise: Promise<typeof import("@mariozechner/pi-agent-core")> | null = null;
 
 export class SessionRuntime implements DurableObject {
   private readonly state: DurableObjectState;
@@ -156,7 +159,6 @@ export class SessionRuntime implements DurableObject {
       token: this.env.TELEGRAM_BOT_TOKEN,
       chatId: payload.message.chat.id,
       mode: this.getProgressMode(),
-      statusMessageId: payload.progressMessageId,
       showThinking: this.shouldShowThinking(),
     });
 
@@ -183,6 +185,7 @@ export class SessionRuntime implements DurableObject {
     const model = resolvePiModel(runtime.model, runtime.baseUrl);
     const historyContext = renderHistoryContext(this.stateData.history);
     const tools = createAgentTools(shell);
+    const { Agent } = await loadAgentCore();
     const agent = new Agent({
       initialState: {
         systemPrompt: historyContext ? `${SYSTEM_PROMPT}\n\nRecent context:\n${historyContext}` : SYSTEM_PROMPT,
@@ -452,7 +455,7 @@ async function executeSessionTool(
   args: Record<string, unknown>,
   options?: { timeoutMs?: number },
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
-  const runner = runTool({ name, args }, { shell });
+  const runner = runTool({ name, args }, { shell, deferPersistence: true });
   const result = options?.timeoutMs ? await withTimeout(runner, options.timeoutMs) : await runner;
   const text = truncateForLog(result.output || result.error || "(no output)", 2000) || "(no output)";
 
@@ -464,6 +467,23 @@ async function executeSessionTool(
     content: [{ type: "text", text }],
     details: { ok: true },
   };
+}
+
+async function loadAgentCore(): Promise<typeof import("@mariozechner/pi-agent-core")> {
+  if (!agentCtorPromise) {
+    enableWorkerCspShim();
+    agentCtorPromise = import("@mariozechner/pi-agent-core");
+  }
+  return agentCtorPromise;
+}
+
+function enableWorkerCspShim(): void {
+  const value = globalThis as Record<string, unknown>;
+  const chromeValue = (value.chrome as Record<string, unknown> | undefined) ?? {};
+  const runtimeValue = (chromeValue.runtime as Record<string, unknown> | undefined) ?? {};
+  if (!runtimeValue.id) runtimeValue.id = "workers";
+  chromeValue.runtime = runtimeValue;
+  value.chrome = chromeValue;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -529,41 +549,27 @@ function readFinalAssistantThinking(messages: unknown[]): string {
 }
 
 class TelegramProgressReporter {
-  private static readonly STATUS_THROTTLE_MS = 1500;
-
   private readonly token: string;
   private readonly chatId: number;
   private readonly mode: ProgressMode;
   private readonly showThinking: boolean;
-  private statusMessageId?: number;
-  private lastStatusText = "";
-  private lastStatusAt = 0;
   private toolStartAtByName = new Map<string, number>();
 
   constructor(params: {
     token: string;
     chatId: number;
     mode: ProgressMode;
-    statusMessageId?: number;
     showThinking: boolean;
   }) {
     this.token = params.token;
     this.chatId = params.chatId;
     this.mode = params.mode;
-    this.statusMessageId = params.statusMessageId;
     this.showThinking = params.showThinking;
   }
 
   async setStatus(text: string, force = false): Promise<void> {
-    const next = text.trim();
-    if (!next) return;
-    const now = Date.now();
-    if (!force && next === this.lastStatusText) return;
-    if (!force && now - this.lastStatusAt < TelegramProgressReporter.STATUS_THROTTLE_MS) return;
-
-    this.lastStatusText = next;
-    this.lastStatusAt = now;
-    await this.safeUpdateStatus(next);
+    void text;
+    void force;
   }
 
   async sendThinkingSummary(raw: string): Promise<void> {
@@ -617,31 +623,11 @@ class TelegramProgressReporter {
     }
   }
 
-  private async safeUpdateStatus(text: string): Promise<void> {
-    if (typeof this.statusMessageId === "number") {
-      try {
-        await editTelegramMessage(this.token, this.chatId, this.statusMessageId, text);
-        return;
-      } catch (error) {
-        console.warn("telegram-progress-edit-failed", {
-          chatId: this.chatId,
-          messageId: this.statusMessageId,
-          error: error instanceof Error ? error.message : String(error ?? "unknown"),
-        });
-      }
-    }
-
-    await this.safeSendMessage(text, true);
-  }
-
-  private async safeSendMessage(text: string, assignStatusId = false): Promise<void> {
+  private async safeSendMessage(text: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
     try {
-      const messageId = await sendTelegramMessage(this.token, this.chatId, trimmed);
-      if (assignStatusId && typeof messageId === "number") {
-        this.statusMessageId = messageId;
-      }
+      await sendTelegramMessage(this.token, this.chatId, trimmed);
     } catch (error) {
       console.warn("telegram-progress-send-failed", {
         chatId: this.chatId,
