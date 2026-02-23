@@ -35,7 +35,6 @@ export function getModel(model: string) {
       messages: ModelMessage[];
       tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
       baseUrl?: string;
-      headers?: Record<string, string>;
       transport?: "sse" | "websocket" | "auto";
     }) => complete(model, params),
   };
@@ -48,24 +47,18 @@ async function complete(
     messages: ModelMessage[];
     tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
     baseUrl?: string;
-    headers?: Record<string, string>;
     transport?: "sse" | "websocket" | "auto";
   },
 ): Promise<ModelCompletion> {
   const baseModel = resolveModel(model);
-  const baseHeaders = (baseModel as { headers?: Record<string, string> }).headers ?? {};
   const piModel = {
     ...baseModel,
     baseUrl: params.baseUrl?.trim() || baseModel.baseUrl,
-    headers: {
-      ...baseHeaders,
-      ...(params.headers ?? {}),
-    },
   };
   const context = toContext(params.messages, params.tools ?? []);
 
   return runWithRetry(async () => {
-    const assistant = await piComplete(piModel as never, context, {
+    const assistant = await piComplete(piModel, context, {
       apiKey: params.apiKey,
       transport: params.transport ?? "sse",
     });
@@ -102,24 +95,15 @@ async function complete(
 
 function resolveModel(model: string) {
   try {
-    const builtIn = piGetModel("opencode", model as "kimi-k2.5");
-    if (builtIn) return builtIn;
+    return piGetModel("opencode", model as "kimi-k2.5");
   } catch {
-    // Fall through to dynamic model descriptor.
+    const fallback = piGetModel("opencode", "kimi-k2.5");
+    return {
+      ...fallback,
+      id: model,
+      name: model,
+    };
   }
-
-  return {
-    id: model,
-    name: model,
-    api: "openai-completions",
-    provider: "opencode",
-    baseUrl: "https://opencode.ai/zen/v1",
-    reasoning: true,
-    input: ["text"] as Array<"text" | "image">,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 262144,
-    maxTokens: 32768,
-  };
 }
 
 function toContext(

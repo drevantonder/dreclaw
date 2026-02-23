@@ -10,6 +10,12 @@ interface SessionState {
   history: Array<{ role: "user" | "assistant"; content: string }>;
 }
 
+interface RuntimeConfig {
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
 export class SessionRuntime implements DurableObject {
   private readonly state: DurableObjectState;
   private readonly env: Env;
@@ -73,7 +79,7 @@ export class SessionRuntime implements DurableObject {
     if (text.startsWith("/reset")) {
       this.stateData = { history: [] };
       await this.save();
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.env.MODEL, await this.workerAuthReady());
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.getModelName(), await this.workerAuthReady());
       return { ok: true, text: "Session reset. Context cleared." };
     }
 
@@ -81,43 +87,42 @@ export class SessionRuntime implements DurableObject {
       const authReady = await this.workerAuthReady();
       const files = await this.getFilesystem(sessionId).list(VFS_ROOT);
       const summary = [
-        `model: ${this.env.MODEL}`,
+        `model: ${this.getModelName()}`,
         "session: healthy",
         `workspace: ${VFS_ROOT}`,
         `workspace_files: ${files.length}`,
         `provider_auth: ${authReady ? "present" : "missing"}`,
         `history_messages: ${this.stateData.history.length}`,
       ].join("\n");
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.env.MODEL, authReady);
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.getModelName(), authReady);
       return { ok: true, text: summary };
     }
 
-    const apiKey = this.env.OPENCODE_ZEN_API_KEY?.trim();
-    if (!apiKey) throw new Error("Missing OPENCODE_ZEN_API_KEY");
+    const runtime = this.getRuntimeConfig();
 
-    const finalText = await this.runAgentLoop(shell, apiKey, text, imageBlocks);
+    const finalText = await this.runAgentLoop(shell, runtime, text, imageBlocks);
     this.stateData.history.push({ role: "user", content: text || "[image]" });
     this.stateData.history.push({ role: "assistant", content: finalText });
     if (this.stateData.history.length > 24) this.stateData.history = this.stateData.history.slice(-24);
 
     await this.save();
-    await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.env.MODEL, true);
+    await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, runtime.model, true);
     return { ok: true, text: finalText };
   }
 
-  private async runAgentLoop(shell: SessionShell, apiKey: string, userText: string, imageBlocks: string[]): Promise<string> {
-    let activeModel = this.env.MODEL;
-    const fallbackModel = resolveFallbackModel(this.env.MODEL);
+  private async runAgentLoop(shell: SessionShell, runtime: RuntimeConfig, userText: string, imageBlocks: string[]): Promise<string> {
+    let activeModel = runtime.model;
+    const fallbackModel = resolveFallbackModel(runtime.model);
     const messages: ModelMessage[] = buildModelMessages(this.stateData.history, userText, imageBlocks);
 
     for (let i = 0; i < 6; i += 1) {
       let completion;
       try {
         completion = await getModel(activeModel).complete({
-          apiKey,
+          apiKey: runtime.apiKey,
           messages,
           tools: [...TOOL_SPECS],
-          baseUrl: this.env.BASE_URL?.trim() || DEFAULT_BASE_URL,
+          baseUrl: runtime.baseUrl,
           transport: "sse",
         });
       } catch (error) {
@@ -125,10 +130,10 @@ export class SessionRuntime implements DurableObject {
           console.warn("model-rate-limited-fallback", { from: activeModel, to: fallbackModel });
           activeModel = fallbackModel;
           completion = await getModel(activeModel).complete({
-            apiKey,
+            apiKey: runtime.apiKey,
             messages,
             tools: [...TOOL_SPECS],
-            baseUrl: this.env.BASE_URL?.trim() || DEFAULT_BASE_URL,
+            baseUrl: runtime.baseUrl,
             transport: "sse",
           });
         } else {
@@ -187,6 +192,22 @@ export class SessionRuntime implements DurableObject {
   private async workerAuthReady(): Promise<boolean> {
     return Boolean(this.env.OPENCODE_ZEN_API_KEY?.trim());
   }
+
+  private getRuntimeConfig(): RuntimeConfig {
+    const model = this.getModelName();
+
+    const apiKey = this.env.OPENCODE_ZEN_API_KEY?.trim();
+    if (!apiKey) throw new Error("Missing OPENCODE_ZEN_API_KEY");
+
+    const baseUrl = this.env.BASE_URL?.trim() || DEFAULT_BASE_URL;
+    return { model, apiKey, baseUrl };
+  }
+
+  private getModelName(): string {
+    const model = this.env.MODEL?.trim();
+    if (!model) throw new Error("Missing MODEL");
+    return model;
+  }
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -216,7 +237,7 @@ function buildModelMessages(
     {
       role: "system",
       content:
-        "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls.",
+        "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. Proactively use /memory for durable, decision-useful context: read it when useful, write/update .md files when important new context appears, keep it clean by merging duplicates/removing stale info, and never store secrets or credentials.",
     },
   ];
 

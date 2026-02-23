@@ -111,18 +111,6 @@ export class FakeR2 {
   }
 }
 
-export class FakeKV {
-  private readonly values = new Map<string, string>();
-
-  async get(key: string): Promise<string | null> {
-    return this.values.get(key) ?? null;
-  }
-
-  async put(key: string, value: string): Promise<void> {
-    this.values.set(key, value);
-  }
-}
-
 class FakeStorage {
   private values = new Map<string, unknown>();
 
