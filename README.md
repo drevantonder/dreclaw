@@ -38,6 +38,7 @@ flowchart TD
 - Telegram bot
 - Node.js and pnpm
 - Wrangler auth (`pnpm dlx wrangler whoami`)
+- Docker running locally (required for container image deploy)
 
 ### Environment
 
@@ -48,6 +49,11 @@ For `/persist` mount+sync, also set R2 S3 credentials in `.env`:
 - `R2_ENDPOINT`
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
+
+For model calls, either set:
+
+- `OPENAI_API_KEY` (simple runtime key), or
+- import OAuth credentials into Worker store with `/exec auth import <base64-json>`.
 
 Provider auth is done inside sandbox (for example via `/exec pi-ai login <provider>`) and persisted under `/root/dreclaw`.
 
@@ -82,9 +88,11 @@ pnpm check
 ## Usage
 
 - Message the bot in a private Telegram chat.
-- `/status` shows model/session/workspace/auth readiness.
+- `/status` shows model/session/workspace/auth readiness from Worker credential store.
 - `/reset` clears current session context.
 - `/exec <command>` runs directly in Cloudflare Sandbox and returns command stdout/stderr.
+- `/exec auth status` checks Worker credential-store readiness.
+- `/exec auth import <base64-json>` imports owner OAuth credential payload.
 
 ## Filesystem persistence
 

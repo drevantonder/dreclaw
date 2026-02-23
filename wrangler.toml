@@ -1,12 +1,20 @@
 name = "dreclaw"
 main = "src/index.ts"
 compatibility_date = "2026-02-22"
+compatibility_flags = ["nodejs_compat"]
+
+[[containers]]
+class_name = "Sandbox"
+image = "./Dockerfile"
+instance_type = "lite"
+max_instances = 2
 
 [observability]
 enabled = true
 
 [vars]
 WORKSPACE_BUCKET_NAME = "dreclaw-workspace"
+SANDBOX_TRANSPORT = "websocket"
 
 [[d1_databases]]
 binding = "DRECLAW_DB"
