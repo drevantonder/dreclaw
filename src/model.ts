@@ -102,21 +102,24 @@ async function complete(
 
 function resolveModel(model: string) {
   try {
-    return piGetModel("opencode", model as "kimi-k2.5");
+    const builtIn = piGetModel("opencode", model as "kimi-k2.5");
+    if (builtIn) return builtIn;
   } catch {
-    return {
-      id: model,
-      name: model,
-      api: "openai-completions",
-      provider: "opencode",
-      baseUrl: "https://opencode.ai/zen/v1/chat/completions",
-      reasoning: true,
-      input: ["text"] as Array<"text" | "image">,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 262144,
-      maxTokens: 32768,
-    };
+    // Fall through to dynamic model descriptor.
   }
+
+  return {
+    id: model,
+    name: model,
+    api: "openai-completions",
+    provider: "opencode",
+    baseUrl: "https://opencode.ai/zen/v1",
+    reasoning: true,
+    input: ["text"] as Array<"text" | "image">,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 262144,
+    maxTokens: 32768,
+  };
 }
 
 function toContext(

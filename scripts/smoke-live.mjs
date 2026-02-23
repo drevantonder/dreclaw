@@ -11,7 +11,7 @@ function parseArgs(argv) {
     prompt: "Reply with one short sentence proving smoke test works.",
     model: "kimi-k2.5-free",
     maxTurns: 6,
-    baseUrl: "https://opencode.ai/zen/v1/chat/completions",
+    baseUrl: "https://opencode.ai/zen/v1",
     apiKey: process.env.OPENCODE_ZEN_API_KEY ?? "",
   };
 
@@ -24,7 +24,7 @@ function parseArgs(argv) {
     else if (part === "--api-key") args.apiKey = argv[++i] ?? args.apiKey;
     else if (part === "--help" || part === "-h") {
       process.stdout.write(
-        "Usage: pnpm smoke:live -- --prompt \"hey\" [--model kimi-k2.5-free] [--base-url https://opencode.ai/zen/v1/chat/completions] [--api-key <zen-key>]\n",
+        "Usage: pnpm smoke:live -- --prompt \"hey\" [--model kimi-k2.5-free] [--base-url https://opencode.ai/zen/v1] [--api-key <zen-key>]\n",
       );
       process.exit(0);
     }
@@ -107,6 +107,9 @@ async function main() {
   try {
     model = getModel("opencode", args.model);
   } catch {
+    model = undefined;
+  }
+  if (!model) {
     model = {
       id: args.model,
       name: args.model,

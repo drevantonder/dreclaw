@@ -106,17 +106,35 @@ export class SessionRuntime implements DurableObject {
   }
 
   private async runAgentLoop(shell: SessionShell, apiKey: string, userText: string, imageBlocks: string[]): Promise<string> {
-    const model = getModel(this.env.MODEL);
+    let activeModel = this.env.MODEL;
+    const fallbackModel = resolveFallbackModel(this.env.MODEL);
     const messages: ModelMessage[] = buildModelMessages(this.stateData.history, userText, imageBlocks);
 
     for (let i = 0; i < 6; i += 1) {
-      const completion = await model.complete({
-        apiKey,
-        messages,
-        tools: [...TOOL_SPECS],
-        baseUrl: this.env.BASE_URL?.trim() || DEFAULT_BASE_URL,
-        transport: "sse",
-      });
+      let completion;
+      try {
+        completion = await getModel(activeModel).complete({
+          apiKey,
+          messages,
+          tools: [...TOOL_SPECS],
+          baseUrl: this.env.BASE_URL?.trim() || DEFAULT_BASE_URL,
+          transport: "sse",
+        });
+      } catch (error) {
+        if (fallbackModel && activeModel !== fallbackModel && isRateLimitError(error)) {
+          console.warn("model-rate-limited-fallback", { from: activeModel, to: fallbackModel });
+          activeModel = fallbackModel;
+          completion = await getModel(activeModel).complete({
+            apiKey,
+            messages,
+            tools: [...TOOL_SPECS],
+            baseUrl: this.env.BASE_URL?.trim() || DEFAULT_BASE_URL,
+            transport: "sse",
+          });
+        } else {
+          throw error;
+        }
+      }
 
       if (!completion.toolCalls.length) {
         const text = completion.text.trim();
@@ -169,6 +187,16 @@ export class SessionRuntime implements DurableObject {
   private async workerAuthReady(): Promise<boolean> {
     return Boolean(this.env.OPENCODE_ZEN_API_KEY?.trim());
   }
+}
+
+function isRateLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("429") || message.toLowerCase().includes("rate limit");
+}
+
+function resolveFallbackModel(model: string): string | null {
+  if (!model.includes("-free")) return null;
+  return model.replace(/-free$/i, "");
 }
 
 function compactErrorMessage(error: unknown): string {

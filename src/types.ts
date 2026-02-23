@@ -1,7 +1,7 @@
 import type { ToolName } from "./tool-schema";
 
 export const VFS_ROOT = "/workspace";
-export const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
+export const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1";
 
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;

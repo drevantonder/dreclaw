@@ -159,7 +159,7 @@ export function createEnv() {
     TELEGRAM_WEBHOOK_SECRET: "secret-1",
     TELEGRAM_ALLOWED_USER_ID: "42",
     MODEL: "kimi-k2.5-free",
-    BASE_URL: "https://opencode.ai/zen/v1/chat/completions",
+    BASE_URL: "https://opencode.ai/zen/v1",
     OPENCODE_ZEN_API_KEY: "test-zen-key",
     DRECLAW_DB: db as unknown as D1Database,
     WORKSPACE_BUCKET: bucket as unknown as R2Bucket,
