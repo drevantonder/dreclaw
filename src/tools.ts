@@ -119,7 +119,7 @@ export async function runTool(tool: ToolCall, context: ToolRuntimeContext): Prom
       },
     } as const;
 
-    return handlers[tool.name]();
+    return await handlers[tool.name]();
   } catch (error) {
     return {
       ok: false,
