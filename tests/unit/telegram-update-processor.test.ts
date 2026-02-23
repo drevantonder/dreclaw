@@ -22,7 +22,7 @@ function makeDeps() {
   const seen = new Set<number>();
   const runSession = vi.fn(async (request: SessionRequest): Promise<SessionResponse> => {
     const text = request.message.text ?? request.message.caption ?? "";
-    if (text === "/status") return { ok: true, text: "model: openai/gpt-5.3-codex" };
+    if (text === "/status") return { ok: true, text: "model: gpt-5.3-codex" };
     if (text === "/reset") return { ok: true, text: "Session reset. Context cleared." };
     return { ok: true, text: `ok:${text || "[image]"}` };
   });

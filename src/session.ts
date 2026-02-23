@@ -123,16 +123,17 @@ export class SessionRuntime implements DurableObject {
     }
 
     if (text.startsWith("/status")) {
+      const authReady = await this.workerAuthReady();
       const files = await this.getFilesystem(sessionId).list(VFS_ROOT);
       const summary = [
         `model: ${DEFAULT_MODEL}`,
         "session: healthy",
         `workspace: ${VFS_ROOT}`,
         `workspace_files: ${files.length}`,
-        `provider_auth: ${(await this.workerAuthReady()) ? "present" : "missing"}`,
+        `provider_auth: ${authReady ? "present" : "missing"}`,
         `history_messages: ${this.stateData.history.length}`,
       ].join("\n");
-      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, await this.workerAuthReady());
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, DEFAULT_MODEL, authReady);
       return { ok: true, text: summary };
     }
 
@@ -144,8 +145,8 @@ export class SessionRuntime implements DurableObject {
       this.authMap = await upsertCredential(this.env.AUTH_KV, authMap, auth.updated);
     }
 
-    this.stateData.history.push({ role: "user", content: text || "[image]" });
     const finalText = await this.runAgentLoop(shell, auth.apiKey, text, imageBlocks);
+    this.stateData.history.push({ role: "user", content: text || "[image]" });
     this.stateData.history.push({ role: "assistant", content: finalText });
     if (this.stateData.history.length > 24) this.stateData.history = this.stateData.history.slice(-24);
 
@@ -171,6 +172,19 @@ export class SessionRuntime implements DurableObject {
         return text || "(empty response)";
       }
 
+      messages.push({
+        role: "assistant",
+        content: completion.text || "",
+        tool_calls: completion.toolCalls.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: {
+            name: call.name,
+            arguments: call.rawArguments,
+          },
+        })),
+      });
+
       for (const call of completion.toolCalls) {
         const result = await runTool({ name: call.name, args: call.args }, { shell });
         const toolResponse = [
@@ -182,7 +196,6 @@ export class SessionRuntime implements DurableObject {
           .filter(Boolean)
           .join("\n");
 
-        messages.push({ role: "assistant", content: completion.text || `Calling ${call.name}` });
         messages.push({ role: "tool", content: toolResponse, tool_call_id: call.id });
 
         if (!result.ok) {

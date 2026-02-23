@@ -4,12 +4,21 @@ export interface ModelMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
   tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: {
+      name: "read" | "write" | "edit" | "bash";
+      arguments: string;
+    };
+  }>;
 }
 
 export interface ModelToolCall {
   id: string;
   name: "read" | "write" | "edit" | "bash";
   args: Record<string, unknown>;
+  rawArguments: string;
 }
 
 export interface ModelCompletion {
@@ -86,7 +95,7 @@ async function complete(
     }
 
     const message = payload.choices?.[0]?.message;
-    const text = message?.content ?? "";
+    const text = typeof message?.content === "string" ? message.content : "";
     const toolCalls = (message?.tool_calls ?? [])
       .map((call): ModelToolCall | null => {
         const name = String(call.function?.name ?? "");
@@ -101,6 +110,7 @@ async function complete(
           id: call.id || crypto.randomUUID(),
           name,
           args,
+          rawArguments: call.function?.arguments || "{}",
         };
       })
       .filter((value): value is ModelToolCall => Boolean(value));

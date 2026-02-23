@@ -57,9 +57,19 @@ export async function fetchImageAsDataUrl(token: string, fileId: string): Promis
   if (!imageResponse.ok) return null;
 
   const contentType = imageResponse.headers.get("content-type") ?? "image/jpeg";
-  const bytes = await imageResponse.arrayBuffer();
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+  const bytes = new Uint8Array(await imageResponse.arrayBuffer());
+  const base64 = bytesToBase64(bytes);
   return `data:${contentType};base64,${base64}`;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
 }
 
 async function withRetry(fn: () => Promise<void>): Promise<void> {

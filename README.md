@@ -19,7 +19,7 @@ v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/too
 flowchart TD
   U[Telegram Chat] --> W[Worker Gateway]
   W --> DO[Durable Object Session]
-  DO --> M[pi-ai Model Loop]
+  DO --> M[Model Loop]
   M --> T[Tool Surface: read/write/edit/bash]
   T --> FS[R2 Filesystem]
   DO --> KV[KV Auth Map]
@@ -51,14 +51,14 @@ cp wrangler.toml.example wrangler.toml
 ```
 
 Then set your own Cloudflare resource IDs in `wrangler.toml`.
+Also set `route` in `wrangler.toml`.
 
 ### Deploy
 
-Use route from `.env` (keeps route out of repo config):
+Route is read from `wrangler.toml`:
 
 ```bash
-set -a; source .env; set +a
-pnpm dlx wrangler deploy --route "${CF_WORKER_ROUTE}"
+pnpm deploy
 ```
 
 ## Usage
