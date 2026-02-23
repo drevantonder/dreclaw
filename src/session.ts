@@ -195,14 +195,27 @@ export class SessionRuntime implements DurableObject {
     });
     const toolErrors: string[] = [];
     const toolEvents: ToolEvent[] = [];
+    const eventTasks: Promise<void>[] = [];
 
     agent.subscribe((event: AgentEvent) => {
-      void this.handleAgentEvent(event, progress, toolEvents, toolErrors);
+      const task = this.handleAgentEvent(event, progress, toolEvents, toolErrors).catch((error) => {
+        console.warn("agent-event-handler-failed", {
+          error: error instanceof Error ? error.message : String(error ?? "unknown"),
+        });
+      });
+      eventTasks.push(task);
     });
 
     await progress.setStatus("Working...", true);
     const images = imageBlocks.map(toPiImageContent).filter((item): item is ImageContent => Boolean(item));
     await agent.prompt(userText || "[image message]", images);
+    if (eventTasks.length) {
+      await Promise.all(eventTasks);
+    }
+    await shell.flush();
+    if (this.shouldShowThinking()) {
+      await progress.sendThinkingSummary(readFinalAssistantThinking(agent.state.messages));
+    }
     await progress.setStatus("Wrapping up...", true);
 
     const finalText = readFinalAssistantText(agent.state.messages);
@@ -215,11 +228,6 @@ export class SessionRuntime implements DurableObject {
     toolEvents: ToolEvent[],
     toolErrors: string[],
   ): Promise<void> {
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_delta") {
-      await progress.onThinking(event.assistantMessageEvent.delta || "");
-      return;
-    }
-
     if (event.type === "tool_execution_start") {
       await progress.onToolStart(event.toolName, (event.args as Record<string, unknown>) ?? {});
       return;
@@ -502,6 +510,24 @@ function readFinalAssistantText(messages: unknown[]): string {
   return "";
 }
 
+function readFinalAssistantThinking(messages: unknown[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as { role?: string; content?: Array<{ type?: string; thinking?: string }> };
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) {
+      continue;
+    }
+    const thinking = message.content
+      .filter((block) => block?.type === "thinking" && typeof block.thinking === "string")
+      .map((block) => block.thinking ?? "")
+      .join("\n")
+      .trim();
+    if (thinking) {
+      return thinking;
+    }
+  }
+  return "";
+}
+
 class TelegramProgressReporter {
   private static readonly STATUS_THROTTLE_MS = 1500;
 
@@ -540,14 +566,12 @@ class TelegramProgressReporter {
     await this.safeUpdateStatus(next);
   }
 
-  async onThinking(raw: string): Promise<void> {
-    await this.setStatus("Analyzing...");
+  async sendThinkingSummary(raw: string): Promise<void> {
     if (!this.showThinking) return;
-    const text = truncateForLog(raw, 500);
+    const text = truncateForLog(raw, 700);
     if (!text) return;
-    if (this.mode === "debug") {
-      await this.safeSendMessage(`Thinking:\n${text}`);
-    }
+    await this.setStatus("Analyzing...");
+    await this.safeSendMessage(`Thinking:\n${text}`);
   }
 
   async onToolStart(name: string, args: Record<string, unknown>): Promise<void> {

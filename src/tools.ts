@@ -21,13 +21,16 @@ export function extractToolCall(output: string): ToolCall | null {
 
 export interface ToolRuntimeContext {
   shell: SessionShell;
+  deferPersistence?: boolean;
 }
 
 export class SessionShell {
   private bash: Bash | null = null;
-  private persistedFilePaths = new Set<string>();
   private baselinePaths = new Set<string>();
+  private persistedFilePaths = new Set<string>();
   private changedPaths = new Set<string>();
+  private deletedPaths = new Set<string>();
+  private syncedHashes = new Map<string, string>();
 
   constructor(private readonly fs: R2FilesystemService) {}
 
@@ -46,7 +49,7 @@ export class SessionShell {
     const normalized = this.fs.normalizePath(path);
     await this.bash!.writeFile(normalized, content);
     this.changedPaths.add(normalized);
-    await this.syncToPersistence();
+    this.deletedPaths.delete(normalized);
   }
 
   async edit(path: string, find: string, replace: string): Promise<void> {
@@ -56,14 +59,20 @@ export class SessionShell {
     if (!current.includes(find)) throw new Error(`Text not found in ${normalized}`);
     await this.bash!.writeFile(normalized, current.replace(find, replace));
     this.changedPaths.add(normalized);
-    await this.syncToPersistence();
+    this.deletedPaths.delete(normalized);
   }
 
   async run(command: string): Promise<RunResult> {
     await this.ensureLoaded();
     const result = await this.bash!.exec(command, { cwd: VFS_ROOT, env: shellEnv() });
-    await this.syncToPersistence(this.collectCandidatePaths());
+    await this.captureBashChanges();
     return toRunResult({ success: result.exitCode === 0, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode });
+  }
+
+  async flush(): Promise<void> {
+    await this.ensureLoaded();
+    await this.captureBashChanges();
+    await this.syncToPersistence();
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -71,49 +80,66 @@ export class SessionShell {
 
     const files: Record<string, Uint8Array> = {};
     const persistedPaths = await this.fs.list(VFS_ROOT);
-    for (const path of persistedPaths) {
-      files[path] = await this.fs.read(path);
+    await runWithConcurrency(persistedPaths, 16, async (path) => {
+      const content = await this.fs.read(path);
+      files[path] = content;
       this.persistedFilePaths.add(path);
-    }
+      this.syncedHashes.set(path, hashBytes(content));
+    });
 
     this.bash = new Bash({ files, cwd: VFS_ROOT, env: shellEnv() });
     await this.bash.exec("mkdir -p /.config /.cache /workspace", { cwd: VFS_ROOT, env: shellEnv() });
     this.baselinePaths = new Set(this.bash.fs.getAllPaths().filter((path) => path.startsWith("/")));
   }
 
-  private async syncToPersistence(extraPaths: Set<string> = new Set()): Promise<void> {
+  private async syncToPersistence(): Promise<void> {
     if (!this.bash) return;
 
-    const targetPaths = new Set<string>([...this.persistedFilePaths, ...this.changedPaths, ...extraPaths]);
-    const files: Record<string, Uint8Array> = {};
-    const nextPersisted = new Set<string>();
-    for (const path of targetPaths) {
+    const putPaths = [...this.changedPaths].filter((path) => !this.deletedPaths.has(path));
+    await runWithConcurrency(putPaths, 16, async (path) => {
+      const content = await this.bash!.fs.readFileBuffer(path);
+      await this.fs.write(path, content);
+      this.persistedFilePaths.add(path);
+      this.syncedHashes.set(path, hashBytes(content));
+    });
+
+    const deletes = [...this.deletedPaths];
+    if (deletes.length) {
+      await this.fs.deleteMany(deletes);
+      for (const path of deletes) {
+        this.persistedFilePaths.delete(path);
+        this.syncedHashes.delete(path);
+      }
+    }
+
+    this.changedPaths.clear();
+    this.deletedPaths.clear();
+  }
+
+  private async captureBashChanges(): Promise<void> {
+    if (!this.bash) return;
+    const currentFiles = new Set<string>();
+    const allPaths = this.bash.fs.getAllPaths().filter((path) => path.startsWith("/"));
+    for (const path of allPaths) {
       try {
         const stat = await this.bash.fs.stat(path);
         if (!stat.isFile) continue;
-        files[path] = await this.bash.fs.readFileBuffer(path);
-        nextPersisted.add(path);
+        currentFiles.add(path);
+        const content = await this.bash.fs.readFileBuffer(path);
+        const currentHash = hashBytes(content);
+        const syncedHash = this.syncedHashes.get(path);
+        if (syncedHash === undefined && this.baselinePaths.has(path) && !this.changedPaths.has(path)) {
+          continue;
+        }
+        if (syncedHash !== currentHash) this.changedPaths.add(path);
       } catch {
         continue;
       }
     }
-    await this.fs.replaceAll(files);
-    this.persistedFilePaths = nextPersisted;
-    this.changedPaths.clear();
-  }
 
-  private collectCandidatePaths(): Set<string> {
-    if (!this.bash) return new Set();
-    const allPaths = this.bash.fs.getAllPaths().filter((path) => path.startsWith("/"));
-    if (allPaths.length <= 2000) return new Set(allPaths);
-
-    const candidates = new Set<string>();
-    for (const path of allPaths) {
-      if (!this.baselinePaths.has(path) || this.persistedFilePaths.has(path) || this.changedPaths.has(path)) {
-        candidates.add(path);
-      }
+    for (const path of this.persistedFilePaths) {
+      if (!currentFiles.has(path)) this.deletedPaths.add(path);
     }
-    return candidates;
   }
 }
 
@@ -144,7 +170,11 @@ export async function runTool(tool: ToolCall, context: ToolRuntimeContext): Prom
       },
     } as const;
 
-    return await handlers[tool.name]();
+    const result = await handlers[tool.name]();
+    if (!context.deferPersistence && (tool.name === "write" || tool.name === "edit" || tool.name === "bash")) {
+      await context.shell.flush();
+    }
+    return result;
   } catch (error) {
     return {
       ok: false,
@@ -152,6 +182,29 @@ export async function runTool(tool: ToolCall, context: ToolRuntimeContext): Prom
       error: error instanceof Error ? error.message : "Unknown error",
     };
   }
+}
+
+async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+  if (!items.length) return;
+  const chunkLimit = Math.max(1, limit);
+  const queue = [...items];
+  const workers = Array.from({ length: Math.min(chunkLimit, queue.length) }, async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      if (item === undefined) return;
+      await worker(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function hashBytes(content: Uint8Array): string {
+  let hash = 2166136261;
+  for (const byte of content) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${content.length}:${(hash >>> 0).toString(16)}`;
 }
 
 function tryParseJson(input: string): unknown | null {

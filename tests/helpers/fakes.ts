@@ -68,8 +68,15 @@ export class FakeD1 {
 
 export class FakeR2 {
   readonly objects = new Map<string, Uint8Array>();
+  readonly counters = {
+    put: 0,
+    get: 0,
+    list: 0,
+    delete: 0,
+  };
 
   async put(key: string, value: string | ArrayBuffer | ArrayBufferView): Promise<void> {
+    this.counters.put += 1;
     if (typeof value === "string") {
       this.objects.set(key, new TextEncoder().encode(value));
       return;
@@ -84,6 +91,7 @@ export class FakeR2 {
   }
 
   async get(key: string): Promise<{ arrayBuffer: () => Promise<ArrayBuffer>; json: <T>() => Promise<T> } | null> {
+    this.counters.get += 1;
     const value = this.objects.get(key);
     if (value === undefined) return null;
     const copy = new Uint8Array(value);
@@ -94,6 +102,7 @@ export class FakeR2 {
   }
 
   async list(options?: { prefix?: string; cursor?: string }): Promise<{ objects: Array<{ key: string }>; truncated: boolean; cursor: string }> {
+    this.counters.list += 1;
     const prefix = options?.prefix ?? "";
     const objects = [...this.objects.keys()]
       .filter((key) => key.startsWith(prefix))
@@ -103,6 +112,7 @@ export class FakeR2 {
   }
 
   async delete(keys: string | string[]): Promise<void> {
+    this.counters.delete += 1;
     if (Array.isArray(keys)) {
       for (const key of keys) this.objects.delete(key);
       return;

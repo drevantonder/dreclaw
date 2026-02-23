@@ -62,6 +62,17 @@ export class R2FilesystemService {
     await this.write(path, textEncoder.encode(content));
   }
 
+  async delete(path: string): Promise<void> {
+    const normalized = this.normalizePath(path);
+    await this.bucket.delete(this.keyFromPath(normalized));
+  }
+
+  async deleteMany(paths: string[]): Promise<void> {
+    const keys = paths.map((path) => this.keyFromPath(this.normalizePath(path)));
+    if (!keys.length) return;
+    await this.bucket.delete(keys);
+  }
+
   async edit(path: string, find: string, replace: string): Promise<void> {
     const normalized = this.normalizePath(path);
     const current = await this.readText(normalized);
