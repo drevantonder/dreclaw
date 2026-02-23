@@ -23,12 +23,20 @@ describe("telegram webhook e2e", () => {
   it("executes webhook -> session -> telegram send", async () => {
     const { env, db } = createEnv();
     const sends: Array<{ url: string; body: unknown }> = [];
+    const actions: Array<{ url: string; body: unknown }> = [];
+    const timeline: string[] = [];
 
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+        if (url.includes("/sendChatAction")) {
+          timeline.push("typing");
+          actions.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
         if (url.includes("/sendMessage")) {
+          timeline.push("message");
           sends.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
@@ -48,7 +56,11 @@ describe("telegram webhook e2e", () => {
     const res = await app.fetch(req, env, {} as ExecutionContext);
     expect(res.status).toBe(200);
     expect(db.updates.has(1001)).toBe(true);
+    expect(actions.length).toBe(1);
     expect(sends.length).toBe(1);
+    expect(timeline).toEqual(["typing", "message"]);
+    const action = actions[0].body as { action: string };
+    expect(action.action).toBe("typing");
     const sent = sends[0].body as { text: string };
     expect(sent.text).toContain("model:");
     expect(sent.text).toContain("provider_auth:");

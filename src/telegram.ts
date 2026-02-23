@@ -46,6 +46,26 @@ export async function sendTelegramMessage(
   });
 }
 
+export async function sendTelegramChatAction(token: string, chatId: number, action = "typing"): Promise<void> {
+  const url = `${TELEGRAM_API}/bot${token}/sendChatAction`;
+  const body = {
+    chat_id: chatId,
+    action,
+  };
+
+  await withRetry(async () => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const payload = await response.text();
+      throw new Error(`Telegram chat action failed (${response.status}): ${payload}`);
+    }
+  });
+}
+
 function clampTelegramText(input: string): string {
   const normalized = String(input ?? "").trim();
   if (!normalized) return "Done.";

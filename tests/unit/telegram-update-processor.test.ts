@@ -20,6 +20,7 @@ function loadFixture(name: string): unknown {
 
 function makeDeps() {
   const seen = new Set<number>();
+  const sendTyping = vi.fn(async () => {});
   const runSession = vi.fn(async (request: SessionRequest): Promise<SessionResponse> => {
     const text = request.message.text ?? request.message.caption ?? "";
     if (text === "/status") return { ok: true, text: "model: gpt-5.3-codex" };
@@ -29,6 +30,7 @@ function makeDeps() {
 
   return {
     runSession,
+    sendTyping,
     markUpdateSeen: async (updateId: number) => {
       if (seen.has(updateId)) return false;
       seen.add(updateId);
@@ -50,6 +52,8 @@ describe("processTelegramUpdate", () => {
       expect(result.reply.chatId).toBe(777);
       expect(result.reply.text).toContain("ok:hello from fixture");
     }
+    expect(deps.sendTyping).toHaveBeenCalledTimes(1);
+    expect(deps.sendTyping).toHaveBeenCalledWith(777);
     expect(deps.runSession).toHaveBeenCalledTimes(1);
   });
 
@@ -88,6 +92,7 @@ describe("processTelegramUpdate", () => {
 
     expect(first.status).toBe("reply");
     expect(second).toEqual({ status: "ignored", reason: "duplicate_update" });
+    expect(deps.sendTyping).toHaveBeenCalledTimes(1);
     expect(deps.runSession).toHaveBeenCalledTimes(1);
   });
 
@@ -105,6 +110,7 @@ describe("processTelegramUpdate", () => {
 
     expect(nonPrivate).toEqual({ status: "ignored", reason: "non_private_chat" });
     expect(unauthorized).toEqual({ status: "ignored", reason: "unauthorized_user" });
+    expect(deps.sendTyping).toHaveBeenCalledTimes(0);
     expect(deps.runSession).toHaveBeenCalledTimes(0);
   });
 
@@ -120,5 +126,19 @@ describe("processTelegramUpdate", () => {
     const firstCall = deps.runSession.mock.calls[0][0];
     expect(firstCall.message.photo?.length).toBe(2);
     expect(firstCall.message.caption).toBe("photo caption");
+  });
+
+  it("continues when typing indicator fails", async () => {
+    const deps = makeDeps();
+    deps.sendTyping.mockRejectedValueOnce(new Error("network"));
+
+    const result = await processTelegramUpdate(
+      { body: loadFixture("text-message.json"), allowedUserId: "42" },
+      deps,
+    );
+
+    expect(result.status).toBe("reply");
+    expect(deps.sendTyping).toHaveBeenCalledTimes(1);
+    expect(deps.runSession).toHaveBeenCalledTimes(1);
   });
 });

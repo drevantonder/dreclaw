@@ -1,6 +1,6 @@
 import { markUpdateSeen } from "./db";
 import { SessionRuntime } from "./session";
-import { sendTelegramMessage } from "./telegram";
+import { sendTelegramChatAction, sendTelegramMessage } from "./telegram";
 import { processTelegramUpdate } from "./telegram-update-processor";
 import type { Env } from "./types";
 
@@ -36,6 +36,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
     },
     {
       markUpdateSeen: (updateId) => markUpdateSeen(env.DRECLAW_DB, updateId),
+      sendTyping: (chatId) => sendTelegramChatAction(env.TELEGRAM_BOT_TOKEN, chatId),
       runSession: async (sessionRequest) => {
         const id = env.SESSION_RUNTIME.idFromName(String(sessionRequest.message.chat.id));
         const stub = env.SESSION_RUNTIME.get(id);

@@ -3,6 +3,7 @@ import type { SessionRequest, SessionResponse } from "./types";
 
 export interface TelegramProcessorDeps {
   markUpdateSeen(updateId: number): Promise<boolean>;
+  sendTyping?(chatId: number): Promise<void>;
   runSession(request: SessionRequest): Promise<SessionResponse>;
 }
 
@@ -30,6 +31,17 @@ export async function processTelegramUpdate(
   if (message.chat.type !== "private") return { status: "ignored", reason: "non_private_chat" };
   if (!message.from || String(message.from.id) !== input.allowedUserId) {
     return { status: "ignored", reason: "unauthorized_user" };
+  }
+
+  if (deps.sendTyping) {
+    try {
+      await deps.sendTyping(message.chat.id);
+    } catch (error) {
+      console.warn("telegram-typing-indicator-failed", {
+        chatId: message.chat.id,
+        error: error instanceof Error ? error.message : String(error ?? "unknown"),
+      });
+    }
   }
 
   const response = await deps.runSession({
