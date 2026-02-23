@@ -37,6 +37,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
     {
       markUpdateSeen: (updateId) => markUpdateSeen(env.DRECLAW_DB, updateId),
       sendTyping: (chatId) => sendTelegramChatAction(env.TELEGRAM_BOT_TOKEN, chatId),
+      sendProgressMessage: (chatId, text) => sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, text),
       runSession: async (sessionRequest) => {
         const id = env.SESSION_RUNTIME.idFromName(String(sessionRequest.message.chat.id));
         const stub = env.SESSION_RUNTIME.get(id);

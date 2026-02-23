@@ -24,11 +24,41 @@ export async function sendTelegramMessage(
   token: string,
   chatId: number,
   text: string,
-): Promise<void> {
+): Promise<number | null> {
   const url = `${TELEGRAM_API}/bot${token}/sendMessage`;
   const safeText = clampTelegramText(text);
   const body = {
     chat_id: chatId,
+    text: safeText,
+    disable_web_page_preview: true,
+  };
+
+  return withRetry(async () => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const payload = await response.text();
+      throw new Error(`Telegram send failed (${response.status}): ${payload}`);
+    }
+    const payload = (await response.json()) as { result?: { message_id?: number } };
+    return payload.result?.message_id ?? null;
+  });
+}
+
+export async function editTelegramMessage(
+  token: string,
+  chatId: number,
+  messageId: number,
+  text: string,
+): Promise<void> {
+  const url = `${TELEGRAM_API}/bot${token}/editMessageText`;
+  const safeText = clampTelegramText(text);
+  const body = {
+    chat_id: chatId,
+    message_id: messageId,
     text: safeText,
     disable_web_page_preview: true,
   };
@@ -41,7 +71,7 @@ export async function sendTelegramMessage(
     });
     if (!response.ok) {
       const payload = await response.text();
-      throw new Error(`Telegram send failed (${response.status}): ${payload}`);
+      throw new Error(`Telegram edit failed (${response.status}): ${payload}`);
     }
   });
 }
@@ -101,11 +131,11 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-async function withRetry(fn: () => Promise<void>): Promise<void> {
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
-    await fn();
+    return await fn();
   } catch {
     await new Promise((resolve) => setTimeout(resolve, 200));
-    await fn();
+    return fn();
   }
 }

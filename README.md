@@ -7,11 +7,12 @@ v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/too
 ## v0 Scope
 
 - Telegram private chat-only, single-user (me)
-- Commands: `/status`, `/reset`
+- Commands: `/status`, `/reset`, `/details`, `/thinking`
 - Core tools: `read`, `write`, `edit`, `bash` (via just-bash)
 - R2-backed filesystem for files, memories, and saved scripts
 - OpenCode Zen provider (`MODEL` + `BASE_URL`)
 - No Sandbox/container dependency in v0
+- Telegram UX uses a compact progress bubble by default (editable status + final answer)
 
 ## Architecture (High-level)
 
@@ -74,6 +75,14 @@ pnpm deploy
 - Message the bot in a private Telegram chat.
 - `/status` shows runtime/session/auth readiness.
 - `/reset` clears current session context.
+- `/details compact|verbose|debug` controls tool/progress verbosity.
+- `/thinking on|off` toggles thinking message visibility (shown in `debug` mode).
+
+### Telegram message modes
+
+- `compact` (default): typing + one progress status bubble + final reply.
+- `verbose`: compact behavior plus tool lifecycle updates (`Tool start`, `Tool ok/error`).
+- `debug`: verbose behavior plus detailed tool call arguments/output and thinking snippets (if enabled).
 
 ## Testing
 
