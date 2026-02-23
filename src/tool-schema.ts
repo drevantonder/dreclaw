@@ -11,7 +11,7 @@ export interface ToolSpec {
 export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "read",
-    description: "Read file content from active workspace",
+    description: "Read file content from session filesystem",
     parameters: {
       type: "object",
       properties: { path: { type: "string" } },
@@ -21,7 +21,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "write",
-    description: "Write file content to active workspace",
+    description: "Write file content to session filesystem",
     parameters: {
       type: "object",
       properties: { path: { type: "string" }, content: { type: "string" } },
@@ -41,7 +41,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "bash",
-    description: "Run shell command in /workspace",
+    description: "Run shell command in session filesystem",
     parameters: {
       type: "object",
       properties: { command: { type: "string" } },

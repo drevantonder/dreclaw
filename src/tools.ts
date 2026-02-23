@@ -71,7 +71,7 @@ export class SessionShell {
     }
 
     this.bash = new Bash({ files, cwd: VFS_ROOT, env: shellEnv() });
-    await this.bash.exec("mkdir -p /workspace /workspace/.config /workspace/.cache", { cwd: VFS_ROOT, env: shellEnv() });
+    await this.bash.exec("mkdir -p /.config /.cache /workspace", { cwd: VFS_ROOT, env: shellEnv() });
   }
 
   private async syncToPersistence(): Promise<void> {
@@ -79,7 +79,7 @@ export class SessionShell {
 
     const files: Record<string, Uint8Array> = {};
     for (const path of this.bash.fs.getAllPaths()) {
-      if (!path.startsWith(`${VFS_ROOT}/`)) continue;
+      if (!path.startsWith("/")) continue;
       try {
         const stat = await this.bash.fs.stat(path);
         if (!stat.isFile) continue;
@@ -148,10 +148,12 @@ function normalizeToolCall(input: unknown): ToolCall | null {
 }
 
 function shellEnv(): Record<string, string> {
+  const configHome = VFS_ROOT === "/" ? "/.config" : `${VFS_ROOT}/.config`;
+  const cacheHome = VFS_ROOT === "/" ? "/.cache" : `${VFS_ROOT}/.cache`;
   return {
     HOME: VFS_ROOT,
-    XDG_CONFIG_HOME: `${VFS_ROOT}/.config`,
-    XDG_CACHE_HOME: `${VFS_ROOT}/.cache`,
+    XDG_CONFIG_HOME: configHome,
+    XDG_CACHE_HOME: cacheHome,
   };
 }
 

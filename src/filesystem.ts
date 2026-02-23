@@ -25,6 +25,10 @@ export class R2FilesystemService {
 
     const absolute = legacyRebased.startsWith("/") ? legacyRebased : `${VFS_ROOT}/${legacyRebased}`;
     const normalized = absolute.replace(/\/{2,}/g, "/");
+    if (VFS_ROOT === "/") {
+      if (normalized.startsWith("/")) return normalized;
+      throw new Error(`Path escapes workspace root: ${trimmed}`);
+    }
     if (normalized === VFS_ROOT) return normalized;
     if (normalized.startsWith(`${VFS_ROOT}/`)) return normalized;
     throw new Error(`Path escapes workspace root: ${trimmed}`);

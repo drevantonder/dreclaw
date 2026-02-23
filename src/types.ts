@@ -1,6 +1,6 @@
 import type { ToolName } from "./tool-schema";
 
-export const VFS_ROOT = "/workspace";
+export const VFS_ROOT = "/";
 export const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1";
 
 export interface Env {
