@@ -10,12 +10,12 @@ v0 security model is intentionally simple and single-user.
 
 ## Secret boundaries
 
-- Provider auth credentials are stored in KV as a provider auth map.
-- Auth data is never stored in `/SOUL.md`, `/MEMORY.md`, or script filesystem paths.
+- Provider auth credentials are stored as Worker secrets.
+- Auth data must never be placed in `injected_messages`.
 - `/status` and logs must not expose secrets or tokens.
 
 ## Runtime boundaries
 
 - No Sandbox/container dependency in v0.
-- Tool execution is constrained to Worker-native tool surface.
-- Files/scripts persist in R2; auth persists separately in KV.
+- Tool execution is constrained to `injected_messages.get`, `injected_messages.set`, and `injected_messages.delete`.
+- Only messages between runtime markers are editable via injected message management tools.

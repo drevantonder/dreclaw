@@ -12,10 +12,6 @@ binding = "DRECLAW_DB"
 database_name = "dreclaw"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
-[[r2_buckets]]
-binding = "WORKSPACE_BUCKET"
-bucket_name = "dreclaw-workspace"
-
 [[durable_objects.bindings]]
 name = "SESSION_RUNTIME"
 class_name = "SessionRuntime"

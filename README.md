@@ -1,18 +1,14 @@
 # dréclaw
 
-`dréclaw` is my personal AI assistant, inspired by OpenClaw, built Cloudflare-first.
-
-v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/tool loop in Workers, and R2-backed persistence.
+`dréclaw` is a personal Cloudflare-first AI assistant inspired by OpenClaw.
 
 ## v0 Scope
 
 - Telegram private chat-only, single-user (me)
 - Commands: `/status`, `/reset`, `/details`, `/thinking`
-- Core tools: `read`, `write`, `edit`, `bash` (via just-bash)
-- R2-backed filesystem for files and saved scripts
+- Core tools: `injected_messages.get`, `injected_messages.set`, `injected_messages.delete`
+- Versioned `injected_messages` persisted in Durable Object session state
 - OpenCode Zen provider (`MODEL` + `BASE_URL`)
-- No Sandbox/container dependency in v0
-- Telegram UX keeps a typing indicator active during runs, then sends final answer
 
 ## Architecture (High-level)
 
@@ -21,16 +17,18 @@ flowchart TD
   U[Telegram Chat] --> W[Worker Gateway]
   W --> DO[Durable Object Session]
   DO --> M[Model Loop]
-  M --> T[Tool Surface: read/write/edit/bash]
-  T --> FS[R2 Filesystem]
+  M --> IM[Injected Messages]
+  M --> T[Tools: injected_messages.get/set/delete]
   DO --> W --> U
 ```
 
 - Worker verifies Telegram requests and routes updates.
-- Durable Object serializes turns.
-- Agent loop runs via `@mariozechner/pi-agent-core` and drives tool calls.
-- Files persist in R2.
-- Auth is `OPENCODE_ZEN_API_KEY` Worker secret.
+- Durable Object serializes turns and stores session state.
+- Runtime injects:
+  - `INJECTED_MESSAGES_START version=<n>`
+  - current `injected_messages`
+  - `INJECTED_MESSAGES_END`
+- Agent can inspect/replace injected messages with versioned tools.
 
 ## Setup
 
@@ -70,26 +68,11 @@ Route is read from `wrangler.toml`:
 pnpm deploy
 ```
 
-Seed default memory templates in R2 (recommended right after deploy):
-
-```bash
-pnpm seed:memory
-```
-
-This creates `defaults/SOUL.md` and `defaults/MEMORY.md` (from `src/initial-filesystem/SOUL.md` and `src/initial-filesystem/MEMORY.md`) only when they do not already exist.
-New session files use these defaults when `/SOUL.md` or `/MEMORY.md` is missing.
-
-Or run deploy + seed in one step:
-
-```bash
-pnpm deploy:seed
-```
-
 ## Usage
 
 - Message the bot in a private Telegram chat.
-- `/status` shows runtime/session/auth readiness.
-- `/reset` clears current session context.
+- `/status` shows runtime/session/auth + injected message metadata.
+- `/reset` clears current session state.
 - `/details compact|verbose|debug` controls tool/progress verbosity.
 - `/thinking on|off` toggles thinking message visibility (shown in `debug` mode).
 
@@ -105,16 +88,13 @@ pnpm deploy:seed
 - Type-check: `pnpm check`
 - Run live model smoke test (real Zen + tool loop): `set -a; source .env; set +a && pnpm smoke:live -- --prompt "hey"`
 - Run pre-deploy gate: `pnpm verify:predeploy`
-- Preferred local strategy is unit-first with webhook fixtures in `tests/fixtures/telegram`.
-- Use `tests/unit/telegram-update-processor.test.ts` for behavior coverage.
-- Keep e2e tests thin for route + header wiring in `tests/e2e/webhook.e2e.test.ts`.
 
 ## Persistence model
 
-- Filesystem root of truth is R2.
-- Identity is stored in `/SOUL.md`.
-- Durable user memory is stored in `/MEMORY.md` (keep under 20 lines).
-- Saved scripts are stored and run from R2.
+- Durable conversation history lives in session state.
+- `injected_messages` live in session state with optimistic versioning.
+- `injected_messages.set` upserts one message by `id` with `expected_version` checks.
+- `injected_messages.delete` removes one message by `id` with `expected_version` checks.
 
 ## Auth model
 
@@ -124,9 +104,3 @@ pnpm deploy:seed
 ## Security
 
 See `docs/security.md`.
-
-## Future plans
-
-- Telegram `/model` selector
-- Semantic memory (AI Search / Vectorize)
-- OpenClaw node compatibility layer (post-v0)

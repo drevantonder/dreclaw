@@ -5,7 +5,7 @@ import { createEnv } from "../helpers/fakes";
 type MockContext = {
   systemPrompt: string;
   messages: Array<Record<string, unknown>>;
-  tools: Array<Record<string, unknown>>;
+  tools: Array<{ name: string; execute: (toolCallId: string, params: unknown) => Promise<unknown> }>;
 };
 
 type MockOptions = {
@@ -45,13 +45,21 @@ vi.mock("@mariozechner/pi-agent-core", () => {
 
     private listeners = new Set<(event: Record<string, unknown>) => void>();
 
-    constructor(options?: { initialState?: { systemPrompt?: string; messages?: Array<Record<string, unknown>>; tools?: Array<Record<string, unknown>>; thinkingLevel?: string } }) {
+    constructor(options?: {
+      initialState?: {
+        systemPrompt?: string;
+        messages?: Array<Record<string, unknown>>;
+        tools?: Array<{ name: string; execute: (toolCallId: string, params: unknown) => Promise<unknown> }>;
+        thinkingLevel?: string;
+      };
+    }) {
       this.state = {
         messages: [...(options?.initialState?.messages ?? [])],
         thinkingLevel: options?.initialState?.thinkingLevel,
       };
       (this as unknown as { __systemPrompt?: string }).__systemPrompt = options?.initialState?.systemPrompt ?? "";
-      (this as unknown as { __tools?: Array<Record<string, unknown>> }).__tools = options?.initialState?.tools ?? [];
+      (this as unknown as { __tools?: Array<{ name: string; execute: (toolCallId: string, params: unknown) => Promise<unknown> }> }).__tools =
+        options?.initialState?.tools ?? [];
     }
 
     subscribe(listener: (event: Record<string, unknown>) => void) {
@@ -75,7 +83,8 @@ vi.mock("@mariozechner/pi-agent-core", () => {
         const context: MockContext = {
           systemPrompt: (this as unknown as { __systemPrompt?: string }).__systemPrompt ?? "",
           messages: this.state.messages,
-          tools: (this as unknown as { __tools?: Array<Record<string, unknown>> }).__tools ?? [],
+          tools: (this as unknown as { __tools?: Array<{ name: string; execute: (toolCallId: string, params: unknown) => Promise<unknown> }> })
+            .__tools ?? [],
         };
         modelCallContext.push(context);
         modelCallOptions.push({ thinkingLevel: this.state.thinkingLevel });
@@ -118,32 +127,73 @@ vi.mock("@mariozechner/pi-agent-core", () => {
 
         const toolCalls = resolved.content.filter((block) => block.type === "toolCall");
         for (const toolCall of toolCalls) {
+          const toolCallId = String(toolCall.id ?? "");
+          const toolName = String(toolCall.name ?? "");
           const toolArgs = (toolCall.arguments ?? {}) as Record<string, unknown>;
           this.emit({
             type: "tool_execution_start",
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
+            toolCallId,
+            toolName,
             args: toolArgs,
           });
-          const isReadMissing = toolCall.name === "read" && toolArgs.path === "/missing.md";
-          const resultText = isReadMissing
-            ? "tool=read\nok=false\nerror=ENOENT: no such file or directory, open '/missing.md'"
-            : "ok";
-          this.emit({
-            type: "tool_execution_end",
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
-            result: { content: [{ type: "text", text: resultText }], details: {} },
-            isError: isReadMissing,
-          });
-          this.state.messages.push({
-            role: "toolResult",
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
-            content: [{ type: "text", text: resultText }],
-            isError: isReadMissing,
-            timestamp: Date.now(),
-          });
+
+          const tool = context.tools.find((entry) => entry.name === toolName);
+          if (!tool) {
+            const result = { content: [{ type: "text", text: `Missing tool: ${toolName}` }] };
+            this.emit({
+              type: "tool_execution_end",
+              toolCallId,
+              toolName,
+              result,
+              isError: true,
+            });
+            this.state.messages.push({
+              role: "toolResult",
+              toolCallId,
+              toolName,
+              content: result.content,
+              isError: true,
+              timestamp: Date.now(),
+            });
+            continue;
+          }
+
+          try {
+            const result = (await tool.execute(toolCallId, toolArgs)) as { content?: Array<Record<string, unknown>> };
+            this.emit({
+              type: "tool_execution_end",
+              toolCallId,
+              toolName,
+              result,
+              isError: false,
+            });
+            this.state.messages.push({
+              role: "toolResult",
+              toolCallId,
+              toolName,
+              content: result.content ?? [{ type: "text", text: "ok" }],
+              isError: false,
+              timestamp: Date.now(),
+            });
+          } catch (error) {
+            const text = error instanceof Error ? error.message : String(error ?? "tool failed");
+            const result = { content: [{ type: "text", text }] };
+            this.emit({
+              type: "tool_execution_end",
+              toolCallId,
+              toolName,
+              result,
+              isError: true,
+            });
+            this.state.messages.push({
+              role: "toolResult",
+              toolCallId,
+              toolName,
+              content: result.content,
+              isError: true,
+              timestamp: Date.now(),
+            });
+          }
         }
 
         if (resolved.stopReason === "toolUse") continue;
@@ -187,7 +237,7 @@ function setupTelegramFetch() {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (url.includes("/sendMessage")) {
-        const body = init?.body ? JSON.parse(String(init.body)) as { text?: string; parse_mode?: string } : {};
+        const body = init?.body ? (JSON.parse(String(init.body)) as { text?: string; parse_mode?: string }) : {};
         const messageId = nextMessageId;
         nextMessageId += 1;
         sends.push({ text: body.text ?? "", messageId, parseMode: body.parse_mode });
@@ -220,48 +270,49 @@ describe("conversation e2e", () => {
     modelQueue.length = 0;
   });
 
-  it("uses compact progress and final tool summary by default", async () => {
+  it("uses compact progress by default and injects message markers", async () => {
     const { env } = createEnv();
     const { sends, actions } = setupTelegramFetch();
 
-    modelQueue.push(
-      {
-        stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "/MEMORY.md", content: "human_name: Dre" } }],
-      },
-      {
-        stopReason: "endTurn",
-        content: [{ type: "text", text: "Saved it." }],
-      },
-    );
+    modelQueue.push({
+      stopReason: "endTurn",
+      content: [{ type: "text", text: "Saved it." }],
+    });
 
     await callWebhook(env, 4001, "remember my name");
 
     expect(actions).toEqual(["typing"]);
-    expect(sends.some((message) => message.text === "Working..." || message.text === "Wrapping up...")).toBe(false);
     expect(sends.some((message) => message.text.includes("Tool call:"))).toBe(false);
     const final = sends.at(-1)!;
     expect(final.parseMode).toBe("HTML");
     expect(final.text).toContain("Saved it.");
-    expect(final.text).toContain("<b>Tools used:</b> <code>write</code>");
-    expect(final.text).not.toContain("-> ok");
 
     const firstContext = modelCallContext.at(0);
-    const assistantBootstrap = firstContext?.messages.find(
+    const firstMessages = firstContext?.messages ?? [];
+    const startMarker = firstMessages.find(
       (message) =>
         message.role === "assistant" &&
         Array.isArray(message.content) &&
-        message.content.some((block: Record<string, unknown>) => block.type === "toolCall" && block.name === "read"),
+        message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("INJECTED_MESSAGES_START")),
     );
-    expect(assistantBootstrap).toBeTruthy();
-
-    const bootstrapCalls = ((assistantBootstrap as { content?: Array<Record<string, unknown>> } | undefined)?.content ?? [])
-      .filter((block) => block.type === "toolCall" && block.name === "read")
-      .map((block) => ((block.arguments as Record<string, unknown> | undefined)?.path as string | undefined) ?? "");
-    expect(bootstrapCalls).toEqual(["/SOUL.md", "/MEMORY.md"]);
+    const endMarker = firstMessages.find(
+      (message) =>
+        message.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some((block: Record<string, unknown>) => block.type === "text" && block.text === "INJECTED_MESSAGES_END"),
+    );
+    const manifest = firstMessages.find(
+      (message) =>
+        message.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("INJECTED_MESSAGES_MANIFEST")),
+    );
+    expect(startMarker).toBeTruthy();
+    expect(manifest).toBeTruthy();
+    expect(endMarker).toBeTruthy();
   });
 
-  it("supports verbose mode via /details and shows tool lifecycle messages", async () => {
+  it("supports verbose mode via /details and shows injected_messages tool lifecycle", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
@@ -270,20 +321,69 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "cat /MEMORY.md" } }],
+        content: [{ type: "toolCall", id: "call-1", name: "injected_messages.get", arguments: {} }],
       },
       {
         stopReason: "endTurn",
-        content: [{ type: "text", text: "Memory loaded." }],
+        content: [{ type: "text", text: "Loaded." }],
       },
     );
 
-    await callWebhook(env, 4010, "Can you see any memories?");
+    await callWebhook(env, 4010, "show injected messages");
 
-    expect(sends.some((message) => message.parseMode === "HTML")).toBe(true);
-    expect(sends.some((message) => message.text.includes("Tool start:"))).toBe(true);
-    expect(sends.some((message) => message.text.includes("Tool ok:") || message.text.includes("Tool error:"))).toBe(true);
-    expect(sends.at(-1)?.text).toContain("Memory loaded.");
+    expect(sends.some((message) => message.text.includes("Tool start") && message.text.includes("injected_messages.get"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("injected_messages.get"))).toBe(true);
+    expect(sends.at(-1)?.text).toContain("Loaded.");
+  });
+
+  it("supports injected_messages.set then get", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "injected_messages.set",
+            arguments: {
+              id: "identity",
+              expected_version: 1,
+              message: { role: "system", content: [{ type: "text", text: "New identity." }] },
+            },
+          },
+        ],
+      },
+      {
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "call-2", name: "injected_messages.get", arguments: {} }],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Updated." }],
+      },
+    );
+
+    await callWebhook(env, 4011, "update injected");
+    expect(sends.at(-1)?.text).toContain("Updated.");
+
+    modelQueue.push((context: MockContext) => {
+      const hasNewIdentity = context.messages.some(
+        (message) =>
+          message.role === "system" &&
+          Array.isArray(message.content) &&
+          message.content.some((block: Record<string, unknown>) => block.type === "text" && block.text === "New identity."),
+      );
+      expect(hasNewIdentity).toBe(true);
+      return {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Saw it." }],
+      };
+    });
+    await callWebhook(env, 4012, "confirm");
+    expect(sends.at(-1)?.text).toContain("Saw it.");
   });
 
   it("persists tool errors in history so next turn can react", async () => {
@@ -293,14 +393,25 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "/missing.md" } }],
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "injected_messages.set",
+            arguments: {
+              id: "identity",
+              expected_version: 999,
+              message: { role: "system", content: "x" },
+            },
+          },
+        ],
       },
       {
         stopReason: "endTurn",
-        content: [{ type: "text", text: "I could not read that file." }],
+        content: [{ type: "text", text: "Set failed." }],
       },
       (context: MockContext) => {
-        const hasToolError = context.systemPrompt.includes("tool=read") && context.systemPrompt.includes("ok=false");
+        const hasToolError = context.systemPrompt.includes("tool=injected_messages.set") && context.systemPrompt.includes("ok=false");
         expect(hasToolError).toBe(true);
         return {
           stopReason: "endTurn",
@@ -309,12 +420,10 @@ describe("conversation e2e", () => {
       },
     );
 
-    await callWebhook(env, 4002, "read /missing.md");
-    expect(sends.some((message) => message.text.includes("Tool error: read"))).toBe(false);
-    const firstFinal = sends.find((message) => message.text.includes("Tools used:"));
-    expect(firstFinal?.text).toContain("<b>Failed tools:</b> <code>read</code>");
+    await callWebhook(env, 4013, "bad set");
+    expect(sends.some((message) => message.text.includes("Tool error: injected_messages.set"))).toBe(false);
 
-    await callWebhook(env, 4003, "what failed earlier?");
+    await callWebhook(env, 4014, "what failed earlier?");
     expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
   });
 
@@ -323,13 +432,12 @@ describe("conversation e2e", () => {
     const { sends } = setupTelegramFetch();
 
     await callWebhook(env, 4007, "/details debug");
-
     await callWebhook(env, 4008, "/thinking on");
 
     modelQueue.push({
       stopReason: "endTurn",
       content: [
-        { type: "thinking", thinking: "Check memory note then answer briefly." },
+        { type: "thinking", thinking: "Check markers then answer briefly." },
         { type: "text", text: "Done." },
       ],
     });
@@ -341,6 +449,41 @@ describe("conversation e2e", () => {
     const thinkingMessages = sends.filter((message) => message.text.startsWith("<b>Thinking:</b>"));
     expect(thinkingMessages.length).toBe(1);
     expect(sends.at(-1)?.text).toContain("Done.");
+  });
+
+  it("supports injected_messages.delete by id", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "call-1", name: "injected_messages.delete", arguments: { id: "memory", expected_version: 1 } }],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Deleted." }],
+      },
+      (context: MockContext) => {
+        const hasMemoryMessage = context.messages.some(
+          (message) =>
+            message.role === "system" &&
+            Array.isArray(message.content) &&
+            message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("# MEMORY")),
+        );
+        expect(hasMemoryMessage).toBe(false);
+        return {
+          stopReason: "endTurn",
+          content: [{ type: "text", text: "Confirmed delete." }],
+        };
+      },
+    );
+
+    await callWebhook(env, 4015, "delete memory");
+    expect(sends.at(-1)?.text).toContain("Deleted.");
+
+    await callWebhook(env, 4016, "confirm memory deleted");
+    expect(sends.at(-1)?.text).toContain("Confirmed delete.");
   });
 
   it("persists runtime failures in history for future turns", async () => {

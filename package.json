@@ -6,10 +6,8 @@
   "scripts": {
     "check": "tsc --noEmit",
     "deploy": "pnpm dlx wrangler deploy",
-    "deploy:seed": "pnpm deploy && pnpm seed:memory",
     "dev": "pnpm dlx wrangler dev",
     "d1:migrate": "pnpm dlx wrangler d1 migrations apply DRECLAW_DB",
-    "seed:memory": "node scripts/seed-memory.mjs",
     "secrets:sync": "set -a && source .env && set +a && node scripts/secrets-sync.mjs | pnpm dlx wrangler secret bulk",
     "smoke:live": "node scripts/smoke-live.mjs",
     "verify:predeploy": "pnpm check && pnpm test && pnpm smoke:live",
@@ -23,7 +21,6 @@
   "dependencies": {
     "@mariozechner/pi-agent-core": "^0.54.2",
     "@mariozechner/pi-ai": "^0.54.2",
-    "@sinclair/typebox": "^0.34.48",
-    "just-bash": "^2.10.2"
+    "@sinclair/typebox": "^0.34.48"
   }
 }

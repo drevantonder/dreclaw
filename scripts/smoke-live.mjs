@@ -1,10 +1,18 @@
 #!/usr/bin/env node
-import { Bash } from "just-bash";
 import { Type, complete, getModel } from "@mariozechner/pi-ai";
 
-const WORKSPACE_ROOT = "/workspace";
-const SYSTEM_PROMPT =
-  "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls.";
+const SYSTEM_PROMPT = "You are dréclaw. Be concise.";
+
+const DEFAULT_INJECTED_MESSAGES = [
+  {
+    id: "identity",
+    message: {
+      role: "system",
+      content: [{ type: "text", text: "I am friendly, direct, and practical." }],
+      timestamp: Date.now(),
+    },
+  },
+];
 
 function parseArgs(argv) {
   const args = {
@@ -39,64 +47,9 @@ function fail(message) {
   process.exit(1);
 }
 
-function normalizePath(input) {
-  const trimmed = String(input ?? "").trim();
-  if (!trimmed) return WORKSPACE_ROOT;
-  const absolute = trimmed.startsWith("/") ? trimmed : `${WORKSPACE_ROOT}/${trimmed}`;
-  const normalized = absolute.replace(/\/{2,}/g, "/");
-  if (normalized === WORKSPACE_ROOT || normalized.startsWith(`${WORKSPACE_ROOT}/`)) return normalized;
-  throw new Error(`Path escapes workspace root: ${trimmed}`);
-}
-
-function shellEnv() {
-  return {
-    HOME: WORKSPACE_ROOT,
-    XDG_CONFIG_HOME: `${WORKSPACE_ROOT}/.config`,
-    XDG_CACHE_HOME: `${WORKSPACE_ROOT}/.cache`,
-    PATH: "/usr/local/bin:/usr/bin:/bin",
-  };
-}
-
-async function runToolCall(toolCall, bash) {
-  try {
-    if (toolCall.name === "read") {
-      const path = normalizePath(toolCall.arguments.path);
-      const output = await bash.fs.readFile(path, "utf8");
-      return { ok: true, output };
-    }
-
-    if (toolCall.name === "write") {
-      const path = normalizePath(toolCall.arguments.path);
-      const content = String(toolCall.arguments.content ?? "");
-      await bash.writeFile(path, content);
-      return { ok: true, output: `Wrote ${path}` };
-    }
-
-    if (toolCall.name === "edit") {
-      const path = normalizePath(toolCall.arguments.path);
-      const find = String(toolCall.arguments.find ?? "");
-      const replace = String(toolCall.arguments.replace ?? "");
-      const current = await bash.fs.readFile(path, "utf8");
-      if (!current.includes(find)) return { ok: false, output: "", error: `Text not found in ${path}` };
-      await bash.writeFile(path, current.replace(find, replace));
-      return { ok: true, output: `Edited ${path}` };
-    }
-
-    if (toolCall.name === "bash") {
-      const command = String(toolCall.arguments.command ?? "");
-      const result = await bash.exec(command, { cwd: WORKSPACE_ROOT, env: shellEnv() });
-      const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
-      return { ok: result.exitCode === 0, output, error: result.exitCode === 0 ? undefined : `Exit code ${result.exitCode}` };
-    }
-
-    return { ok: false, output: "", error: `Unsupported tool: ${toolCall.name}` };
-  } catch (error) {
-    return {
-      ok: false,
-      output: "",
-      error: error instanceof Error ? error.message : "Unknown tool error",
-    };
-  }
+function parseToolArgs(value) {
+  if (!value || typeof value !== "object") return {};
+  return value;
 }
 
 async function main() {
@@ -124,37 +77,58 @@ async function main() {
     };
   }
   model.baseUrl = args.baseUrl.trim();
+
+  let version = 1;
+  let injectedMessages = JSON.parse(JSON.stringify(DEFAULT_INJECTED_MESSAGES));
+
   const tools = [
     {
-      name: "read",
-      description: "Read file content from active workspace",
-      parameters: Type.Object({ path: Type.String() }),
+      name: "injected_messages.get",
+      description: "Get current injected messages and version",
+      parameters: Type.Object({}),
     },
     {
-      name: "write",
-      description: "Write file content to active workspace",
-      parameters: Type.Object({ path: Type.String(), content: Type.String() }),
+      name: "injected_messages.set",
+      description: "Create or update one injected message by id",
+      parameters: Type.Object({
+        id: Type.String(),
+        message: Type.Any(),
+        expected_version: Type.Optional(Type.Number()),
+      }),
     },
     {
-      name: "edit",
-      description: "Replace text within a file",
-      parameters: Type.Object({ path: Type.String(), find: Type.String(), replace: Type.String() }),
-    },
-    {
-      name: "bash",
-      description: "Run shell command in /workspace",
-      parameters: Type.Object({ command: Type.String() }),
+      name: "injected_messages.delete",
+      description: "Delete one injected message by id",
+      parameters: Type.Object({
+        id: Type.String(),
+        expected_version: Type.Optional(Type.Number()),
+      }),
     },
   ];
 
   const context = {
     systemPrompt: SYSTEM_PROMPT,
     tools,
-    messages: [{ role: "user", content: args.prompt, timestamp: Date.now() }],
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: `INJECTED_MESSAGES_START version=${version}` }],
+        timestamp: Date.now(),
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: `INJECTED_MESSAGES_MANIFEST ids=${injectedMessages.map((item) => item.id).join(",")}` }],
+        timestamp: Date.now(),
+      },
+      ...injectedMessages.map((item) => item.message),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "INJECTED_MESSAGES_END" }],
+        timestamp: Date.now(),
+      },
+      { role: "user", content: args.prompt, timestamp: Date.now() },
+    ],
   };
-
-  const bash = new Bash({ cwd: WORKSPACE_ROOT, files: {}, env: shellEnv() });
-  await bash.exec("mkdir -p /workspace/.config /workspace/.cache", { cwd: WORKSPACE_ROOT, env: shellEnv() });
 
   for (let turn = 0; turn < args.maxTurns; turn += 1) {
     const assistant = await complete(model, context, {
@@ -170,20 +144,134 @@ async function main() {
     context.messages.push(assistant);
     const toolCalls = assistant.content.filter((block) => block.type === "toolCall");
     if (!toolCalls.length) {
-      const text = assistant.content.filter((block) => block.type === "text").map((block) => block.text).join("\n").trim();
+      const text = assistant.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n")
+        .trim();
       if (!text) fail("Smoke test returned empty final response");
       process.stdout.write(`Smoke OK\nModel: ${args.model}\nResponse:\n${text}\n`);
       return;
     }
 
     for (const call of toolCalls) {
-      const result = await runToolCall(call, bash);
+      const argsObj = parseToolArgs(call.arguments);
+      if (call.name === "injected_messages.get") {
+        context.messages.push({
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name,
+          content: [{ type: "text", text: JSON.stringify({ version, injected_messages: injectedMessages }, null, 2) }],
+          isError: false,
+          timestamp: Date.now(),
+        });
+        continue;
+      }
+
+      if (call.name === "injected_messages.set") {
+        const expectedVersion = argsObj.expected_version;
+        if (typeof expectedVersion === "number" && expectedVersion !== version) {
+          context.messages.push({
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: [{ type: "text", text: `Version conflict: expected ${expectedVersion}, current ${version}` }],
+            isError: true,
+            timestamp: Date.now(),
+          });
+          continue;
+        }
+
+        const id = typeof argsObj.id === "string" ? argsObj.id.trim().toLowerCase() : "";
+        if (!id) {
+          context.messages.push({
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: [{ type: "text", text: "id is required" }],
+            isError: true,
+            timestamp: Date.now(),
+          });
+          continue;
+        }
+
+        if (!argsObj.message || typeof argsObj.message !== "object") {
+          context.messages.push({
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: [{ type: "text", text: "message must be an object" }],
+            isError: true,
+            timestamp: Date.now(),
+          });
+          continue;
+        }
+
+        const next = JSON.parse(JSON.stringify(argsObj.message));
+        const existingIndex = injectedMessages.findIndex((item) => item.id === id);
+        if (existingIndex >= 0) injectedMessages[existingIndex] = { id, message: next };
+        else injectedMessages.push({ id, message: next });
+
+        version += 1;
+        context.messages.push({
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name,
+          content: [{ type: "text", text: JSON.stringify({ version }, null, 2) }],
+          isError: false,
+          timestamp: Date.now(),
+        });
+        continue;
+      }
+
+      if (call.name === "injected_messages.delete") {
+        const expectedVersion = argsObj.expected_version;
+        if (typeof expectedVersion === "number" && expectedVersion !== version) {
+          context.messages.push({
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: [{ type: "text", text: `Version conflict: expected ${expectedVersion}, current ${version}` }],
+            isError: true,
+            timestamp: Date.now(),
+          });
+          continue;
+        }
+
+        const id = typeof argsObj.id === "string" ? argsObj.id.trim().toLowerCase() : "";
+        const existingIndex = injectedMessages.findIndex((item) => item.id === id);
+        if (!id || existingIndex < 0) {
+          context.messages.push({
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: [{ type: "text", text: `Injected message not found: ${id || "(empty)"}` }],
+            isError: true,
+            timestamp: Date.now(),
+          });
+          continue;
+        }
+
+        injectedMessages.splice(existingIndex, 1);
+
+        version += 1;
+        context.messages.push({
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name,
+          content: [{ type: "text", text: JSON.stringify({ version }, null, 2) }],
+          isError: false,
+          timestamp: Date.now(),
+        });
+        continue;
+      }
+
       context.messages.push({
         role: "toolResult",
         toolCallId: call.id,
         toolName: call.name,
-        content: [{ type: "text", text: result.ok ? result.output : `error=${result.error || "tool failed"}\noutput=${result.output}` }],
-        isError: !result.ok,
+        content: [{ type: "text", text: `Unsupported tool: ${call.name}` }],
+        isError: true,
         timestamp: Date.now(),
       });
     }

@@ -66,61 +66,6 @@ export class FakeD1 {
   }
 }
 
-export class FakeR2 {
-  readonly objects = new Map<string, Uint8Array>();
-  readonly counters = {
-    put: 0,
-    get: 0,
-    list: 0,
-    delete: 0,
-  };
-
-  async put(key: string, value: string | ArrayBuffer | ArrayBufferView): Promise<void> {
-    this.counters.put += 1;
-    if (typeof value === "string") {
-      this.objects.set(key, new TextEncoder().encode(value));
-      return;
-    }
-
-    if (value instanceof ArrayBuffer) {
-      this.objects.set(key, new Uint8Array(value));
-      return;
-    }
-
-    this.objects.set(key, new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)));
-  }
-
-  async get(key: string): Promise<{ arrayBuffer: () => Promise<ArrayBuffer>; json: <T>() => Promise<T> } | null> {
-    this.counters.get += 1;
-    const value = this.objects.get(key);
-    if (value === undefined) return null;
-    const copy = new Uint8Array(value);
-    return {
-      arrayBuffer: async () => copy.buffer,
-      json: async <T>() => JSON.parse(new TextDecoder().decode(value)) as T,
-    };
-  }
-
-  async list(options?: { prefix?: string; cursor?: string }): Promise<{ objects: Array<{ key: string }>; truncated: boolean; cursor: string }> {
-    this.counters.list += 1;
-    const prefix = options?.prefix ?? "";
-    const objects = [...this.objects.keys()]
-      .filter((key) => key.startsWith(prefix))
-      .sort()
-      .map((key) => ({ key }));
-    return { objects, truncated: false, cursor: "" };
-  }
-
-  async delete(keys: string | string[]): Promise<void> {
-    this.counters.delete += 1;
-    if (Array.isArray(keys)) {
-      for (const key of keys) this.objects.delete(key);
-      return;
-    }
-    this.objects.delete(keys);
-  }
-}
-
 class FakeStorage {
   private values = new Map<string, unknown>();
 
@@ -149,7 +94,6 @@ class FakeDurableObjectState {
 
 export function createEnv() {
   const db = new FakeD1();
-  const bucket = new FakeR2();
   const runtimes = new Map<string, SessionRuntime>();
 
   const base = {
@@ -160,7 +104,6 @@ export function createEnv() {
     BASE_URL: "https://opencode.ai/zen/v1",
     OPENCODE_ZEN_API_KEY: "test-zen-key",
     DRECLAW_DB: db as unknown as D1Database,
-    WORKSPACE_BUCKET: bucket as unknown as R2Bucket,
   };
 
   const namespace = {
@@ -188,5 +131,5 @@ export function createEnv() {
     SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
   };
 
-  return { env, db, bucket };
+  return { env, db };
 }

@@ -1,14 +1,29 @@
-import { DEFAULT_BASE_URL, VFS_ROOT, type Env, type ProgressMode, type SessionRequest, type SessionResponse } from "./types";
 import { Type } from "@sinclair/typebox";
 import type { AgentEvent, AgentTool } from "@mariozechner/pi-agent-core";
 import { getModel as piGetModel } from "@mariozechner/pi-ai/dist/models.js";
 import type { ImageContent } from "@mariozechner/pi-ai/dist/types.js";
 import { finishRun, startRun, upsertSessionMeta } from "./db";
-import { R2FilesystemService } from "./filesystem";
-import { runTool, SessionShell } from "./tools";
 import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
+import { DEFAULT_BASE_URL, type Env, type ProgressMode, type SessionRequest, type SessionResponse } from "./types";
 
 type SessionHistoryEntry = { role: "user" | "assistant" | "tool"; content: string };
+
+type InjectedRole = "system" | "user" | "assistant" | "toolResult";
+
+type InjectedMessage = {
+  role: InjectedRole;
+  content: unknown;
+};
+
+type InjectedMessageItem = {
+  id: string;
+  message: InjectedMessage;
+};
+
+interface InjectedMessagesState {
+  version: number;
+  injectedMessages: InjectedMessageItem[];
+}
 
 interface SessionState {
   history: SessionHistoryEntry[];
@@ -16,6 +31,7 @@ interface SessionState {
     progressMode?: ProgressMode;
     showThinking?: boolean;
   };
+  injected?: InjectedMessagesState;
 }
 
 interface RuntimeConfig {
@@ -27,24 +43,56 @@ interface RuntimeConfig {
 interface AgentRunResult {
   finalText: string;
   toolErrors: string[];
-  toolEvents: ToolEvent[];
 }
 
-interface ToolEvent {
-  name: string;
-  ok: boolean;
-  detail: string;
-}
+const SYSTEM_PROMPT = "You are running inside a Cloudflare Worker.";
+const INJECTED_MESSAGES_START = "INJECTED_MESSAGES_START";
+const INJECTED_MESSAGES_MANIFEST = "INJECTED_MESSAGES_MANIFEST";
+const INJECTED_MESSAGES_END = "INJECTED_MESSAGES_END";
+const MAX_INJECTED_MESSAGES = 48;
+const MAX_INJECTED_MESSAGE_TEXT_CHARS = 10_000;
+const INJECTED_MESSAGE_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
-const SOUL_PATH = "/SOUL.md";
-const MEMORY_PATH = "/MEMORY.md";
-const SOUL_DEFAULT_KEY = "defaults/SOUL.md";
-const MEMORY_DEFAULT_KEY = "defaults/MEMORY.md";
-const FALLBACK_SOUL = "# SOUL\n\nMissing default SOUL template. Run: pnpm seed:memory\n";
-const FALLBACK_MEMORY = "Missing default MEMORY template. Run: pnpm seed:memory\n";
-
-const SYSTEM_PROMPT =
-  "Your soul is in /SOUL.md. Your memory in /MEMORY.md. Update MEMORY.md proactively. Keep /MEMORY.md short (target under 20 lines), merge updates into existing facts, and never create memory folders or multiple memory files. Never store secrets or credentials.";
+const DEFAULT_INJECTED_MESSAGES: InjectedMessageItem[] = [
+  {
+    id: "identity",
+    message: {
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text: "# IDENTITY\n\nYou are a helpful personal assistant.",
+        },
+      ],
+    },
+  },
+  {
+    id: "soul",
+    message: {
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text:
+            "# SOUL\n\nI am friendly, genuine, and direct.\nMy human is a friend, not a customer.\nI have real opinions and I share them clearly, with reasons.\nI can disagree politely when I think something is a bad idea.\nI stay practical: concise, useful, no fluff.\nI keep a light quirky humor when it fits.\nI never fake certainty; I say when I am unsure.\nI protect trust: no manipulation, no guilt-tripping, no secrets leakage.\nI aim to be helpful, honest, and a little fun.",
+        },
+      ],
+    },
+  },
+  {
+    id: "memory",
+    message: {
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text:
+            "# MEMORY\n\nYou have no memories. Ask your human for his/her name, what he/she would like you to call him/her, and what he/she is naming you.",
+        },
+      ],
+    },
+  },
+];
 
 let agentCtorPromise: Promise<typeof import("@mariozechner/pi-agent-core")> | null = null;
 
@@ -53,8 +101,6 @@ export class SessionRuntime implements DurableObject {
   private readonly env: Env;
   private loaded = false;
   private stateData: SessionState = { history: [] };
-  private fs: R2FilesystemService | null = null;
-  private shell: SessionShell | null = null;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -88,6 +134,7 @@ export class SessionRuntime implements DurableObject {
     if (this.loaded) return;
     this.stateData = (await this.state.storage.get<SessionState>("session-state")) ?? { history: [] };
     this.stateData.prefs = normalizePrefs(this.stateData.prefs);
+    this.stateData.injected = normalizeInjectedState(this.stateData.injected);
     this.loaded = true;
   }
 
@@ -95,24 +142,17 @@ export class SessionRuntime implements DurableObject {
     await this.state.storage.put("session-state", this.stateData);
   }
 
-  private getFilesystem(sessionId: string): R2FilesystemService {
-    if (!this.fs) this.fs = new R2FilesystemService(this.env.WORKSPACE_BUCKET, sessionId);
-    return this.fs;
-  }
-
-  private getShell(sessionId: string): SessionShell {
-    if (!this.shell) this.shell = new SessionShell(this.getFilesystem(sessionId));
-    return this.shell;
-  }
-
   private async handleMessage(payload: SessionRequest, sessionId: string): Promise<SessionResponse> {
     const userText = payload.message.text ?? payload.message.caption ?? "";
     const imageBlocks = await this.loadImages(payload.message);
     const text = userText.trim();
-    const shell = this.getShell(sessionId);
 
     if (text.startsWith("/reset")) {
-      this.stateData = { history: [], prefs: normalizePrefs(this.stateData.prefs) };
+      this.stateData = {
+        history: [],
+        prefs: normalizePrefs(this.stateData.prefs),
+        injected: normalizeInjectedState(undefined),
+      };
       await this.save();
       await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.getModelName(), await this.workerAuthReady());
       return { ok: true, text: "Session reset. Context cleared." };
@@ -120,14 +160,14 @@ export class SessionRuntime implements DurableObject {
 
     if (text.startsWith("/status")) {
       const authReady = await this.workerAuthReady();
-      const files = await this.getFilesystem(sessionId).list(VFS_ROOT);
+      const injected = this.getInjectedState();
       const summary = [
         `model: ${this.getModelName()}`,
         "session: healthy",
-        `workspace: ${VFS_ROOT}`,
-        `workspace_files: ${files.length}`,
         `provider_auth: ${authReady ? "present" : "missing"}`,
         `history_messages: ${this.stateData.history.length}`,
+        `injected_messages_version: ${injected.version}`,
+        `injected_messages_count: ${injected.injectedMessages.length}`,
       ].join("\n");
       await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.getModelName(), authReady);
       return { ok: true, text: summary };
@@ -169,8 +209,8 @@ export class SessionRuntime implements DurableObject {
       showThinking: this.shouldShowThinking(),
     });
 
-    const run = await this.runAgentLoop(shell, runtime, text, imageBlocks, progress, sessionId);
-    const responseText = formatUserFacingResponse(run.finalText, run.toolEvents);
+    const run = await this.runAgentLoop(runtime, text, imageBlocks, progress);
+    const responseText = run.finalText.trim() || "(empty response)";
     this.pushHistory({ role: "user", content: text || "[image]" });
     for (const toolError of run.toolErrors) {
       this.pushHistory({ role: "tool", content: toolError });
@@ -183,40 +223,32 @@ export class SessionRuntime implements DurableObject {
   }
 
   private async runAgentLoop(
-    shell: SessionShell,
     runtime: RuntimeConfig,
     userText: string,
     imageBlocks: string[],
     progress: TelegramProgressReporter,
-    sessionId: string,
   ): Promise<AgentRunResult> {
     const model = resolvePiModel(runtime.model, runtime.baseUrl);
     const historyContext = renderHistoryContext(this.stateData.history);
-    const bootstrapMessages = await this.buildBootstrapMemoryMessages(shell);
-    const tools = createAgentTools(shell);
+    const injectedContext = this.renderInjectedContextMessages();
     const { Agent } = await loadAgentCore();
     const agent = new Agent({
       initialState: {
         systemPrompt: historyContext ? `${SYSTEM_PROMPT}\n\nRecent context:\n${historyContext}` : SYSTEM_PROMPT,
-        messages: bootstrapMessages as never,
+        messages: injectedContext as never,
         model,
         thinkingLevel: this.shouldShowThinking() ? "medium" : "off",
-        tools,
+        tools: createAgentTools(this),
       },
       getApiKey: async () => runtime.apiKey,
       transport: "sse",
     });
+
     const toolErrors: string[] = [];
-    const toolEvents: ToolEvent[] = [];
     const eventTasks: Promise<void>[] = [];
-    let hasMutatingToolCall = false;
-    const fsMetricsStart = shell.metricsSnapshot();
 
     agent.subscribe((event: AgentEvent) => {
-      if (event.type === "tool_execution_start" && isMutatingTool(event.toolName)) {
-        hasMutatingToolCall = true;
-      }
-      const task = this.handleAgentEvent(event, progress, toolEvents, toolErrors).catch((error) => {
+      const task = this.handleAgentEvent(event, progress, toolErrors).catch((error) => {
         console.warn("agent-event-handler-failed", {
           error: error instanceof Error ? error.message : String(error ?? "unknown"),
         });
@@ -229,95 +261,108 @@ export class SessionRuntime implements DurableObject {
     if (eventTasks.length) {
       await Promise.all(eventTasks);
     }
-    if (hasMutatingToolCall) {
-      await shell.flush();
-    }
     if (this.shouldShowThinking()) {
       await progress.sendThinkingSummary(readFinalAssistantThinking(agent.state.messages));
     }
-    const fsMetrics = shell.metricsDelta(fsMetricsStart);
-    console.info("session-fs-metrics", {
-      sessionId,
-      flush_calls: fsMetrics.flushCalls,
-      flush_ms_total: fsMetrics.flushMsTotal,
-      flush_ms_max: fsMetrics.flushMsMax,
-      ensure_loaded_calls: fsMetrics.ensureLoadedCalls,
-      ensure_loaded_cold_starts: fsMetrics.ensureLoadedColdStarts,
-      scan_calls: fsMetrics.captureChangesCalls,
-      scanned_paths: fsMetrics.scannedPaths,
-      changed_marks: fsMetrics.changedPathMarks,
-      deleted_marks: fsMetrics.deletedPathMarks,
-      r2_list_calls: fsMetrics.r2ListCalls,
-      r2_get_calls: fsMetrics.r2GetCalls,
-      r2_get_bytes: fsMetrics.r2GetBytes,
-      r2_put_calls: fsMetrics.r2PutCalls,
-      r2_put_bytes: fsMetrics.r2PutBytes,
-      r2_delete_batches: fsMetrics.r2DeleteBatches,
-      r2_delete_keys: fsMetrics.r2DeleteKeys,
-    });
 
     const finalText = readFinalAssistantText(agent.state.messages);
-    return { finalText: finalText || "(empty response)", toolErrors, toolEvents };
+    return { finalText: finalText || "(empty response)", toolErrors };
   }
 
-  private async buildBootstrapMemoryMessages(shell: SessionShell): Promise<Array<Record<string, unknown>>> {
-    const files = [
-      { path: SOUL_PATH, fallback: FALLBACK_SOUL },
-      { path: MEMORY_PATH, fallback: FALLBACK_MEMORY },
-    ];
+  private getInjectedState(): InjectedMessagesState {
+    const current = normalizeInjectedState(this.stateData.injected);
+    this.stateData.injected = current;
+    return current;
+  }
 
-    const contentByPath = new Map<string, string>();
-    let created = false;
-
-    for (const file of files) {
-      try {
-        contentByPath.set(file.path, await shell.readText(file.path));
-      } catch {
-        const fallback = (await this.readSeededDefault(file.path)) ?? file.fallback;
-        await shell.writeText(file.path, fallback);
-        contentByPath.set(file.path, fallback);
-        created = true;
-      }
-    }
-
-    if (created) {
-      await shell.flush();
-    }
-
-    const toolCalls = files.map((file, index) => ({
-      type: "toolCall",
-      id: `bootstrap-read-${index + 1}`,
-      name: "read",
-      arguments: { path: file.path },
-    }));
-
-    const toolResults = files.map((file, index) => ({
-      role: "toolResult",
-      toolCallId: `bootstrap-read-${index + 1}`,
-      toolName: "read",
-      content: [{ type: "text", text: contentByPath.get(file.path) ?? "" }],
-      isError: false,
+  private renderInjectedContextMessages(): Array<Record<string, unknown>> {
+    const injected = this.getInjectedState();
+    const ids = injected.injectedMessages.map((item) => item.id).join(",") || "(none)";
+    const start = {
+      role: "assistant",
+      content: [{ type: "text", text: `${INJECTED_MESSAGES_START} version=${injected.version}` }],
       timestamp: Date.now(),
-    }));
-
-    return [{ role: "assistant", content: toolCalls, timestamp: Date.now() }, ...toolResults];
+    };
+    const manifest = {
+      role: "assistant",
+      content: [{ type: "text", text: `${INJECTED_MESSAGES_MANIFEST} ids=${ids}` }],
+      timestamp: Date.now(),
+    };
+    const records = injected.injectedMessages.map((item) => ({ ...item.message, timestamp: Date.now() }));
+    const end = {
+      role: "assistant",
+      content: [{ type: "text", text: INJECTED_MESSAGES_END }],
+      timestamp: Date.now(),
+    };
+    return [start, manifest, ...records, end];
   }
 
-  private async readSeededDefault(path: string): Promise<string | null> {
-    const key = path === SOUL_PATH ? SOUL_DEFAULT_KEY : path === MEMORY_PATH ? MEMORY_DEFAULT_KEY : "";
-    if (!key) return null;
-    const object = await this.env.WORKSPACE_BUCKET.get(key);
-    if (!object) return null;
-    const text = await object.text();
-    return text.trim() ? text : null;
+  async getInjectedMessagesPayload(): Promise<{ version: number; injected_messages: Array<{ id: string; role: InjectedRole; content: unknown }> }> {
+    const injected = this.getInjectedState();
+    return {
+      version: injected.version,
+      injected_messages: injected.injectedMessages.map((item) => ({
+        id: item.id,
+        role: item.message.role,
+        content: deepClone(item.message.content),
+      })),
+    };
   }
 
-  private async handleAgentEvent(
-    event: AgentEvent,
-    progress: TelegramProgressReporter,
-    toolEvents: ToolEvent[],
-    toolErrors: string[],
-  ): Promise<void> {
+  async setInjectedMessagePayload(payload: {
+    id: unknown;
+    message: unknown;
+    expected_version?: unknown;
+  }): Promise<{ version: number }> {
+    const current = this.getInjectedState();
+    const expectedVersion = parseExpectedVersion(payload.expected_version);
+    if (expectedVersion !== null && expectedVersion !== current.version) {
+      throw new Error(`Version conflict: expected ${expectedVersion}, current ${current.version}`);
+    }
+
+    const id = parseInjectedMessageId(payload.id);
+    const message = validateInjectedMessage(payload.message);
+    const nextMessages = cloneInjectedMessages(current.injectedMessages);
+    const existingIndex = nextMessages.findIndex((item) => item.id === id);
+    if (existingIndex >= 0) {
+      nextMessages[existingIndex] = { id, message };
+    } else {
+      if (nextMessages.length >= MAX_INJECTED_MESSAGES) {
+        throw new Error(`injected_messages exceeds max of ${MAX_INJECTED_MESSAGES}`);
+      }
+      nextMessages.push({ id, message });
+    }
+
+    this.stateData.injected = {
+      version: current.version + 1,
+      injectedMessages: nextMessages,
+    };
+    await this.save();
+    return { version: this.stateData.injected.version };
+  }
+
+  async deleteInjectedMessagePayload(payload: { id: unknown; expected_version?: unknown }): Promise<{ version: number }> {
+    const current = this.getInjectedState();
+    const expectedVersion = parseExpectedVersion(payload.expected_version);
+    if (expectedVersion !== null && expectedVersion !== current.version) {
+      throw new Error(`Version conflict: expected ${expectedVersion}, current ${current.version}`);
+    }
+    const id = parseInjectedMessageId(payload.id);
+    const nextMessages = cloneInjectedMessages(current.injectedMessages);
+    const existingIndex = nextMessages.findIndex((item) => item.id === id);
+    if (existingIndex < 0) {
+      throw new Error(`Injected message not found: ${id}`);
+    }
+    nextMessages.splice(existingIndex, 1);
+    this.stateData.injected = {
+      version: current.version + 1,
+      injectedMessages: nextMessages,
+    };
+    await this.save();
+    return { version: this.stateData.injected.version };
+  }
+
+  private async handleAgentEvent(event: AgentEvent, progress: TelegramProgressReporter, toolErrors: string[]): Promise<void> {
     if (event.type === "tool_execution_start") {
       await progress.onToolStart(event.toolName, (event.args as Record<string, unknown>) ?? {});
       return;
@@ -329,16 +374,10 @@ export class SessionRuntime implements DurableObject {
 
     const detail = extractToolContentText(event.result);
     const ok = !event.isError;
-    toolEvents.push(buildToolEvent(event.toolName, ok, detail, ok ? undefined : detail));
     await progress.onToolResult(event.toolName, ok, detail, ok ? undefined : detail);
 
     if (!ok) {
-      const toolResponse = [
-        `tool=${event.toolName}`,
-        "ok=false",
-        detail ? `error=${detail}` : "",
-        `output=${detail || ""}`,
-      ]
+      const toolResponse = [`tool=${event.toolName}`, "ok=false", detail ? `error=${detail}` : "", `output=${detail || ""}`]
         .filter(Boolean)
         .join("\n");
       toolErrors.push(toolResponse);
@@ -388,6 +427,150 @@ export class SessionRuntime implements DurableObject {
   }
 }
 
+function normalizeInjectedState(state: InjectedMessagesState | undefined): InjectedMessagesState {
+  if (!state) {
+    return { version: 1, injectedMessages: cloneInjectedMessages(DEFAULT_INJECTED_MESSAGES) };
+  }
+  const version = Number.isFinite(state.version) && state.version > 0 ? Math.trunc(state.version) : 1;
+  const injectedMessages = normalizeInjectedItems(state.injectedMessages);
+  return { version, injectedMessages };
+}
+
+function cloneInjectedMessages(messages: InjectedMessageItem[]): InjectedMessageItem[] {
+  return messages.map((message) => ({
+    id: message.id,
+    message: {
+      role: message.message.role,
+      content: deepClone(message.message.content),
+    },
+  }));
+}
+
+function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function parseExpectedVersion(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
+    throw new Error("expected_version must be a positive number");
+  }
+  return Math.trunc(value);
+}
+
+function normalizeInjectedItems(input: unknown): InjectedMessageItem[] {
+  if (!Array.isArray(input)) {
+    return cloneInjectedMessages(DEFAULT_INJECTED_MESSAGES);
+  }
+  if (input.length > MAX_INJECTED_MESSAGES) {
+    throw new Error(`injected_messages exceeds max of ${MAX_INJECTED_MESSAGES}`);
+  }
+  if (!input.length) return [];
+
+  const first = input[0];
+  const isNewShape = Boolean(first && typeof first === "object" && "id" in (first as Record<string, unknown>) && "message" in (first as Record<string, unknown>));
+  return isNewShape ? validateInjectedItems(input) : migrateLegacyInjectedMessages(input);
+}
+
+function validateInjectedItems(input: unknown[]): InjectedMessageItem[] {
+  const result: InjectedMessageItem[] = [];
+  const seenIds = new Set<string>();
+  for (const item of input) {
+    if (!item || typeof item !== "object") {
+      throw new Error("Each injected item must be an object");
+    }
+    const row = item as Record<string, unknown>;
+    const id = parseInjectedMessageId(row.id);
+    if (seenIds.has(id)) {
+      throw new Error(`Duplicate injected message id: ${id}`);
+    }
+    seenIds.add(id);
+    const message = validateInjectedMessage(row.message);
+    result.push({ id, message });
+  }
+  return result;
+}
+
+function migrateLegacyInjectedMessages(input: unknown[]): InjectedMessageItem[] {
+  const result: InjectedMessageItem[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const message = validateInjectedMessage(input[index]);
+    result.push({ id: `message-${index + 1}`, message });
+  }
+  return result;
+}
+
+function validateInjectedMessage(input: unknown): InjectedMessage {
+  if (!input || typeof input !== "object") {
+    throw new Error("Injected message must be an object");
+  }
+  const row = input as Record<string, unknown>;
+  const role = row.role;
+  if (role !== "system" && role !== "user" && role !== "assistant" && role !== "toolResult") {
+    throw new Error("Injected message role must be system, user, assistant, or toolResult");
+  }
+  ensureValidMessageContent(row.content, role);
+  return { role, content: deepClone(row.content) };
+}
+
+function parseInjectedMessageId(input: unknown): string {
+  if (typeof input !== "string") {
+    throw new Error("id must be a string");
+  }
+  const id = input.trim().toLowerCase();
+  if (!INJECTED_MESSAGE_ID_RE.test(id)) {
+    throw new Error("id must match ^[a-z0-9][a-z0-9-]{0,63}$");
+  }
+  return id;
+}
+
+function ensureValidMessageContent(content: unknown, role: InjectedRole): void {
+  if (typeof content === "string") {
+    if (content.length > MAX_INJECTED_MESSAGE_TEXT_CHARS) {
+      throw new Error("Injected message content exceeds max length");
+    }
+    return;
+  }
+
+  if (!Array.isArray(content)) {
+    throw new Error("Injected message content must be string or array");
+  }
+
+  for (const block of content) {
+    if (!block || typeof block !== "object") {
+      throw new Error("Injected message block must be an object");
+    }
+    const value = block as Record<string, unknown>;
+    const type = value.type;
+    if (type === "text") {
+      if (typeof value.text !== "string") {
+        throw new Error("text block requires string text");
+      }
+      if (value.text.length > MAX_INJECTED_MESSAGE_TEXT_CHARS) {
+        throw new Error("Injected text block exceeds max length");
+      }
+      continue;
+    }
+    if (type === "toolCall") {
+      if (typeof value.id !== "string" || !value.id.trim()) throw new Error("toolCall block requires id");
+      if (typeof value.name !== "string" || !value.name.trim()) throw new Error("toolCall block requires name");
+      if (typeof value.arguments !== "object" || !value.arguments) throw new Error("toolCall block requires arguments object");
+      continue;
+    }
+    if (type === "toolResult") {
+      if (typeof value.toolCallId !== "string" || !value.toolCallId.trim()) throw new Error("toolResult block requires toolCallId");
+      if (typeof value.toolName !== "string" || !value.toolName.trim()) throw new Error("toolResult block requires toolName");
+      if (!Array.isArray(value.content)) throw new Error("toolResult block requires content array");
+      continue;
+    }
+    throw new Error(`Unsupported injected message block type: ${String(type)}`);
+  }
+
+  if (role === "toolResult") {
+    return;
+  }
+}
+
 function resolvePiModel(model: string, baseUrl: string) {
   try {
     return {
@@ -410,23 +593,6 @@ function compactErrorMessage(error: unknown): string {
   if (!compact) return "Unexpected runtime error";
   if (compact.length <= 320) return compact;
   return `${compact.slice(0, 319)}…`;
-}
-
-function buildToolEvent(name: string, ok: boolean, output: string, error?: string): ToolEvent {
-  const detail = ok ? truncateForLog(output, 220) : truncateForLog(error || output || "error", 220);
-  return { name, ok, detail };
-}
-
-function formatUserFacingResponse(finalText: string, toolEvents: ToolEvent[]): string {
-  const response = finalText.trim() || "(empty response)";
-  if (!toolEvents.length) return response;
-  const usedNames = unique(toolEvents.map((event) => event.name));
-  const failedNames = unique(toolEvents.filter((event) => !event.ok).map((event) => event.name));
-  let suffix = `Tools used: ${usedNames.join(", ")}`;
-  if (failedNames.length) {
-    suffix += `\nFailed tools: ${failedNames.join(", ")}`;
-  }
-  return `${response}\n\n${suffix}`;
 }
 
 function normalizePrefs(prefs: SessionState["prefs"]): { progressMode: ProgressMode; showThinking: boolean } {
@@ -455,10 +621,6 @@ function parseThinkingFlag(text: string): boolean | null {
   if (flag === "on") return true;
   if (flag === "off") return false;
   return null;
-}
-
-function unique(items: string[]): string[] {
-  return [...new Set(items.filter(Boolean))];
 }
 
 function renderHistoryContext(history: SessionHistoryEntry[]): string {
@@ -491,73 +653,57 @@ function parseDataUrl(url: string): { mimeType: string; data: string } | null {
   return { mimeType: match[1], data: match[2] };
 }
 
-function createAgentTools(shell: SessionShell): AgentTool[] {
+function createAgentTools(session: SessionRuntime): AgentTool[] {
   return [
     {
-      name: "read",
-      label: "Read file",
-      description: "Read file content from session filesystem",
-      parameters: Type.Object({ path: Type.String() }),
-      execute: async (_toolCallId, params) => {
-        const data = params as { path: string };
-        return executeSessionTool(shell, "read", { path: data.path });
+      name: "injected_messages.get",
+      label: "Get injected messages",
+      description: "Return current injected messages and version",
+      parameters: Type.Object({}),
+      execute: async () => {
+        const data = await session.getInjectedMessagesPayload();
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+          details: { ok: true },
+        };
       },
     },
     {
-      name: "write",
-      label: "Write file",
-      description: "Write file content to session filesystem",
-      parameters: Type.Object({ path: Type.String(), content: Type.String() }),
+      name: "injected_messages.set",
+      label: "Set injected message",
+      description: "Create or update one injected message by id",
+      parameters: Type.Object({
+        id: Type.String(),
+        message: Type.Any(),
+        expected_version: Type.Optional(Type.Number()),
+      }),
       execute: async (_toolCallId, params) => {
-        const data = params as { path: string; content: string };
-        return executeSessionTool(shell, "write", { path: data.path, content: data.content });
+        const data = params as { id: unknown; message: unknown; expected_version?: unknown };
+        const result = await session.setInjectedMessagePayload(data);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: { ok: true },
+        };
       },
     },
     {
-      name: "edit",
-      label: "Edit file",
-      description: "Replace text in a file",
-      parameters: Type.Object({ path: Type.String(), find: Type.String(), replace: Type.String() }),
+      name: "injected_messages.delete",
+      label: "Delete injected message",
+      description: "Delete one injected message by id",
+      parameters: Type.Object({
+        id: Type.String(),
+        expected_version: Type.Optional(Type.Number()),
+      }),
       execute: async (_toolCallId, params) => {
-        const data = params as { path: string; find: string; replace: string };
-        return executeSessionTool(shell, "edit", { path: data.path, find: data.find, replace: data.replace });
-      },
-    },
-    {
-      name: "bash",
-      label: "Run command",
-      description: "Run shell command in session filesystem",
-      parameters: Type.Object({ command: Type.String() }),
-      execute: async (_toolCallId, params) => {
-        const data = params as { command: string };
-        return executeSessionTool(shell, "bash", { command: data.command }, { timeoutMs: 15_000 });
+        const data = params as { id: unknown; expected_version?: unknown };
+        const result = await session.deleteInjectedMessagePayload(data);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: { ok: true },
+        };
       },
     },
   ];
-}
-
-async function executeSessionTool(
-  shell: SessionShell,
-  name: "read" | "write" | "edit" | "bash",
-  args: Record<string, unknown>,
-  options?: { timeoutMs?: number },
-): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
-  const runner = runTool({ name, args }, { shell, deferPersistence: true });
-  const result = options?.timeoutMs ? await withTimeout(runner, options.timeoutMs) : await runner;
-  const text = truncateForLog(result.output || result.error || "(no output)", 2000) || "(no output)";
-
-  if (!result.ok) {
-    throw new Error(result.error || text || "Tool failed");
-  }
-
-  return {
-    content: [{ type: "text", text }],
-    details: { ok: true },
-  };
-}
-
-function isMutatingTool(name: string): boolean {
-  return name === "write" || name === "edit" || name === "bash";
 }
 
 async function loadAgentCore(): Promise<typeof import("@mariozechner/pi-agent-core")> {
@@ -575,20 +721,6 @@ function enableWorkerCspShim(): void {
   if (!runtimeValue.id) runtimeValue.id = "workers";
   chromeValue.runtime = runtimeValue;
   value.chrome = chromeValue;
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`Tool timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  }
 }
 
 function extractToolContentText(result: unknown): string {
