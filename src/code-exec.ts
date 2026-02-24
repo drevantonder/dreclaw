@@ -1,5 +1,6 @@
-import { newQuickJSAsyncWASMModuleFromVariant } from "quickjs-emscripten-core";
-import QUICKJS_ASYNC_SINGLEFILE_VARIANT from "@jitl/quickjs-singlefile-cjs-release-asyncify";
+import { newQuickJSAsyncWASMModuleFromVariant, newVariant } from "quickjs-emscripten-core";
+import QUICKJS_ASYNC_WASMFILE_VARIANT from "@jitl/quickjs-wasmfile-release-asyncify";
+import QUICKJS_ASYNC_WASM_MODULE from "./quickjs-release-asyncify.wasm?module";
 
 export interface InstalledPackage {
   spec: string;
@@ -603,20 +604,13 @@ function safeJsonParse(text: string): unknown {
 
 async function getQuickJsModule(): Promise<QuickJsModule> {
   if (!quickJsModulePromise) {
-    ensureEmscriptenGlobals();
-    quickJsModulePromise = newQuickJSAsyncWASMModuleFromVariant(QUICKJS_ASYNC_SINGLEFILE_VARIANT);
+    quickJsModulePromise = newQuickJSAsyncWASMModuleFromVariant(
+      newVariant(QUICKJS_ASYNC_WASMFILE_VARIANT, {
+        wasmModule: QUICKJS_ASYNC_WASM_MODULE,
+      }),
+    );
   }
   return quickJsModulePromise;
-}
-
-function ensureEmscriptenGlobals(): void {
-  const value = globalThis as Record<string, unknown>;
-  if (!value.location || typeof value.location !== "object") {
-    value.location = { href: "https://workers.invalid/" };
-  }
-  if (!value.document || typeof value.document !== "object") {
-    value.document = { currentScript: { src: "https://workers.invalid/quickjs.js" } };
-  }
 }
 
 async function setGlobalJson(vm: QuickJsContext, key: string, value: unknown): Promise<void> {

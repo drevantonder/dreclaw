@@ -68,6 +68,7 @@ export function createEnv() {
     MODEL: "kimi-k2.5-free",
     BASE_URL: "https://opencode.ai/zen/v1",
     OPENCODE_ZEN_API_KEY: "test-zen-key",
+    CODE_EXEC_ENABLED: "false",
     DRECLAW_DB: db as unknown as D1Database,
   };
 
