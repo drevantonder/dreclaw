@@ -76,7 +76,7 @@ Seed default memory templates in R2 (recommended right after deploy):
 pnpm seed:memory
 ```
 
-This creates `defaults/SOUL.md` and `defaults/MEMORY.md` only when they do not already exist.
+This creates `defaults/SOUL.md` and `defaults/MEMORY.md` (from `src/initial-filesystem/SOUL.md` and `src/initial-filesystem/MEMORY.md`) only when they do not already exist.
 New session files use these defaults when `/SOUL.md` or `/MEMORY.md` is missing.
 
 Or run deploy + seed in one step:

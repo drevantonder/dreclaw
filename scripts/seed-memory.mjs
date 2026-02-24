@@ -79,13 +79,14 @@ function main() {
     fail("Missing R2 bucket. Pass --bucket <name> or define [[r2_buckets]] bucket_name in wrangler.toml.");
   }
 
-  const soulPath = resolve(process.cwd(), "SOUL.md");
-  const memoryPath = resolve(process.cwd(), "MEMORY.md");
+  const initialFilesystemPath = resolve(process.cwd(), "src", "initial-filesystem");
+  const soulPath = resolve(initialFilesystemPath, "SOUL.md");
+  const memoryPath = resolve(initialFilesystemPath, "MEMORY.md");
   try {
     accessSync(soulPath);
     accessSync(memoryPath);
   } catch {
-    fail("SOUL.md or MEMORY.md not found at repo root.");
+    fail("SOUL.md or MEMORY.md not found under src/initial-filesystem.");
   }
 
   ensureObject({ bucket, key: "defaults/SOUL.md", filePath: soulPath, local: args.local, config: args.config, force: args.force });
