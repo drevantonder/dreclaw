@@ -1,4 +1,5 @@
-import { newAsyncContext } from "quickjs-emscripten";
+import { newQuickJSAsyncWASMModuleFromVariant, newVariant } from "quickjs-emscripten-core";
+import RELEASE_ASYNC_VARIANT from "@jitl/quickjs-wasmfile-release-asyncify";
 
 export interface InstalledPackage {
   spec: string;
@@ -89,6 +90,8 @@ type HostStats = {
   fetchErrors: number;
   packageInstalls: number;
 };
+
+let quickJsModulePromise: Promise<Awaited<ReturnType<typeof newQuickJSAsyncWASMModuleFromVariant>>> | null = null;
 
 const DEFAULT_LIMITS: CodeExecutionLimits = {
   execTimeoutMs: 2000,
@@ -210,7 +213,8 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     };
   }
 
-  const vm = await newAsyncContext();
+  const quickJs = await getQuickJsAsyncModule();
+  const vm = quickJs.newContext();
   const runtime = vm.runtime;
   const limits = ctx.config.limits;
   const deadline = Date.now() + limits.execTimeoutMs;
@@ -262,7 +266,7 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
 }
 
 async function registerHostApi(
-  vm: Awaited<ReturnType<typeof newAsyncContext>>,
+  vm: QuickJsAsyncContext,
   ctx: HostContext,
   logs: Array<{ level: "log" | "warn" | "error"; text: string }>,
   stats: HostStats,
@@ -593,20 +597,77 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
-async function setGlobalJson(vm: Awaited<ReturnType<typeof newAsyncContext>>, key: string, value: unknown): Promise<void> {
+async function setGlobalJson(vm: QuickJsAsyncContext, key: string, value: unknown): Promise<void> {
   const handle = vm.newString(JSON.stringify(value));
   vm.setProp(vm.global, key, handle);
   handle.dispose();
   await vm.evalCodeAsync(`globalThis.${key} = JSON.parse(globalThis.${key});`);
 }
 
-function readGlobalJson(vm: Awaited<ReturnType<typeof newAsyncContext>>, key: string): unknown {
+function readGlobalJson(vm: QuickJsAsyncContext, key: string): unknown {
   const resultHandle = vm.getProp(vm.global, key);
   try {
     return vm.dump(resultHandle);
   } finally {
     resultHandle.dispose();
   }
+}
+
+type QuickJsAsyncContext = {
+  runtime: {
+    setMemoryLimit: (bytes: number) => void;
+    setMaxStackSize: (bytes: number) => void;
+    setInterruptHandler: (handler: () => boolean) => void;
+    removeInterruptHandler: () => void;
+    setModuleLoader: (
+      moduleLoader: (moduleName: string) => Promise<string> | string,
+      moduleNormalizer: (baseModuleName: string, requestedName: string) => Promise<string> | string,
+    ) => void;
+    hasPendingJob: () => boolean;
+    executePendingJobs: (maxJobsToExecute?: number) => { error?: unknown };
+  };
+  newFunction: (name: string, fn: (...args: Array<unknown>) => unknown) => { dispose: () => void };
+  newAsyncifiedFunction: (name: string, fn: (...args: Array<unknown>) => Promise<unknown>) => { dispose: () => void };
+  newString: (value: string) => { dispose: () => void };
+  setProp: (handle: unknown, key: string, value: unknown) => void;
+  getProp: (handle: unknown, key: string) => { dispose: () => void };
+  evalCodeAsync: (code: string, filename?: string, options?: { type?: "global" | "module" }) => Promise<unknown>;
+  unwrapResult: (result: unknown) => { dispose: () => void };
+  getString: (handle: unknown) => string;
+  dump: (handle: unknown) => unknown;
+  global: unknown;
+  dispose: () => void;
+};
+
+async function getQuickJsAsyncModule(): Promise<{ newContext: () => QuickJsAsyncContext }> {
+  if (!quickJsModulePromise) {
+    quickJsModulePromise = initQuickJsModule();
+  }
+  return quickJsModulePromise as Promise<{ newContext: () => QuickJsAsyncContext }>;
+}
+
+async function initQuickJsModule(): Promise<Awaited<ReturnType<typeof newQuickJSAsyncWASMModuleFromVariant>>> {
+  const cloudflareWasmModule = await loadCloudflareWasmModule();
+  if (cloudflareWasmModule) {
+    return newQuickJSAsyncWASMModuleFromVariant(
+      newVariant(RELEASE_ASYNC_VARIANT, {
+        wasmModule: cloudflareWasmModule,
+      }),
+    );
+  }
+  return newQuickJSAsyncWASMModuleFromVariant(RELEASE_ASYNC_VARIANT);
+}
+
+async function loadCloudflareWasmModule(): Promise<WebAssembly.Module | null> {
+  try {
+    const module = (await import("@jitl/quickjs-wasmfile-release-asyncify/wasm")) as { default?: WebAssembly.Module };
+    if (module?.default) {
+      return module.default;
+    }
+  } catch {
+    // ignore and fall back to default variant loading
+  }
+  return null;
 }
 
 function clampOutput(value: unknown, maxBytes: number): unknown {
