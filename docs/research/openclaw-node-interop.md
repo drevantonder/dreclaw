@@ -1,6 +1,6 @@
 ## 1) Executive conclusion (≤10 bullets)
 
-* **OpenClaw node interop is feasible** if dreclaw implements **Gateway Protocol v3** (WebSocket frames + `connect.challenge` + signed device identity) and the **node transport trio**: `node.invoke.request` (server→node), `node.invoke.result` + `node.event` (node→server). ([OpenClaw][1])
+* **OpenClaw node interop is feasible** if dréclaw implements **Gateway Protocol v3** (WebSocket frames + `connect.challenge` + signed device identity) and the **node transport trio**: `node.invoke.request` (server→node), `node.invoke.result` + `node.event` (node→server). ([OpenClaw][1])
 * **Headless node host (CLI “node run”) is the best v0 target**: its command surface is small (`system.run`, `system.which`, exec approvals, optional browser proxy) and uses only the node-role methods allowed by the gateway. ([GitHub][2])
 * **Mobile-node compatibility is the main risk**, not the handshake: OpenClaw nodes return **base64 media** for `canvas.snapshot`/camera/screen. Cloudflare Workers WebSocket messages have a **1 MiB receive limit**, making “big base64 over WS” a likely breakage point. ([OpenClaw][3])
 * **Cloudflare Durable Objects should own the WS server state** (node registry, pairing state, in-flight invocations) to avoid stateless Worker constraints and to handle WebSocket hibernation patterns correctly. ([Cloudflare Docs][4])
@@ -159,7 +159,7 @@ From the OpenClaw node-host implementation:
                               Cloudflare Worker (WS upgrade + routing)
                                      │
                                      ▼
-                         Durable Object: dreclaw-gateway
+                         Durable Object: dréclaw-gateway
                     - validates connect.challenge + device signature
                     - stores pairing + device tokens (single-user)
                     - node registry (nodeId -> ws session)

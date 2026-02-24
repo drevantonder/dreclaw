@@ -1,6 +1,6 @@
-# dreclaw
+# dréclaw
 
-`dreclaw` is my personal AI assistant, inspired by OpenClaw, built Cloudflare-first.
+`dréclaw` is my personal AI assistant, inspired by OpenClaw, built Cloudflare-first.
 
 v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/tool loop in Workers, and R2-backed persistence.
 
