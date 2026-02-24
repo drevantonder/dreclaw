@@ -97,8 +97,6 @@ type HostStats = {
 type QuickJsModule = Awaited<ReturnType<typeof newQuickJSAsyncWASMModuleFromVariant>>;
 type QuickJsContext = ReturnType<QuickJsModule["newContext"]>;
 
-let quickJsModulePromise: Promise<QuickJsModule> | null = null;
-
 const DEFAULT_LIMITS: CodeExecutionLimits = {
   execTimeoutMs: 2000,
   execMemoryMb: 32,
@@ -679,14 +677,11 @@ function safeJsonParse(text: string): unknown {
 }
 
 async function getQuickJsModule(): Promise<QuickJsModule> {
-  if (!quickJsModulePromise) {
-    quickJsModulePromise = newQuickJSAsyncWASMModuleFromVariant(
-      newVariant(QUICKJS_ASYNC_WASMFILE_VARIANT, {
-        wasmModule: QUICKJS_ASYNC_WASM_MODULE,
-      }),
-    );
-  }
-  return quickJsModulePromise;
+  return newQuickJSAsyncWASMModuleFromVariant(
+    newVariant(QUICKJS_ASYNC_WASMFILE_VARIANT, {
+      wasmModule: QUICKJS_ASYNC_WASM_MODULE,
+    }),
+  );
 }
 
 async function setGlobalJson(vm: QuickJsContext, key: string, value: unknown): Promise<void> {
