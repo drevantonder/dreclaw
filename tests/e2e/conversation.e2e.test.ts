@@ -297,11 +297,11 @@ describe("conversation e2e", () => {
     expect(systemPrompt.indexOf('id="memory"')).toBeLessThan(systemPrompt.indexOf('id="soul"'));
   });
 
-  it("supports verbose mode via /details and shows custom_context tool lifecycle", async () => {
+  it("supports debug mode via /debug and shows custom_context tool lifecycle", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
-    await callWebhook(env, 4009, "/details verbose");
+    await callWebhook(env, 4009, "/debug on");
 
     modelQueue.push(
       {
@@ -316,9 +316,33 @@ describe("conversation e2e", () => {
 
     await callWebhook(env, 4010, "show custom context");
 
-    expect(sends.some((message) => message.text.includes("Tool start") && message.text.includes("custom_context_get"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool call") && message.text.includes("custom_context_get"))).toBe(true);
     expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("custom_context_get"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Loaded.");
+  });
+
+  it("disables debug mode via /debug off", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    await callWebhook(env, 4020, "/debug on");
+    await callWebhook(env, 4021, "/debug off");
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "call-1", name: "custom_context_get", arguments: {} }],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Done." }],
+      },
+    );
+
+    await callWebhook(env, 4022, "show custom context");
+
+    expect(sends.some((message) => message.text.includes("Tool call") && message.text.includes("custom_context_get"))).toBe(false);
+    expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("custom_context_get"))).toBe(false);
   });
 
   it("supports custom_context.set then get", async () => {
@@ -448,11 +472,10 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
   });
 
-  it("shows thinking only when /thinking on and /details debug", async () => {
+  it("shows thinking when /thinking on, even in compact mode", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
-    await callWebhook(env, 4007, "/details debug");
     await callWebhook(env, 4008, "/thinking on");
 
     modelQueue.push({
@@ -607,7 +630,7 @@ describe("conversation e2e", () => {
     );
 
     await callWebhook(env, 4004, "trigger failure");
-    expect(sends.some((message) => message.text.includes("Failed: boom"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("<b>Failed:</b> boom"))).toBe(true);
 
     await callWebhook(env, 4005, "are you aware of that?");
     expect(sends.at(-1)?.text).toContain("Recovered with context.");

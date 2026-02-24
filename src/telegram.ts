@@ -106,25 +106,18 @@ function formatTelegramHtmlLine(line: string): string {
 
   const rawLabel = trimmed.slice(0, separatorIndex);
   const rawValue = trimmed.slice(separatorIndex + 1).trimStart();
-  if (!isTelegramStyledLabel(rawLabel)) {
+  if (!isTelegramLabel(rawLabel)) {
     return escapeTelegramHtml(trimmed);
   }
 
   if (!rawValue) {
     return `<b>${escapeTelegramHtml(rawLabel)}:</b>`;
   }
-  if (shouldRenderCodeValue(rawLabel)) {
-    return `<b>${escapeTelegramHtml(rawLabel)}:</b> <code>${escapeTelegramHtml(rawValue)}</code>`;
-  }
   return `<b>${escapeTelegramHtml(rawLabel)}:</b> ${escapeTelegramHtml(rawValue)}`;
 }
 
-function isTelegramStyledLabel(label: string): boolean {
-  return TELEGRAM_STYLED_LABELS.has(label);
-}
-
-function shouldRenderCodeValue(label: string): boolean {
-  return TELEGRAM_CODE_VALUE_LABELS.has(label);
+function isTelegramLabel(label: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_ -]{0,40}$/.test(label.trim());
 }
 
 function escapeTelegramHtml(value: string): string {
@@ -134,38 +127,6 @@ function escapeTelegramHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 }
-
-const TELEGRAM_STYLED_LABELS = new Set<string>([
-  "Thinking",
-  "Tool start",
-  "Tool call",
-  "Tool ok",
-  "Tool error",
-  "model",
-  "session",
-  "provider_auth",
-  "history_messages",
-  "custom_context_version",
-  "custom_context_count",
-  "details",
-  "usage",
-  "thinking",
-]);
-
-const TELEGRAM_CODE_VALUE_LABELS = new Set<string>([
-  "Tool start",
-  "Tool call",
-  "Tool ok",
-  "Tool error",
-  "model",
-  "session",
-  "provider_auth",
-  "history_messages",
-  "custom_context_version",
-  "custom_context_count",
-  "details",
-  "thinking",
-]);
 
 export async function fetchImageAsDataUrl(token: string, fileId: string): Promise<string | null> {
   const getFileUrl = `${TELEGRAM_API}/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`;

@@ -132,10 +132,12 @@ export class SessionRuntime implements DurableObject {
     if (text.startsWith("/status")) {
       const authReady = await this.workerAuthReady();
       const customContext = this.getCustomContextState();
+      const debugEnabled = this.getProgressMode() === "debug";
       const summary = [
         `model: ${this.getModelName()}`,
         "session: healthy",
         `provider_auth: ${authReady ? "present" : "missing"}`,
+        `debug: ${debugEnabled ? "on" : "off"}`,
         `history_messages: ${this.stateData.history.length}`,
         `custom_context_version: ${customContext.version}`,
         `custom_context_count: ${customContext.items.length}`,
@@ -143,18 +145,18 @@ export class SessionRuntime implements DurableObject {
       return { ok: true, text: summary };
     }
 
-    if (text.startsWith("/details")) {
-      const nextMode = parseDetailsMode(text);
-      if (!nextMode) {
-        const current = this.getProgressMode();
-        return { ok: true, text: `details: ${current}\nusage: /details compact|verbose|debug` };
+    if (text.startsWith("/debug")) {
+      const nextDebug = parseDebugFlag(text);
+      if (nextDebug === null) {
+        const current = this.getProgressMode() === "debug" ? "on" : "off";
+        return { ok: true, text: `debug: ${current}\nusage: /debug on|off` };
       }
       this.stateData.prefs = {
         ...normalizePrefs(this.stateData.prefs),
-        progressMode: nextMode,
+        progressMode: nextDebug ? "debug" : "compact",
       };
       await this.save();
-      return { ok: true, text: `details set to ${nextMode}.` };
+      return { ok: true, text: `debug ${nextDebug ? "enabled" : "disabled"}.` };
     }
 
     if (text.startsWith("/thinking")) {
@@ -510,19 +512,19 @@ function compactErrorMessage(error: unknown): string {
 function normalizePrefs(prefs: SessionState["prefs"]): { progressMode: ProgressMode; showThinking: boolean } {
   const progressMode = prefs?.progressMode;
   const showThinking = Boolean(prefs?.showThinking);
-  if (progressMode === "compact" || progressMode === "verbose" || progressMode === "debug") {
+  if (progressMode === "compact" || progressMode === "debug") {
     return { progressMode, showThinking };
   }
+  if (progressMode === "verbose") return { progressMode: "compact", showThinking };
   return { progressMode: "compact", showThinking };
 }
 
-function parseDetailsMode(text: string): ProgressMode | null {
-  const [, rawMode = ""] = text.trim().split(/\s+/, 2);
-  const mode = rawMode.toLowerCase();
-  if (!mode) return null;
-  if (mode === "off") return "compact";
-  if (mode === "on") return "verbose";
-  if (mode === "compact" || mode === "verbose" || mode === "debug") return mode;
+function parseDebugFlag(text: string): boolean | null {
+  const [, rawFlag = ""] = text.trim().split(/\s+/, 2);
+  const flag = rawFlag.toLowerCase();
+  if (!flag) return null;
+  if (flag === "on") return true;
+  if (flag === "off") return false;
   return null;
 }
 
@@ -710,40 +712,26 @@ class TelegramProgressReporter {
   }
 
   async onToolStart(name: string, args: Record<string, unknown>): Promise<void> {
+    if (this.mode === "compact") return;
     this.toolStartAtByName.set(name, Date.now());
-
-    if (this.mode === "verbose") {
-      await this.safeSendMessage(`Tool start: ${name}`);
-      return;
-    }
-
-    if (this.mode === "debug") {
-      await this.safeSendMessage(`Tool call: ${name} ${truncateForLog(JSON.stringify(args), 420)}`);
-    }
+    await this.safeSendMessage(`Tool call: ${name} ${truncateForLog(JSON.stringify(args), 420)}`);
   }
 
   async onToolResult(name: string, ok: boolean, output: string, error?: string): Promise<void> {
+    if (this.mode === "compact") return;
     const startedAt = this.toolStartAtByName.get(name);
     this.toolStartAtByName.delete(name);
     const elapsedMs = startedAt ? Date.now() - startedAt : 0;
 
     if (!ok) {
       const detail = truncateForLog(error || output || "error", 700);
-      if (this.mode !== "compact") {
-        await this.safeSendMessage(`Tool error: ${name}${detail ? ` ${detail}` : ""}`);
-      }
+      await this.safeSendMessage(`Tool error: ${name}${detail ? ` ${detail}` : ""}`);
       return;
     }
 
-    if (this.mode === "verbose") {
-      await this.safeSendMessage(`Tool ok: ${name}${elapsedMs >= 3000 ? ` (${Math.round(elapsedMs / 100) / 10}s)` : ""}`);
-      return;
-    }
-    if (this.mode === "debug") {
-      const detail = truncateForLog(output, 700);
-      await this.safeSendMessage(`Tool ok: ${name}${detail ? ` ${detail}` : ""}`);
-      return;
-    }
+    const detail = truncateForLog(output, 700);
+    const elapsed = elapsedMs >= 3000 ? ` (${Math.round(elapsedMs / 100) / 10}s)` : "";
+    await this.safeSendMessage(`Tool ok: ${name}${elapsed}${detail ? ` ${detail}` : ""}`);
   }
 
   private async safeSendMessage(text: string): Promise<void> {

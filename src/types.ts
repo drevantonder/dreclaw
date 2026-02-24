@@ -31,7 +31,7 @@ export interface SessionRequest {
   message: TelegramMessage;
 }
 
-export type ProgressMode = "compact" | "verbose" | "debug";
+export type ProgressMode = "compact" | "debug";
 
 export interface SessionResponse {
   ok: boolean;

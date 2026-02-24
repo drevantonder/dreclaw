@@ -32,8 +32,8 @@ describe("formatTelegramHtml", () => {
     expect(formatted).toBe("&lt;b&gt;unsafe&lt;/b&gt; &amp; raw");
   });
 
-  it("styles known labels", () => {
+  it("styles label lines", () => {
     const formatted = formatTelegramHtml("Tool start: bash");
-    expect(formatted).toBe("<b>Tool start:</b> <code>bash</code>");
+    expect(formatted).toBe("<b>Tool start:</b> bash");
   });
 });
