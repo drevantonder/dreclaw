@@ -502,6 +502,39 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Confirmed delete.");
   });
 
+  it("supports search and execute tools for code mode", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } }],
+      },
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-2",
+            name: "execute",
+            arguments: {
+              code: "globalThis.__exec_result = { sum: 1 + 2, inputName: input?.name ?? null, hasPkg: !!globalThis.pkg }",
+              input: { name: "dre" },
+            },
+          },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Executed." }],
+      },
+    );
+
+    await callWebhook(env, 4130, "run code mode tools");
+    expect(sends.at(-1)?.text).toContain("Executed.");
+  });
+
   it("keeps custom context across /reset", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
