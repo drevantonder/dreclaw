@@ -86,4 +86,26 @@ describe("tools", () => {
     expect(metrics.r2ListCalls).toBe(1);
     expect(metrics.ensureLoadedColdStarts).toBe(1);
   });
+
+  it("scans bash changes only when flushing pending bash updates", async () => {
+    const bucket = new FakeR2();
+    const fs = new R2FilesystemService(bucket as unknown as R2Bucket, "session-5");
+    const shell = new SessionShell(fs);
+
+    await runTool({ name: "write", args: { path: "a.txt", content: "hello" } }, { shell, deferPersistence: true });
+    await shell.flush();
+
+    const start = shell.metricsSnapshot();
+    await runTool({ name: "bash", args: { command: "echo world > b.txt" } }, { shell, deferPersistence: true });
+    const afterBash = shell.metricsDelta(start);
+    expect(afterBash.captureChangesCalls).toBe(0);
+
+    await shell.flush();
+    const afterFlush = shell.metricsDelta(start);
+    expect(afterFlush.captureChangesCalls).toBe(1);
+
+    await shell.flush();
+    const afterSecondFlush = shell.metricsDelta(start);
+    expect(afterSecondFlush.captureChangesCalls).toBe(1);
+  });
 });

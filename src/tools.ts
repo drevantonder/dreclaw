@@ -69,6 +69,7 @@ export class SessionShell {
   private changedPaths = new Set<string>();
   private deletedPaths = new Set<string>();
   private syncedHashes = new Map<string, string>();
+  private hasPendingBashChanges = false;
   private metrics: FilesystemMetrics = { ...EMPTY_FS_METRICS };
 
   constructor(private readonly fs: R2FilesystemService) {}
@@ -112,7 +113,7 @@ export class SessionShell {
   async run(command: string): Promise<RunResult> {
     await this.ensureLoaded();
     const result = await this.bash!.exec(command, { cwd: VFS_ROOT, env: shellEnv() });
-    await this.captureBashChanges();
+    this.hasPendingBashChanges = true;
     return toRunResult({ success: result.exitCode === 0, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode });
   }
 
@@ -120,7 +121,16 @@ export class SessionShell {
     const startedAt = Date.now();
     this.metrics.flushCalls += 1;
     await this.ensureLoaded();
-    await this.captureBashChanges();
+    if (!this.changedPaths.size && !this.deletedPaths.size && !this.hasPendingBashChanges) {
+      const elapsed = Date.now() - startedAt;
+      this.metrics.flushMsTotal += elapsed;
+      if (elapsed > this.metrics.flushMsMax) this.metrics.flushMsMax = elapsed;
+      return;
+    }
+    if (this.hasPendingBashChanges) {
+      await this.captureBashChanges();
+      this.hasPendingBashChanges = false;
+    }
     await this.syncToPersistence();
     const elapsed = Date.now() - startedAt;
     this.metrics.flushMsTotal += elapsed;
@@ -151,6 +161,10 @@ export class SessionShell {
 
   private async syncToPersistence(): Promise<void> {
     if (!this.bash) return;
+
+    if (!this.changedPaths.size && !this.deletedPaths.size) {
+      return;
+    }
 
     const putPaths = [...this.changedPaths].filter((path) => !this.deletedPaths.has(path));
     await runWithConcurrency(putPaths, 16, async (path) => {
