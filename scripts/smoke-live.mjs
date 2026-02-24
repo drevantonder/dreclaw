@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { Type, complete, getModel } from "@mariozechner/pi-ai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { generateText, stepCountIs, tool } from "ai";
+import { z } from "zod";
 
 const SYSTEM_PROMPT = "You are dréclaw. Be concise.";
 
@@ -43,36 +45,16 @@ function fail(message) {
   process.exit(1);
 }
 
-function parseToolArgs(value) {
-  if (!value || typeof value !== "object") return {};
-  return value;
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.apiKey.trim()) fail("Missing API key. Pass --api-key or set OPENCODE_ZEN_API_KEY");
 
-  let model;
-  try {
-    model = getModel("opencode", args.model);
-  } catch {
-    model = undefined;
-  }
-  if (!model) {
-    model = {
-      id: args.model,
-      name: args.model,
-      api: "openai-completions",
-      provider: "opencode",
-      baseUrl: args.baseUrl.trim(),
-      reasoning: true,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 262144,
-      maxTokens: 32768,
-    };
-  }
-  model.baseUrl = args.baseUrl.trim();
+  const provider = createOpenAICompatible({
+    name: "opencode",
+    apiKey: args.apiKey.trim(),
+    baseURL: args.baseUrl.trim(),
+  });
+  const model = provider(args.model);
 
   let version = 1;
   let customContext = JSON.parse(JSON.stringify(DEFAULT_CUSTOM_CONTEXT));
@@ -88,185 +70,63 @@ async function main() {
     return `<custom_context_manifest version="${version}" count="${entries.length}">\n${body}\n</custom_context_manifest>`;
   };
 
-  const tools = [
-    {
-      name: "custom_context_get",
+  const tools = {
+    custom_context_get: tool({
       description: "Get current custom context and version",
-      parameters: Type.Object({}),
-    },
-    {
-      name: "custom_context_set",
+      inputSchema: z.object({}),
+      execute: async () => ({ version, custom_context: customContext }),
+    }),
+    custom_context_set: tool({
       description: "Create or update one custom context entry by id",
-      parameters: Type.Object({
-        id: Type.String(),
-        text: Type.String(),
-        expected_version: Type.Optional(Type.Number()),
-      }),
-    },
-    {
-      name: "custom_context_delete",
+      inputSchema: z.object({ id: z.string(), text: z.string(), expected_version: z.number().optional() }),
+      execute: async ({ id, text, expected_version }) => {
+        if (typeof expected_version === "number" && expected_version !== version) {
+          return { ok: false, error: `Version conflict: expected ${expected_version}, current ${version}` };
+        }
+        const normalizedId = id.trim().toLowerCase();
+        if (!normalizedId) return { ok: false, error: "id is required" };
+        if (!text.trim()) return { ok: false, error: "text is required" };
+        const existingIndex = customContext.findIndex((item) => item.id === normalizedId);
+        if (existingIndex >= 0) customContext[existingIndex] = { id: normalizedId, text: text.trim() };
+        else customContext.push({ id: normalizedId, text: text.trim() });
+        version += 1;
+        return { ok: true, version };
+      },
+    }),
+    custom_context_delete: tool({
       description: "Delete one custom context entry by id",
-      parameters: Type.Object({
-        id: Type.String(),
-        expected_version: Type.Optional(Type.Number()),
-      }),
-    },
-  ];
-
-  const context = {
-    systemPrompt: `${SYSTEM_PROMPT}\n\nCustom context:\n${renderCustomContextXml()}`,
-    tools,
-    messages: [
-      { role: "user", content: args.prompt, timestamp: Date.now() },
-    ],
+      inputSchema: z.object({ id: z.string(), expected_version: z.number().optional() }),
+      execute: async ({ id, expected_version }) => {
+        if (typeof expected_version === "number" && expected_version !== version) {
+          return { ok: false, error: `Version conflict: expected ${expected_version}, current ${version}` };
+        }
+        const normalizedId = id.trim().toLowerCase();
+        const existingIndex = customContext.findIndex((item) => item.id === normalizedId);
+        if (!normalizedId || existingIndex < 0) {
+          return { ok: false, error: `custom_context entry not found: ${normalizedId || "(empty)"}` };
+        }
+        customContext.splice(existingIndex, 1);
+        version += 1;
+        return { ok: true, version };
+      },
+    }),
   };
 
+  const messages = [{ role: "user", content: args.prompt }];
+
   for (let turn = 0; turn < args.maxTurns; turn += 1) {
-    const assistant = await complete(model, context, {
-      apiKey: args.apiKey,
-      transport: "sse",
-      maxRetryDelayMs: 20_000,
+    const result = await generateText({
+      model,
+      system: `${SYSTEM_PROMPT}\n\nCustom context:\n${renderCustomContextXml()}`,
+      messages,
+      tools,
+      stopWhen: stepCountIs(1),
     });
-
-    if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
-      fail(assistant.errorMessage || `Model failed with stop reason: ${assistant.stopReason}`);
-    }
-
-    context.messages.push(assistant);
-    const toolCalls = assistant.content.filter((block) => block.type === "toolCall");
-    if (!toolCalls.length) {
-      const text = assistant.content
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("\n")
-        .trim();
-      if (!text) fail("Smoke test returned empty final response");
+    messages.push(...result.response.messages.slice(1));
+    const text = result.text.trim();
+    if (text) {
       process.stdout.write(`Smoke OK\nModel: ${args.model}\nResponse:\n${text}\n`);
       return;
-    }
-
-    for (const call of toolCalls) {
-      const argsObj = parseToolArgs(call.arguments);
-      if (call.name === "custom_context_get") {
-        context.messages.push({
-          role: "toolResult",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: [{ type: "text", text: JSON.stringify({ version, custom_context: customContext }, null, 2) }],
-          isError: false,
-          timestamp: Date.now(),
-        });
-        continue;
-      }
-
-      if (call.name === "custom_context_set") {
-        const expectedVersion = argsObj.expected_version;
-        if (typeof expectedVersion === "number" && expectedVersion !== version) {
-          context.messages.push({
-            role: "toolResult",
-            toolCallId: call.id,
-            toolName: call.name,
-            content: [{ type: "text", text: `Version conflict: expected ${expectedVersion}, current ${version}` }],
-            isError: true,
-            timestamp: Date.now(),
-          });
-          continue;
-        }
-
-        const id = typeof argsObj.id === "string" ? argsObj.id.trim().toLowerCase() : "";
-        if (!id) {
-          context.messages.push({
-            role: "toolResult",
-            toolCallId: call.id,
-            toolName: call.name,
-            content: [{ type: "text", text: "id is required" }],
-            isError: true,
-            timestamp: Date.now(),
-          });
-          continue;
-        }
-
-        if (typeof argsObj.text !== "string" || !argsObj.text.trim()) {
-          context.messages.push({
-            role: "toolResult",
-            toolCallId: call.id,
-            toolName: call.name,
-            content: [{ type: "text", text: "text is required" }],
-            isError: true,
-            timestamp: Date.now(),
-          });
-          continue;
-        }
-
-        const next = String(argsObj.text).trim();
-        const existingIndex = customContext.findIndex((item) => item.id === id);
-        if (existingIndex >= 0) customContext[existingIndex] = { id, text: next };
-        else customContext.push({ id, text: next });
-
-        version += 1;
-        context.systemPrompt = `${SYSTEM_PROMPT}\n\nCustom context:\n${renderCustomContextXml()}`;
-        context.messages.push({
-          role: "toolResult",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: [{ type: "text", text: JSON.stringify({ version }, null, 2) }],
-          isError: false,
-          timestamp: Date.now(),
-        });
-        continue;
-      }
-
-      if (call.name === "custom_context_delete") {
-        const expectedVersion = argsObj.expected_version;
-        if (typeof expectedVersion === "number" && expectedVersion !== version) {
-          context.messages.push({
-            role: "toolResult",
-            toolCallId: call.id,
-            toolName: call.name,
-            content: [{ type: "text", text: `Version conflict: expected ${expectedVersion}, current ${version}` }],
-            isError: true,
-            timestamp: Date.now(),
-          });
-          continue;
-        }
-
-        const id = typeof argsObj.id === "string" ? argsObj.id.trim().toLowerCase() : "";
-        const existingIndex = customContext.findIndex((item) => item.id === id);
-        if (!id || existingIndex < 0) {
-          context.messages.push({
-            role: "toolResult",
-            toolCallId: call.id,
-            toolName: call.name,
-            content: [{ type: "text", text: `custom_context entry not found: ${id || "(empty)"}` }],
-            isError: true,
-            timestamp: Date.now(),
-          });
-          continue;
-        }
-
-        customContext.splice(existingIndex, 1);
-
-        version += 1;
-        context.systemPrompt = `${SYSTEM_PROMPT}\n\nCustom context:\n${renderCustomContextXml()}`;
-        context.messages.push({
-          role: "toolResult",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: [{ type: "text", text: JSON.stringify({ version }, null, 2) }],
-          isError: false,
-          timestamp: Date.now(),
-        });
-        continue;
-      }
-
-      context.messages.push({
-        role: "toolResult",
-        toolCallId: call.id,
-        toolName: call.name,
-        content: [{ type: "text", text: `Unsupported tool: ${call.name}` }],
-        isError: true,
-        timestamp: Date.now(),
-      });
     }
   }
 
