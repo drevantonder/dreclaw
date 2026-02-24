@@ -246,11 +246,26 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     vm.setProp(vm.global, "__last_eval_result", valueHandle);
     valueHandle.dispose();
 
-    const settleResult = await vm.evalCodeAsync("globalThis.__exec_result = await globalThis.__last_eval_result;");
+    const settleResult = await vm.evalCodeAsync(`
+      globalThis.__exec_error = null;
+      Promise.resolve(globalThis.__last_eval_result)
+        .then((value) => {
+          globalThis.__exec_result = value;
+        })
+        .catch((error) => {
+          const message = error && typeof error === "object" && "message" in error ? error.message : error;
+          globalThis.__exec_error = String(message ?? "Unknown execute error");
+        });
+    `);
     vm.unwrapResult(settleResult).dispose();
 
     runPendingJobs(vm.runtime, limits.execMaxHostCalls);
     await flushAsyncWork(vm.runtime, stats, deadline, limits.execMaxHostCalls);
+
+    const errorText = readGlobalJson(vm, "__exec_error");
+    if (typeof errorText === "string" && errorText.trim()) {
+      throw new Error(errorText);
+    }
 
     const result = readGlobalJson(vm, "__exec_result");
     return {
