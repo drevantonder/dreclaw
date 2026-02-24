@@ -45,7 +45,8 @@ interface AgentRunResult {
   toolErrors: string[];
 }
 
-const SYSTEM_PROMPT = "You are running inside a Cloudflare Worker.";
+const SYSTEM_PROMPT =
+  "injected_messages is persistent editable startup context.\nProactively keep it current using provided tools.";
 const INJECTED_MESSAGES_START = "INJECTED_MESSAGES_START";
 const INJECTED_MESSAGES_MANIFEST = "INJECTED_MESSAGES_MANIFEST";
 const INJECTED_MESSAGES_END = "INJECTED_MESSAGES_END";
@@ -146,6 +147,17 @@ export class SessionRuntime implements DurableObject {
     const userText = payload.message.text ?? payload.message.caption ?? "";
     const imageBlocks = await this.loadImages(payload.message);
     const text = userText.trim();
+
+    if (text.startsWith("/factory-reset")) {
+      this.stateData = {
+        history: [],
+        prefs: normalizePrefs(this.stateData.prefs),
+        injected: normalizeInjectedState(undefined),
+      };
+      await this.save();
+      await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.getModelName(), await this.workerAuthReady());
+      return { ok: true, text: "Factory reset complete. Defaults restored." };
+    }
 
     if (text.startsWith("/reset")) {
       const currentInjected = this.getInjectedState();
@@ -322,7 +334,7 @@ export class SessionRuntime implements DurableObject {
     }
 
     const id = parseInjectedMessageId(payload.id);
-    const message = validateInjectedMessage(payload.message);
+    const message = normalizeIncomingInjectedMessage(payload.message);
     const nextMessages = cloneInjectedMessages(current.injectedMessages);
     const existingIndex = nextMessages.findIndex((item) => item.id === id);
     if (existingIndex >= 0) {
@@ -519,6 +531,14 @@ function validateInjectedMessage(input: unknown): InjectedMessage {
   }
   ensureValidMessageContent(row.content, role);
   return { role, content: deepClone(row.content) };
+}
+
+function normalizeIncomingInjectedMessage(input: unknown): InjectedMessage {
+  if (typeof input === "string") {
+    ensureValidMessageContent(input, "system");
+    return { role: "system", content: input };
+  }
+  return validateInjectedMessage(input);
 }
 
 function parseInjectedMessageId(input: unknown): string {

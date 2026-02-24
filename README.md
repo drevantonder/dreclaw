@@ -5,7 +5,7 @@
 ## v0 Scope
 
 - Telegram private chat-only, single-user (me)
-- Commands: `/status`, `/reset`, `/details`, `/thinking`
+- Commands: `/status`, `/reset`, `/factory-reset`, `/details`, `/thinking`
 - Core tools: `injected_messages_get`, `injected_messages_set`, `injected_messages_delete`
 - Versioned `injected_messages` persisted in Durable Object session state
 - OpenCode Zen provider (`MODEL` + `BASE_URL`)
@@ -73,6 +73,7 @@ pnpm deploy
 - Message the bot in a private Telegram chat.
 - `/status` shows runtime/session/auth + injected message metadata.
 - `/reset` clears conversation context only (keeps `injected_messages`).
+- `/factory-reset` clears conversation context and restores default `injected_messages`.
 - `/details compact|verbose|debug` controls tool/progress verbosity.
 - `/thinking on|off` toggles thinking message visibility (shown in `debug` mode).
 

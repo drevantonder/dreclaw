@@ -386,6 +386,52 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Saw it.");
   });
 
+  it("accepts string message for injected_messages_set", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "injected_messages_set",
+            arguments: {
+              id: "memory",
+              expected_version: 1,
+              message: "The user prefers to be called Dre.",
+            },
+          },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Saved simple memory." }],
+      },
+      (context: MockContext) => {
+        const hasStringMemory = context.messages.some(
+          (message) =>
+            message.role === "system" &&
+            typeof message.content === "string" &&
+            message.content.includes("called Dre"),
+        );
+        expect(hasStringMemory).toBe(true);
+        return {
+          stopReason: "endTurn",
+          content: [{ type: "text", text: "Memory present." }],
+        };
+      },
+    );
+
+    await callWebhook(env, 4120, "store simple memory");
+    expect(sends.at(-1)?.text).toContain("Saved simple memory.");
+
+    await callWebhook(env, 4121, "confirm");
+    expect(sends.at(-1)?.text).toContain("Memory present.");
+  });
+
   it("persists tool errors in history so next turn can react", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
@@ -533,6 +579,55 @@ describe("conversation e2e", () => {
 
     await callWebhook(env, 4019, "confirm persisted identity");
     expect(sends.at(-1)?.text).toContain("Still here.");
+  });
+
+  it("resets injected messages on /factory-reset", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "injected_messages_set",
+            arguments: {
+              id: "identity",
+              expected_version: 1,
+              message: { role: "system", content: [{ type: "text", text: "# IDENTITY\n\nPersist me." }] },
+            },
+          },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Stored." }],
+      },
+      (context: MockContext) => {
+        const hasPersistedIdentity = context.messages.some(
+          (message) =>
+            message.role === "system" &&
+            Array.isArray(message.content) &&
+            message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("Persist me.")),
+        );
+        expect(hasPersistedIdentity).toBe(false);
+        return {
+          stopReason: "endTurn",
+          content: [{ type: "text", text: "Defaults restored." }],
+        };
+      },
+    );
+
+    await callWebhook(env, 4020, "set identity");
+    expect(sends.at(-1)?.text).toContain("Stored.");
+
+    await callWebhook(env, 4021, "/factory-reset");
+    expect(sends.at(-1)?.text).toContain("Factory reset complete");
+
+    await callWebhook(env, 4022, "confirm defaults");
+    expect(sends.at(-1)?.text).toContain("Defaults restored.");
   });
 
   it("persists runtime failures in history for future turns", async () => {
