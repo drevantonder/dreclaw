@@ -1,4 +1,5 @@
-import { getQuickJS } from "@tootallnate/quickjs-emscripten";
+import { newQuickJSAsyncWASMModuleFromVariant } from "quickjs-emscripten-core";
+import QUICKJS_ASYNC_SINGLEFILE_VARIANT from "@jitl/quickjs-singlefile-cjs-release-asyncify";
 
 export interface InstalledPackage {
   spec: string;
@@ -90,7 +91,10 @@ type HostStats = {
   packageInstalls: number;
 };
 
-type QuickJsContext = ReturnType<Awaited<ReturnType<typeof getQuickJS>>["newContext"]>;
+type QuickJsModule = Awaited<ReturnType<typeof newQuickJSAsyncWASMModuleFromVariant>>;
+type QuickJsContext = ReturnType<QuickJsModule["newContext"]>;
+
+let quickJsModulePromise: Promise<QuickJsModule> | null = null;
 
 const DEFAULT_LIMITS: CodeExecutionLimits = {
   execTimeoutMs: 2000,
@@ -212,7 +216,7 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     };
   }
 
-  const quickJs = await getQuickJS();
+  const quickJs = await getQuickJsModule();
   const vm = quickJs.newContext();
   const runtime = vm.runtime;
   const limits = ctx.config.limits;
@@ -221,7 +225,10 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   runtime.setMemoryLimit(limits.execMemoryMb * 1024 * 1024);
   runtime.setMaxStackSize(limits.execStackKb * 1024);
   runtime.setInterruptHandler(() => Date.now() > deadline);
-  runtime.removeModuleLoader();
+  runtime.setModuleLoader(
+    async (moduleName: string) => loadModuleSource(moduleName, ctx, stats),
+    async (baseModuleName: string, requestedName: string) => normalizeModuleName(baseModuleName, requestedName),
+  );
 
   try {
     registerHostApi(vm, ctx, logs, stats);
@@ -288,21 +295,19 @@ function registerHostApi(
   vm.setProp(vm.global, "__host_pkg_list", pkgListFn);
   pkgListFn.dispose();
 
-  const pkgInstallFn = vm.newFunction("__host_pkg_install", (specHandle) => {
+  const pkgInstallFn = vm.newAsyncifiedFunction("__host_pkg_install", async (specHandle) => {
     bumpHostCall(stats, limits.execMaxHostCalls);
     if (!ctx.config.pkgInstallEnabled) {
       throw new Error("PKG_INSTALL_DISABLED");
     }
     const spec = vm.getString(specHandle);
-    return toQuickJsPromise(vm, async () => {
-      const installed = await ensurePackageInstalled(spec, ctx, stats);
-      return JSON.stringify(installed);
-    }) as ReturnType<typeof vm.newString>;
+    const installed = await ensurePackageInstalled(spec, ctx, stats);
+    return vm.newString(JSON.stringify(installed));
   });
   vm.setProp(vm.global, "__host_pkg_install", pkgInstallFn);
   pkgInstallFn.dispose();
 
-  const fetchFn = vm.newFunction("__host_fetch", (argsHandle) => {
+  const fetchFn = vm.newAsyncifiedFunction("__host_fetch", async (argsHandle) => {
     bumpHostCall(stats, limits.execMaxHostCalls);
     if (!ctx.config.netFetchEnabled) {
       throw new Error("NET_FETCH_DISABLED");
@@ -311,10 +316,8 @@ function registerHostApi(
     if (!Array.isArray(args) || !args.length || typeof args[0] !== "string") {
       throw new Error("fetch requires url string");
     }
-    return toQuickJsPromise(vm, async () => {
-      const request = await executeFetch(args[0], args[1] ?? {}, ctx.config.limits, stats);
-      return JSON.stringify(request);
-    }) as ReturnType<typeof vm.newString>;
+    const request = await executeFetch(args[0], args[1] ?? {}, ctx.config.limits, stats);
+    return vm.newString(JSON.stringify(request));
   });
   vm.setProp(vm.global, "__host_fetch", fetchFn);
   fetchFn.dispose();
@@ -373,26 +376,6 @@ function runPendingJobs(runtime: { hasPendingJob: () => boolean; executePendingJ
     }
     iterations += 1;
   }
-}
-
-function toQuickJsPromise(vm: QuickJsContext, producer: () => Promise<string>): unknown {
-  const deferred = vm.newPromise();
-  producer()
-    .then((text) => {
-      const value = vm.newString(text);
-      deferred.resolve(value);
-      value.dispose();
-    })
-    .catch((error) => {
-      const message = error instanceof Error ? error.message : String(error ?? "unknown error");
-      const value = vm.newString(message);
-      deferred.reject(value);
-      value.dispose();
-    })
-    .finally(() => {
-      vm.runtime.executePendingJobs();
-    });
-  return deferred.handle;
 }
 
 async function ensurePackageInstalled(spec: string, ctx: HostContext, stats: HostStats): Promise<InstalledPackage> {
@@ -616,6 +599,13 @@ function safeJsonParse(text: string): unknown {
   } catch {
     return null;
   }
+}
+
+async function getQuickJsModule(): Promise<QuickJsModule> {
+  if (!quickJsModulePromise) {
+    quickJsModulePromise = newQuickJSAsyncWASMModuleFromVariant(QUICKJS_ASYNC_SINGLEFILE_VARIANT);
+  }
+  return quickJsModulePromise;
 }
 
 async function setGlobalJson(vm: QuickJsContext, key: string, value: unknown): Promise<void> {
