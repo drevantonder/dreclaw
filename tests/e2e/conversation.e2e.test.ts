@@ -486,6 +486,55 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Confirmed delete.");
   });
 
+  it("keeps injected messages across /reset", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "injected_messages_set",
+            arguments: {
+              id: "identity",
+              expected_version: 1,
+              message: { role: "system", content: [{ type: "text", text: "# IDENTITY\n\nPersist me." }] },
+            },
+          },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Stored." }],
+      },
+      (context: MockContext) => {
+        const hasPersistedIdentity = context.messages.some(
+          (message) =>
+            message.role === "system" &&
+            Array.isArray(message.content) &&
+            message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("Persist me.")),
+        );
+        expect(hasPersistedIdentity).toBe(true);
+        return {
+          stopReason: "endTurn",
+          content: [{ type: "text", text: "Still here." }],
+        };
+      },
+    );
+
+    await callWebhook(env, 4017, "set identity");
+    expect(sends.at(-1)?.text).toContain("Stored.");
+
+    await callWebhook(env, 4018, "/reset");
+    expect(sends.at(-1)?.text).toContain("Conversation context cleared");
+
+    await callWebhook(env, 4019, "confirm persisted identity");
+    expect(sends.at(-1)?.text).toContain("Still here.");
+  });
+
   it("persists runtime failures in history for future turns", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();

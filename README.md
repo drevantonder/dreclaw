@@ -72,7 +72,7 @@ pnpm deploy
 
 - Message the bot in a private Telegram chat.
 - `/status` shows runtime/session/auth + injected message metadata.
-- `/reset` clears current session state.
+- `/reset` clears conversation context only (keeps `injected_messages`).
 - `/details compact|verbose|debug` controls tool/progress verbosity.
 - `/thinking on|off` toggles thinking message visibility (shown in `debug` mode).
 

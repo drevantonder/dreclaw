@@ -148,14 +148,15 @@ export class SessionRuntime implements DurableObject {
     const text = userText.trim();
 
     if (text.startsWith("/reset")) {
+      const currentInjected = this.getInjectedState();
       this.stateData = {
         history: [],
         prefs: normalizePrefs(this.stateData.prefs),
-        injected: normalizeInjectedState(undefined),
+        injected: cloneInjectedState(currentInjected),
       };
       await this.save();
       await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.getModelName(), await this.workerAuthReady());
-      return { ok: true, text: "Session reset. Context cleared." };
+      return { ok: true, text: "Session reset. Conversation context cleared." };
     }
 
     if (text.startsWith("/status")) {
@@ -444,6 +445,13 @@ function cloneInjectedMessages(messages: InjectedMessageItem[]): InjectedMessage
       content: deepClone(message.message.content),
     },
   }));
+}
+
+function cloneInjectedState(state: InjectedMessagesState): InjectedMessagesState {
+  return {
+    version: state.version,
+    injectedMessages: cloneInjectedMessages(state.injectedMessages),
+  };
 }
 
 function deepClone<T>(value: T): T {
