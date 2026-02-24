@@ -113,4 +113,70 @@ describe("telegram webhook e2e", () => {
     expect(res.status).toBe(401);
     expect(sendMock).not.toHaveBeenCalled();
   });
+
+  it("rejects non-json webhook payloads", async () => {
+    const { env } = createEnv();
+    const sendMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", sendMock);
+
+    const res = await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "text/plain",
+          "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+        },
+        body: "hi",
+      }),
+      env,
+      {} as ExecutionContext,
+    );
+
+    expect(res.status).toBe(415);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed json payload", async () => {
+    const { env } = createEnv();
+    const sendMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", sendMock);
+
+    const res = await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+        },
+        body: "{bad",
+      }),
+      env,
+      {} as ExecutionContext,
+    );
+
+    expect(res.status).toBe(400);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized payload", async () => {
+    const { env } = createEnv();
+    const sendMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", sendMock);
+
+    const res = await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+        },
+        body: "x".repeat(256_001),
+      }),
+      env,
+      {} as ExecutionContext,
+    );
+
+    expect(res.status).toBe(413);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
 });

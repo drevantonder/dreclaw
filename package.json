@@ -22,5 +22,10 @@
     "@mariozechner/pi-agent-core": "^0.54.2",
     "@mariozechner/pi-ai": "^0.54.2",
     "@sinclair/typebox": "^0.34.48"
+  },
+  "pnpm": {
+    "overrides": {
+      "minimatch": "^10.2.1"
+    }
   }
 }

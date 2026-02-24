@@ -6,6 +6,8 @@ import type { Env } from "./types";
 
 export { SessionRuntime };
 
+const WEBHOOK_MAX_BODY_BYTES = 256_000;
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -24,11 +26,35 @@ export default {
 
 async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
   const secret = request.headers.get("x-telegram-bot-api-secret-token");
-  if (!secret || secret !== env.TELEGRAM_WEBHOOK_SECRET) {
+  if (!secret || !timingSafeEqual(secret, env.TELEGRAM_WEBHOOK_SECRET)) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const body = await request.json();
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().startsWith("application/json")) {
+    return new Response("Unsupported media type", { status: 415 });
+  }
+
+  const contentLengthHeader = request.headers.get("content-length");
+  if (contentLengthHeader) {
+    const contentLength = Number(contentLengthHeader);
+    if (Number.isFinite(contentLength) && contentLength > WEBHOOK_MAX_BODY_BYTES) {
+      return new Response("Payload too large", { status: 413 });
+    }
+  }
+
+  const rawBody = await request.text();
+  if (rawBody.length > WEBHOOK_MAX_BODY_BYTES) {
+    return new Response("Payload too large", { status: 413 });
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
   const result = await processTelegramUpdate(
     {
       body,
@@ -55,4 +81,20 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   }
 
   return new Response("ok");
+}
+
+function timingSafeEqual(left: string, right: string): boolean {
+  const encoder = new TextEncoder();
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  const maxLength = Math.max(leftBytes.length, rightBytes.length);
+
+  let diff = leftBytes.length ^ rightBytes.length;
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftByte = index < leftBytes.length ? leftBytes[index] : 0;
+    const rightByte = index < rightBytes.length ? rightBytes[index] : 0;
+    diff |= leftByte ^ rightByte;
+  }
+
+  return diff === 0;
 }

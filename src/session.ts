@@ -118,7 +118,7 @@ export class SessionRuntime implements DurableObject {
       await finishRun(this.env.DRECLAW_DB, runId);
       return Response.json(response);
     } catch (error) {
-      const message = compactErrorMessage(error);
+      const message = redactSensitiveText(compactErrorMessage(error));
       console.error("session-run-failed", { sessionId, message });
       this.pushHistory({ role: "assistant", content: `Failed: ${message}` });
       await this.save();
@@ -377,7 +377,7 @@ export class SessionRuntime implements DurableObject {
       return;
     }
 
-    const detail = extractToolContentText(event.result);
+    const detail = redactSensitiveText(extractToolContentText(event.result));
     const ok = !event.isError;
     await progress.onToolResult(event.toolName, ok, detail, ok ? undefined : detail);
 
@@ -898,4 +898,23 @@ function truncateForLog(input: string, max: number): string {
   if (!compact) return "";
   if (compact.length <= max) return compact;
   return `${compact.slice(0, max - 1)}…`;
+}
+
+function redactSensitiveText(input: string): string {
+  const text = String(input ?? "");
+  if (!text) return "";
+
+  const patterns = [
+    /(api[_-]?key\s*[:=]\s*)([^\s,;]+)/gi,
+    /(token\s*[:=]\s*)([^\s,;]+)/gi,
+    /(secret\s*[:=]\s*)([^\s,;]+)/gi,
+    /(authorization\s*[:=]\s*)([^\s,;]+)/gi,
+    /(bearer\s+)([^\s,;]+)/gi,
+  ];
+
+  let redacted = text;
+  for (const pattern of patterns) {
+    redacted = redacted.replace(pattern, (_match, prefix: string) => `${prefix}[REDACTED]`);
+  }
+  return redacted;
 }
