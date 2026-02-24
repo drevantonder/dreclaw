@@ -6,11 +6,7 @@ const SYSTEM_PROMPT = "You are dréclaw. Be concise.";
 const DEFAULT_CUSTOM_CONTEXT = [
   {
     id: "identity",
-    message: {
-      role: "system",
-      content: [{ type: "text", text: "I am friendly, direct, and practical." }],
-      timestamp: Date.now(),
-    },
+    text: "I am friendly, direct, and practical.",
   },
 ];
 
@@ -85,9 +81,7 @@ async function main() {
     const entries = [...customContext].sort((a, b) => a.id.localeCompare(b.id));
     const body = entries
       .map((item) => {
-        const text = Array.isArray(item.message?.content)
-          ? item.message.content.filter((part) => part?.type === "text").map((part) => part.text).join("\n\n")
-          : String(item.message?.content ?? "");
+        const text = String(item.text ?? "");
         return `<custom_context id="${item.id}">\n${text}\n</custom_context>`;
       })
       .join("\n");
@@ -105,7 +99,7 @@ async function main() {
       description: "Create or update one custom context entry by id",
       parameters: Type.Object({
         id: Type.String(),
-        message: Type.Any(),
+        text: Type.String(),
         expected_version: Type.Optional(Type.Number()),
       }),
     },
@@ -192,22 +186,22 @@ async function main() {
           continue;
         }
 
-        if (!argsObj.message || typeof argsObj.message !== "object") {
+        if (typeof argsObj.text !== "string" || !argsObj.text.trim()) {
           context.messages.push({
             role: "toolResult",
             toolCallId: call.id,
             toolName: call.name,
-            content: [{ type: "text", text: "message must be an object" }],
+            content: [{ type: "text", text: "text is required" }],
             isError: true,
             timestamp: Date.now(),
           });
           continue;
         }
 
-        const next = JSON.parse(JSON.stringify(argsObj.message));
+        const next = String(argsObj.text).trim();
         const existingIndex = customContext.findIndex((item) => item.id === id);
-        if (existingIndex >= 0) customContext[existingIndex] = { id, message: next };
-        else customContext.push({ id, message: next });
+        if (existingIndex >= 0) customContext[existingIndex] = { id, text: next };
+        else customContext.push({ id, text: next });
 
         version += 1;
         context.systemPrompt = `${SYSTEM_PROMPT}\n\nCustom context:\n${renderCustomContextXml()}`;

@@ -1,4 +1,5 @@
 import type { TelegramMessage, TelegramUpdate } from "./types";
+import { retryOnce } from "./retry";
 
 const TELEGRAM_API = "https://api.telegram.org";
 const TELEGRAM_MAX_TEXT_LENGTH = 3900;
@@ -43,7 +44,7 @@ export async function sendTelegramMessage(
     disable_web_page_preview: options.disableWebPagePreview ?? true,
   };
 
-  return withRetry(async () => {
+  return retryOnce(async () => {
     const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -55,38 +56,7 @@ export async function sendTelegramMessage(
     }
     const payload = (await response.json()) as { result?: { message_id?: number } };
     return payload.result?.message_id ?? null;
-  });
-}
-
-export async function editTelegramMessage(
-  token: string,
-  chatId: number,
-  messageId: number,
-  text: string,
-  options: TelegramSendOptions = {},
-): Promise<void> {
-  const url = `${TELEGRAM_API}/bot${token}/editMessageText`;
-  const parseMode = options.parseMode ?? "HTML";
-  const safeText = clampTelegramText(parseMode === "HTML" ? formatTelegramHtml(text) : text);
-  const body = {
-    chat_id: chatId,
-    message_id: messageId,
-    text: safeText,
-    parse_mode: parseMode,
-    disable_web_page_preview: options.disableWebPagePreview ?? true,
-  };
-
-  await withRetry(async () => {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      const payload = await response.text();
-      throw new Error(`Telegram edit failed (${response.status}): ${payload}`);
-    }
-  });
+  }, 200);
 }
 
 export async function sendTelegramChatAction(token: string, chatId: number, action = "typing"): Promise<void> {
@@ -96,7 +66,7 @@ export async function sendTelegramChatAction(token: string, chatId: number, acti
     action,
   };
 
-  await withRetry(async () => {
+  await retryOnce(async () => {
     const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -106,7 +76,7 @@ export async function sendTelegramChatAction(token: string, chatId: number, acti
       const payload = await response.text();
       throw new Error(`Telegram chat action failed (${response.status}): ${payload}`);
     }
-  });
+  }, 200);
 }
 
 function clampTelegramText(input: string): string {
@@ -223,13 +193,4 @@ function bytesToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
-}
-
-async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return fn();
-  }
 }

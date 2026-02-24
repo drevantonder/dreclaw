@@ -5,8 +5,6 @@ type SqlResult = { meta: { changes?: number } };
 
 export class FakeD1 {
   readonly updates = new Set<number>();
-  readonly sessions = new Map<string, { chatId: string; model: string; authReady: boolean }>();
-  readonly runs = new Map<string, { sessionId: string; status: string; error: string | null }>();
 
   prepare(sql: string) {
     return {
@@ -29,39 +27,6 @@ export class FakeD1 {
       this.updates.add(updateId);
       return { meta: { changes: had ? 0 : 1 } };
     }
-
-    if (sql.includes("INSERT INTO sessions")) {
-      const sessionId = String(args[0]);
-      this.sessions.set(sessionId, {
-        chatId: String(args[1]),
-        model: String(args[2]),
-        authReady: Number(args[3]) === 1,
-      });
-      return { meta: { changes: 1 } };
-    }
-
-    if (sql.includes("INSERT INTO runs")) {
-      const runId = String(args[0]);
-      this.runs.set(runId, {
-        sessionId: String(args[1]),
-        status: String(args[2]),
-        error: null,
-      });
-      return { meta: { changes: 1 } };
-    }
-
-    if (sql.includes("UPDATE runs SET status")) {
-      const status = String(args[0]);
-      const error = args[1] ? String(args[1]) : null;
-      const runId = String(args[3]);
-      const run = this.runs.get(runId);
-      if (run) {
-        run.status = status;
-        run.error = error;
-      }
-      return { meta: { changes: run ? 1 : 0 } };
-    }
-
     return { meta: { changes: 0 } };
   }
 }

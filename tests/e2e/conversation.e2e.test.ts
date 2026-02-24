@@ -336,7 +336,7 @@ describe("conversation e2e", () => {
             arguments: {
               id: "identity",
               expected_version: 1,
-              message: { role: "system", content: [{ type: "text", text: "New identity." }] },
+              text: "New identity.",
             },
           },
         ],
@@ -366,7 +366,7 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Saw it.");
   });
 
-  it("accepts string message for custom_context_set", async () => {
+  it("accepts text for custom_context_set", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
@@ -381,7 +381,7 @@ describe("conversation e2e", () => {
             arguments: {
               id: "memory",
               expected_version: 1,
-              message: "The user prefers to be called Dre.",
+              text: "The user prefers to be called Dre.",
             },
           },
         ],
@@ -422,7 +422,7 @@ describe("conversation e2e", () => {
             arguments: {
               id: "identity",
               expected_version: 999,
-              message: { role: "system", content: "x" },
+              text: "x",
             },
           },
         ],
@@ -517,7 +517,7 @@ describe("conversation e2e", () => {
             arguments: {
               id: "identity",
               expected_version: 1,
-              message: { role: "system", content: [{ type: "text", text: "# IDENTITY\n\nPersist me." }] },
+              text: "# IDENTITY\n\nPersist me.",
             },
           },
         ],
@@ -561,7 +561,7 @@ describe("conversation e2e", () => {
             arguments: {
               id: "identity",
               expected_version: 1,
-              message: { role: "system", content: [{ type: "text", text: "# IDENTITY\n\nPersist me." }] },
+              text: "# IDENTITY\n\nPersist me.",
             },
           },
         ],
