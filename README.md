@@ -70,6 +70,21 @@ Route is read from `wrangler.toml`:
 pnpm deploy
 ```
 
+Seed default memory templates in R2 (recommended right after deploy):
+
+```bash
+pnpm seed:memory
+```
+
+This creates `defaults/SOUL.md` and `defaults/MEMORY.md` only when they do not already exist.
+New session files use these defaults when `/SOUL.md` or `/MEMORY.md` is missing.
+
+Or run deploy + seed in one step:
+
+```bash
+pnpm deploy:seed
+```
+
 ## Usage
 
 - Message the bot in a private Telegram chat.

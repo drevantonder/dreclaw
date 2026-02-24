@@ -38,26 +38,13 @@ interface ToolEvent {
 
 const SOUL_PATH = "/SOUL.md";
 const MEMORY_PATH = "/MEMORY.md";
-
-const DEFAULT_SOUL = `# SOUL
-
-I am dreclaw.
-I am friendly, genuine, and direct.
-I treat Andre like a friend, not a customer.
-I have real opinions and I share them clearly, with reasons.
-I can disagree politely when I think something is a bad idea.
-I stay practical: concise, useful, no fluff.
-I keep a light quirky humor when it fits.
-I never fake certainty; I say when I am unsure.
-I protect trust: no manipulation, no guilt-tripping, no secrets leakage.
-I aim to be helpful, honest, and a little fun.
-`;
-
-const DEFAULT_MEMORY =
-  "You have no memories. Ask your human for his/her name, what he/she would like you to call him/her, and what he/she is naming you.";
+const SOUL_DEFAULT_KEY = "defaults/SOUL.md";
+const MEMORY_DEFAULT_KEY = "defaults/MEMORY.md";
+const FALLBACK_SOUL = "# SOUL\n\nMissing default SOUL template. Run: pnpm seed:memory\n";
+const FALLBACK_MEMORY = "Missing default MEMORY template. Run: pnpm seed:memory\n";
 
 const SYSTEM_PROMPT =
-  "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. If a tool fails, briefly explain what failed, then recover or propose the next best action. Durable memory lives only in /SOUL.md and /MEMORY.md. Keep /MEMORY.md short (target under 20 lines), merge updates into existing facts, and never create memory folders or multiple memory files. Never store secrets or credentials.";
+  "Your soul is in /SOUL.md. Your memory in /MEMORY.md. Update MEMORY.md proactively. Keep /MEMORY.md short (target under 20 lines), merge updates into existing facts, and never create memory folders or multiple memory files. Never store secrets or credentials.";
 
 let agentCtorPromise: Promise<typeof import("@mariozechner/pi-agent-core")> | null = null;
 
@@ -275,8 +262,8 @@ export class SessionRuntime implements DurableObject {
 
   private async buildBootstrapMemoryMessages(shell: SessionShell): Promise<Array<Record<string, unknown>>> {
     const files = [
-      { path: SOUL_PATH, fallback: DEFAULT_SOUL },
-      { path: MEMORY_PATH, fallback: DEFAULT_MEMORY },
+      { path: SOUL_PATH, fallback: FALLBACK_SOUL },
+      { path: MEMORY_PATH, fallback: FALLBACK_MEMORY },
     ];
 
     const contentByPath = new Map<string, string>();
@@ -286,8 +273,9 @@ export class SessionRuntime implements DurableObject {
       try {
         contentByPath.set(file.path, await shell.readText(file.path));
       } catch {
-        await shell.writeText(file.path, file.fallback);
-        contentByPath.set(file.path, file.fallback);
+        const fallback = (await this.readSeededDefault(file.path)) ?? file.fallback;
+        await shell.writeText(file.path, fallback);
+        contentByPath.set(file.path, fallback);
         created = true;
       }
     }
@@ -313,6 +301,15 @@ export class SessionRuntime implements DurableObject {
     }));
 
     return [{ role: "assistant", content: toolCalls, timestamp: Date.now() }, ...toolResults];
+  }
+
+  private async readSeededDefault(path: string): Promise<string | null> {
+    const key = path === SOUL_PATH ? SOUL_DEFAULT_KEY : path === MEMORY_PATH ? MEMORY_DEFAULT_KEY : "";
+    if (!key) return null;
+    const object = await this.env.WORKSPACE_BUCKET.get(key);
+    if (!object) return null;
+    const text = await object.text();
+    return text.trim() ? text : null;
   }
 
   private async handleAgentEvent(

@@ -6,8 +6,10 @@
   "scripts": {
     "check": "tsc --noEmit",
     "deploy": "pnpm dlx wrangler deploy",
+    "deploy:seed": "pnpm deploy && pnpm seed:memory",
     "dev": "pnpm dlx wrangler dev",
     "d1:migrate": "pnpm dlx wrangler d1 migrations apply DRECLAW_DB",
+    "seed:memory": "node scripts/seed-memory.mjs",
     "secrets:sync": "set -a && source .env && set +a && node scripts/secrets-sync.mjs | pnpm dlx wrangler secret bulk",
     "smoke:live": "node scripts/smoke-live.mjs",
     "verify:predeploy": "pnpm check && pnpm test && pnpm smoke:live",
