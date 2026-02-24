@@ -11,11 +11,11 @@ v0 security model is intentionally simple and single-user.
 ## Secret boundaries
 
 - Provider auth credentials are stored in KV as a provider auth map.
-- Auth data is never stored in user memory/script filesystem paths.
+- Auth data is never stored in `/SOUL.md`, `/MEMORY.md`, or script filesystem paths.
 - `/status` and logs must not expose secrets or tokens.
 
 ## Runtime boundaries
 
 - No Sandbox/container dependency in v0.
 - Tool execution is constrained to Worker-native tool surface.
-- Files/memory/scripts persist in R2; auth persists separately in KV.
+- Files/scripts persist in R2; auth persists separately in KV.

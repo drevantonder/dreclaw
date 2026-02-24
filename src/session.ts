@@ -36,8 +36,28 @@ interface ToolEvent {
   detail: string;
 }
 
+const SOUL_PATH = "/SOUL.md";
+const MEMORY_PATH = "/MEMORY.md";
+
+const DEFAULT_SOUL = `# SOUL
+
+I am dreclaw.
+I am friendly, genuine, and direct.
+I treat Andre like a friend, not a customer.
+I have real opinions and I share them clearly, with reasons.
+I can disagree politely when I think something is a bad idea.
+I stay practical: concise, useful, no fluff.
+I keep a light quirky humor when it fits.
+I never fake certainty; I say when I am unsure.
+I protect trust: no manipulation, no guilt-tripping, no secrets leakage.
+I aim to be helpful, honest, and a little fun.
+`;
+
+const DEFAULT_MEMORY =
+  "You have no memories. Ask your human for his/her name, what he/she would like you to call him/her, and what he/she is naming you.";
+
 const SYSTEM_PROMPT =
-  "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. If a tool fails, briefly explain what failed, then recover or propose the next best action. Proactively use /memory for durable, decision-useful context: read it when useful, write/update .md files when important new context appears, keep it clean by merging duplicates/removing stale info, and never store secrets or credentials.";
+  "You are dreclaw strict v0. Use tools only when needed. Return concise final answers. Do not echo user text. Use bash/read/write/edit only through tool calls. If a tool fails, briefly explain what failed, then recover or propose the next best action. Durable memory lives only in /SOUL.md and /MEMORY.md. Keep /MEMORY.md short (target under 20 lines), merge updates into existing facts, and never create memory folders or multiple memory files. Never store secrets or credentials.";
 
 let agentCtorPromise: Promise<typeof import("@mariozechner/pi-agent-core")> | null = null;
 
@@ -185,11 +205,13 @@ export class SessionRuntime implements DurableObject {
   ): Promise<AgentRunResult> {
     const model = resolvePiModel(runtime.model, runtime.baseUrl);
     const historyContext = renderHistoryContext(this.stateData.history);
+    const bootstrapMessages = await this.buildBootstrapMemoryMessages(shell);
     const tools = createAgentTools(shell);
     const { Agent } = await loadAgentCore();
     const agent = new Agent({
       initialState: {
         systemPrompt: historyContext ? `${SYSTEM_PROMPT}\n\nRecent context:\n${historyContext}` : SYSTEM_PROMPT,
+        messages: bootstrapMessages as never,
         model,
         thinkingLevel: this.shouldShowThinking() ? "medium" : "off",
         tools,
@@ -200,9 +222,13 @@ export class SessionRuntime implements DurableObject {
     const toolErrors: string[] = [];
     const toolEvents: ToolEvent[] = [];
     const eventTasks: Promise<void>[] = [];
+    let hasMutatingToolCall = false;
     const fsMetricsStart = shell.metricsSnapshot();
 
     agent.subscribe((event: AgentEvent) => {
+      if (event.type === "tool_execution_start" && isMutatingTool(event.toolName)) {
+        hasMutatingToolCall = true;
+      }
       const task = this.handleAgentEvent(event, progress, toolEvents, toolErrors).catch((error) => {
         console.warn("agent-event-handler-failed", {
           error: error instanceof Error ? error.message : String(error ?? "unknown"),
@@ -215,6 +241,9 @@ export class SessionRuntime implements DurableObject {
     await agent.prompt(userText || "[image message]", images);
     if (eventTasks.length) {
       await Promise.all(eventTasks);
+    }
+    if (hasMutatingToolCall) {
+      await shell.flush();
     }
     if (this.shouldShowThinking()) {
       await progress.sendThinkingSummary(readFinalAssistantThinking(agent.state.messages));
@@ -242,6 +271,48 @@ export class SessionRuntime implements DurableObject {
 
     const finalText = readFinalAssistantText(agent.state.messages);
     return { finalText: finalText || "(empty response)", toolErrors, toolEvents };
+  }
+
+  private async buildBootstrapMemoryMessages(shell: SessionShell): Promise<Array<Record<string, unknown>>> {
+    const files = [
+      { path: SOUL_PATH, fallback: DEFAULT_SOUL },
+      { path: MEMORY_PATH, fallback: DEFAULT_MEMORY },
+    ];
+
+    const contentByPath = new Map<string, string>();
+    let created = false;
+
+    for (const file of files) {
+      try {
+        contentByPath.set(file.path, await shell.readText(file.path));
+      } catch {
+        await shell.writeText(file.path, file.fallback);
+        contentByPath.set(file.path, file.fallback);
+        created = true;
+      }
+    }
+
+    if (created) {
+      await shell.flush();
+    }
+
+    const toolCalls = files.map((file, index) => ({
+      type: "toolCall",
+      id: `bootstrap-read-${index + 1}`,
+      name: "read",
+      arguments: { path: file.path },
+    }));
+
+    const toolResults = files.map((file, index) => ({
+      role: "toolResult",
+      toolCallId: `bootstrap-read-${index + 1}`,
+      toolName: "read",
+      content: [{ type: "text", text: contentByPath.get(file.path) ?? "" }],
+      isError: false,
+      timestamp: Date.now(),
+    }));
+
+    return [{ role: "assistant", content: toolCalls, timestamp: Date.now() }, ...toolResults];
   }
 
   private async handleAgentEvent(
@@ -474,7 +545,7 @@ async function executeSessionTool(
   args: Record<string, unknown>,
   options?: { timeoutMs?: number },
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
-  const runner = runTool({ name, args }, { shell });
+  const runner = runTool({ name, args }, { shell, deferPersistence: true });
   const result = options?.timeoutMs ? await withTimeout(runner, options.timeoutMs) : await runner;
   const text = truncateForLog(result.output || result.error || "(no output)", 2000) || "(no output)";
 
@@ -486,6 +557,10 @@ async function executeSessionTool(
     content: [{ type: "text", text }],
     details: { ok: true },
   };
+}
+
+function isMutatingTool(name: string): boolean {
+  return name === "write" || name === "edit" || name === "bash";
 }
 
 async function loadAgentCore(): Promise<typeof import("@mariozechner/pi-agent-core")> {

@@ -9,7 +9,7 @@ v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/too
 - Telegram private chat-only, single-user (me)
 - Commands: `/status`, `/reset`, `/details`, `/thinking`
 - Core tools: `read`, `write`, `edit`, `bash` (via just-bash)
-- R2-backed filesystem for files, memories, and saved scripts
+- R2-backed filesystem for files and saved scripts
 - OpenCode Zen provider (`MODEL` + `BASE_URL`)
 - No Sandbox/container dependency in v0
 - Telegram UX keeps a typing indicator active during runs, then sends final answer
@@ -29,7 +29,7 @@ flowchart TD
 - Worker verifies Telegram requests and routes updates.
 - Durable Object serializes turns.
 - Agent loop runs via `@mariozechner/pi-agent-core` and drives tool calls.
-- Files/memory/scripts persist in R2.
+- Files persist in R2.
 - Auth is `OPENCODE_ZEN_API_KEY` Worker secret.
 
 ## Setup
@@ -97,7 +97,8 @@ pnpm deploy
 ## Persistence model
 
 - Filesystem root of truth is R2.
-- Memories are markdown files in R2.
+- Identity is stored in `/SOUL.md`.
+- Durable user memory is stored in `/MEMORY.md` (keep under 20 lines).
 - Saved scripts are stored and run from R2.
 
 ## Auth model

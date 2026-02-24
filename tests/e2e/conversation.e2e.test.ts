@@ -174,7 +174,7 @@ function makeUpdate(updateId: number, text: string, userId = 42) {
 }
 
 function setupTelegramFetch() {
-  const sends: Array<{ text: string; messageId: number }> = [];
+  const sends: Array<{ text: string; messageId: number; parseMode?: string }> = [];
   const actions: string[] = [];
   let nextMessageId = 100;
 
@@ -187,10 +187,10 @@ function setupTelegramFetch() {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (url.includes("/sendMessage")) {
-        const body = init?.body ? JSON.parse(String(init.body)) as { text?: string } : {};
+        const body = init?.body ? JSON.parse(String(init.body)) as { text?: string; parse_mode?: string } : {};
         const messageId = nextMessageId;
         nextMessageId += 1;
-        sends.push({ text: body.text ?? "", messageId });
+        sends.push({ text: body.text ?? "", messageId, parseMode: body.parse_mode });
         return new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), { status: 200 });
       }
       return new Response("{}", { status: 200 });
@@ -227,7 +227,7 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "/memory/persons/dre.md", content: "name: Dre" } }],
+        content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "/MEMORY.md", content: "human_name: Dre" } }],
       },
       {
         stopReason: "endTurn",
@@ -241,9 +241,24 @@ describe("conversation e2e", () => {
     expect(sends.some((message) => message.text === "Working..." || message.text === "Wrapping up...")).toBe(false);
     expect(sends.some((message) => message.text.includes("Tool call:"))).toBe(false);
     const final = sends.at(-1)!;
+    expect(final.parseMode).toBe("HTML");
     expect(final.text).toContain("Saved it.");
     expect(final.text).toContain("Tools used: write");
     expect(final.text).not.toContain("-> ok");
+
+    const firstContext = modelCallContext.at(0);
+    const assistantBootstrap = firstContext?.messages.find(
+      (message) =>
+        message.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some((block: Record<string, unknown>) => block.type === "toolCall" && block.name === "read"),
+    );
+    expect(assistantBootstrap).toBeTruthy();
+
+    const bootstrapCalls = ((assistantBootstrap as { content?: Array<Record<string, unknown>> } | undefined)?.content ?? [])
+      .filter((block) => block.type === "toolCall" && block.name === "read")
+      .map((block) => ((block.arguments as Record<string, unknown> | undefined)?.path as string | undefined) ?? "");
+    expect(bootstrapCalls).toEqual(["/SOUL.md", "/MEMORY.md"]);
   });
 
   it("supports verbose mode via /details and shows tool lifecycle messages", async () => {
@@ -255,19 +270,20 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls -la /memory 2>/dev/null || echo \"No memory directory found\"" } }],
+        content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "cat /MEMORY.md" } }],
       },
       {
         stopReason: "endTurn",
-        content: [{ type: "text", text: "No saved memories yet." }],
+        content: [{ type: "text", text: "Memory loaded." }],
       },
     );
 
     await callWebhook(env, 4010, "Can you see any memories?");
 
-    expect(sends.some((message) => message.text.includes("Tool start: bash"))).toBe(true);
-    expect(sends.some((message) => message.text.includes("Tool ok: bash") || message.text.includes("Tool error: bash"))).toBe(true);
-    expect(sends.at(-1)?.text).toContain("No saved memories yet.");
+    expect(sends.some((message) => message.parseMode === "HTML")).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool start:"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool ok:") || message.text.includes("Tool error:"))).toBe(true);
+    expect(sends.at(-1)?.text).toContain("Memory loaded.");
   });
 
   it("persists tool errors in history so next turn can react", async () => {
