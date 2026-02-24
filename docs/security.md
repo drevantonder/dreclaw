@@ -11,11 +11,11 @@ v0 security model is intentionally simple and single-user.
 ## Secret boundaries
 
 - Provider auth credentials are stored as Worker secrets.
-- Auth data must never be placed in `injected_messages`.
+- Auth data must never be placed in `custom_context`.
 - `/status` and logs must not expose secrets or tokens.
 
 ## Runtime boundaries
 
 - No Sandbox/container dependency in v0.
-- Tool execution is constrained to `injected_messages_get`, `injected_messages_set`, and `injected_messages_delete`.
-- Only messages between runtime markers are editable via injected message management tools.
+- Tool execution is constrained to `custom_context_get`, `custom_context_set`, and `custom_context_delete`.
+- Only stored custom context entries are editable via custom context management tools.

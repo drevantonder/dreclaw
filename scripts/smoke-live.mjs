@@ -3,7 +3,7 @@ import { Type, complete, getModel } from "@mariozechner/pi-ai";
 
 const SYSTEM_PROMPT = "You are dréclaw. Be concise.";
 
-const DEFAULT_INJECTED_MESSAGES = [
+const DEFAULT_CUSTOM_CONTEXT = [
   {
     id: "identity",
     message: {
@@ -79,17 +79,30 @@ async function main() {
   model.baseUrl = args.baseUrl.trim();
 
   let version = 1;
-  let injectedMessages = JSON.parse(JSON.stringify(DEFAULT_INJECTED_MESSAGES));
+  let customContext = JSON.parse(JSON.stringify(DEFAULT_CUSTOM_CONTEXT));
+
+  const renderCustomContextXml = () => {
+    const entries = [...customContext].sort((a, b) => a.id.localeCompare(b.id));
+    const body = entries
+      .map((item) => {
+        const text = Array.isArray(item.message?.content)
+          ? item.message.content.filter((part) => part?.type === "text").map((part) => part.text).join("\n\n")
+          : String(item.message?.content ?? "");
+        return `<custom_context id="${item.id}">\n${text}\n</custom_context>`;
+      })
+      .join("\n");
+    return `<custom_context_manifest version="${version}" count="${entries.length}">\n${body}\n</custom_context_manifest>`;
+  };
 
   const tools = [
     {
-      name: "injected_messages_get",
-      description: "Get current injected messages and version",
+      name: "custom_context_get",
+      description: "Get current custom context and version",
       parameters: Type.Object({}),
     },
     {
-      name: "injected_messages_set",
-      description: "Create or update one injected message by id",
+      name: "custom_context_set",
+      description: "Create or update one custom context entry by id",
       parameters: Type.Object({
         id: Type.String(),
         message: Type.Any(),
@@ -97,8 +110,8 @@ async function main() {
       }),
     },
     {
-      name: "injected_messages_delete",
-      description: "Delete one injected message by id",
+      name: "custom_context_delete",
+      description: "Delete one custom context entry by id",
       parameters: Type.Object({
         id: Type.String(),
         expected_version: Type.Optional(Type.Number()),
@@ -107,25 +120,9 @@ async function main() {
   ];
 
   const context = {
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: `${SYSTEM_PROMPT}\n\nCustom context:\n${renderCustomContextXml()}`,
     tools,
     messages: [
-      {
-        role: "assistant",
-        content: [{ type: "text", text: `INJECTED_MESSAGES_START version=${version}` }],
-        timestamp: Date.now(),
-      },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: `INJECTED_MESSAGES_MANIFEST ids=${injectedMessages.map((item) => item.id).join(",")}` }],
-        timestamp: Date.now(),
-      },
-      ...injectedMessages.map((item) => item.message),
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "INJECTED_MESSAGES_END" }],
-        timestamp: Date.now(),
-      },
       { role: "user", content: args.prompt, timestamp: Date.now() },
     ],
   };
@@ -156,19 +153,19 @@ async function main() {
 
     for (const call of toolCalls) {
       const argsObj = parseToolArgs(call.arguments);
-      if (call.name === "injected_messages_get") {
+      if (call.name === "custom_context_get") {
         context.messages.push({
           role: "toolResult",
           toolCallId: call.id,
           toolName: call.name,
-          content: [{ type: "text", text: JSON.stringify({ version, injected_messages: injectedMessages }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ version, custom_context: customContext }, null, 2) }],
           isError: false,
           timestamp: Date.now(),
         });
         continue;
       }
 
-      if (call.name === "injected_messages_set") {
+      if (call.name === "custom_context_set") {
         const expectedVersion = argsObj.expected_version;
         if (typeof expectedVersion === "number" && expectedVersion !== version) {
           context.messages.push({
@@ -208,11 +205,12 @@ async function main() {
         }
 
         const next = JSON.parse(JSON.stringify(argsObj.message));
-        const existingIndex = injectedMessages.findIndex((item) => item.id === id);
-        if (existingIndex >= 0) injectedMessages[existingIndex] = { id, message: next };
-        else injectedMessages.push({ id, message: next });
+        const existingIndex = customContext.findIndex((item) => item.id === id);
+        if (existingIndex >= 0) customContext[existingIndex] = { id, message: next };
+        else customContext.push({ id, message: next });
 
         version += 1;
+        context.systemPrompt = `${SYSTEM_PROMPT}\n\nCustom context:\n${renderCustomContextXml()}`;
         context.messages.push({
           role: "toolResult",
           toolCallId: call.id,
@@ -224,7 +222,7 @@ async function main() {
         continue;
       }
 
-      if (call.name === "injected_messages_delete") {
+      if (call.name === "custom_context_delete") {
         const expectedVersion = argsObj.expected_version;
         if (typeof expectedVersion === "number" && expectedVersion !== version) {
           context.messages.push({
@@ -239,22 +237,23 @@ async function main() {
         }
 
         const id = typeof argsObj.id === "string" ? argsObj.id.trim().toLowerCase() : "";
-        const existingIndex = injectedMessages.findIndex((item) => item.id === id);
+        const existingIndex = customContext.findIndex((item) => item.id === id);
         if (!id || existingIndex < 0) {
           context.messages.push({
             role: "toolResult",
             toolCallId: call.id,
             toolName: call.name,
-            content: [{ type: "text", text: `Injected message not found: ${id || "(empty)"}` }],
+            content: [{ type: "text", text: `custom_context entry not found: ${id || "(empty)"}` }],
             isError: true,
             timestamp: Date.now(),
           });
           continue;
         }
 
-        injectedMessages.splice(existingIndex, 1);
+        customContext.splice(existingIndex, 1);
 
         version += 1;
+        context.systemPrompt = `${SYSTEM_PROMPT}\n\nCustom context:\n${renderCustomContextXml()}`;
         context.messages.push({
           role: "toolResult",
           toolCallId: call.id,

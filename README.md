@@ -6,8 +6,8 @@
 
 - Telegram private chat-only, single-user (me)
 - Commands: `/status`, `/reset`, `/factory-reset`, `/details`, `/thinking`
-- Core tools: `injected_messages_get`, `injected_messages_set`, `injected_messages_delete`
-- Versioned `injected_messages` persisted in Durable Object session state
+- Core tools: `custom_context_get`, `custom_context_set`, `custom_context_delete`
+- Versioned `custom_context` persisted in Durable Object session state
 - OpenCode Zen provider (`MODEL` + `BASE_URL`)
 
 ## Architecture (High-level)
@@ -17,18 +17,18 @@ flowchart TD
   U[Telegram Chat] --> W[Worker Gateway]
   W --> DO[Durable Object Session]
   DO --> M[Model Loop]
-  M --> IM[Injected Messages]
-  M --> T[Tools: injected_messages_get/set/delete]
+  M --> CC[Custom Context]
+  M --> T[Tools: custom_context_get/set/delete]
   DO --> W --> U
 ```
 
 - Worker verifies Telegram requests and routes updates.
 - Durable Object serializes turns and stores session state.
-- Runtime injects:
-  - `INJECTED_MESSAGES_START version=<n>`
-  - current `injected_messages`
-  - `INJECTED_MESSAGES_END`
-- Agent can inspect/replace injected messages with versioned tools.
+- Runtime compiles `custom_context` into XML in the system prompt:
+  - `<custom_context_manifest version="<n>" count="<m>">`
+  - `<custom_context id="...">...</custom_context>` entries (sorted by id)
+  - `</custom_context_manifest>`
+- Agent can inspect/replace custom context with versioned tools.
 
 ## Setup
 
@@ -71,9 +71,9 @@ pnpm deploy
 ## Usage
 
 - Message the bot in a private Telegram chat.
-- `/status` shows runtime/session/auth + injected message metadata.
-- `/reset` clears conversation context only (keeps `injected_messages`).
-- `/factory-reset` clears conversation context and restores default `injected_messages`.
+- `/status` shows runtime/session/auth + custom context metadata.
+- `/reset` clears conversation context only (keeps `custom_context`).
+- `/factory-reset` clears conversation context and restores default `custom_context`.
 - `/details compact|verbose|debug` controls tool/progress verbosity.
 - `/thinking on|off` toggles thinking message visibility (shown in `debug` mode).
 
@@ -93,9 +93,9 @@ pnpm deploy
 ## Persistence model
 
 - Durable conversation history lives in session state.
-- `injected_messages` live in session state with optimistic versioning.
-- `injected_messages_set` upserts one message by `id` with `expected_version` checks.
-- `injected_messages_delete` removes one message by `id` with `expected_version` checks.
+- `custom_context` lives in session state with optimistic versioning.
+- `custom_context_set` upserts one context entry by `id` with `expected_version` checks.
+- `custom_context_delete` removes one context entry by `id` with `expected_version` checks.
 
 ## Auth model
 
