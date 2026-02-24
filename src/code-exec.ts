@@ -1,4 +1,4 @@
-import { newAsyncContext } from "@tootallnate/quickjs-emscripten";
+import { getQuickJS } from "@tootallnate/quickjs-emscripten";
 
 export interface InstalledPackage {
   spec: string;
@@ -89,6 +89,8 @@ type HostStats = {
   fetchErrors: number;
   packageInstalls: number;
 };
+
+type QuickJsContext = ReturnType<Awaited<ReturnType<typeof getQuickJS>>["newContext"]>;
 
 const DEFAULT_LIMITS: CodeExecutionLimits = {
   execTimeoutMs: 2000,
@@ -210,7 +212,8 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     };
   }
 
-  const vm = await newAsyncContext();
+  const quickJs = await getQuickJS();
+  const vm = quickJs.newContext();
   const runtime = vm.runtime;
   const limits = ctx.config.limits;
   const deadline = Date.now() + limits.execTimeoutMs;
@@ -218,23 +221,21 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   runtime.setMemoryLimit(limits.execMemoryMb * 1024 * 1024);
   runtime.setMaxStackSize(limits.execStackKb * 1024);
   runtime.setInterruptHandler(() => Date.now() > deadline);
-  runtime.setModuleLoader(
-    async (moduleName) => loadModuleSource(moduleName, ctx, stats),
-    async (baseModuleName, requestedName) => normalizeModuleName(baseModuleName, requestedName),
-  );
+  runtime.removeModuleLoader();
 
   try {
-    await registerHostApi(vm, ctx, logs, stats);
+    registerHostApi(vm, ctx, logs, stats);
     await setGlobalJson(vm, "__host_input", payload.input ?? null);
-    await vm.evalCodeAsync(bootstrapRuntimeSource());
+    vm.unwrapResult(vm.evalCode(bootstrapRuntimeSource())).dispose();
 
-    const runResult = await vm.evalCodeAsync(code, "execute.mjs", { type: "module" });
-    const moduleHandle = vm.unwrapResult(runResult);
-    moduleHandle.dispose();
+    const valueHandle = vm.unwrapResult(vm.evalCode(code, "execute.js"));
+    const evalValue = vm.dump(valueHandle);
+    valueHandle.dispose();
 
     runPendingJobs(vm.runtime, limits.execMaxHostCalls);
 
-    const result = readGlobalJson(vm, "__exec_result");
+    const explicitResult = readGlobalJson(vm, "__exec_result");
+    const result = explicitResult === null ? evalValue : explicitResult;
     return {
       ok: true,
       result: clampOutput(result, limits.execMaxOutputBytes),
@@ -261,12 +262,12 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   }
 }
 
-async function registerHostApi(
-  vm: Awaited<ReturnType<typeof newAsyncContext>>,
+function registerHostApi(
+  vm: QuickJsContext,
   ctx: HostContext,
   logs: Array<{ level: "log" | "warn" | "error"; text: string }>,
   stats: HostStats,
-): Promise<void> {
+): void {
   const limits = ctx.config.limits;
 
   const logFn = vm.newFunction("__host_log", (levelHandle, messageHandle) => {
@@ -287,19 +288,21 @@ async function registerHostApi(
   vm.setProp(vm.global, "__host_pkg_list", pkgListFn);
   pkgListFn.dispose();
 
-  const pkgInstallFn = vm.newAsyncifiedFunction("__host_pkg_install", async (specHandle) => {
+  const pkgInstallFn = vm.newFunction("__host_pkg_install", (specHandle) => {
     bumpHostCall(stats, limits.execMaxHostCalls);
     if (!ctx.config.pkgInstallEnabled) {
       throw new Error("PKG_INSTALL_DISABLED");
     }
     const spec = vm.getString(specHandle);
-    const installed = await ensurePackageInstalled(spec, ctx, stats);
-    return vm.newString(JSON.stringify(installed));
+    return toQuickJsPromise(vm, async () => {
+      const installed = await ensurePackageInstalled(spec, ctx, stats);
+      return JSON.stringify(installed);
+    }) as ReturnType<typeof vm.newString>;
   });
   vm.setProp(vm.global, "__host_pkg_install", pkgInstallFn);
   pkgInstallFn.dispose();
 
-  const fetchFn = vm.newAsyncifiedFunction("__host_fetch", async (argsHandle) => {
+  const fetchFn = vm.newFunction("__host_fetch", (argsHandle) => {
     bumpHostCall(stats, limits.execMaxHostCalls);
     if (!ctx.config.netFetchEnabled) {
       throw new Error("NET_FETCH_DISABLED");
@@ -308,8 +311,10 @@ async function registerHostApi(
     if (!Array.isArray(args) || !args.length || typeof args[0] !== "string") {
       throw new Error("fetch requires url string");
     }
-    const request = await executeFetch(args[0], args[1] ?? {}, ctx.config.limits, stats);
-    return vm.newString(JSON.stringify(request));
+    return toQuickJsPromise(vm, async () => {
+      const request = await executeFetch(args[0], args[1] ?? {}, ctx.config.limits, stats);
+      return JSON.stringify(request);
+    }) as ReturnType<typeof vm.newString>;
   });
   vm.setProp(vm.global, "__host_fetch", fetchFn);
   fetchFn.dispose();
@@ -335,12 +340,12 @@ globalThis.console = {
 };
 
 globalThis.pkg = {
-  install: async (spec) => JSON.parse(globalThis.__host_pkg_install(String(spec))),
+  install: async (spec) => JSON.parse(await globalThis.__host_pkg_install(String(spec))),
   list: async () => JSON.parse(globalThis.__host_pkg_list()),
 };
 
 globalThis.fetch = async (url, init = {}) => {
-  const payload = JSON.parse(globalThis.__host_fetch(JSON.stringify([String(url), init])));
+  const payload = JSON.parse(await globalThis.__host_fetch(JSON.stringify([String(url), init])));
   return {
     ok: Boolean(payload.ok),
     status: Number(payload.status || 0),
@@ -368,6 +373,26 @@ function runPendingJobs(runtime: { hasPendingJob: () => boolean; executePendingJ
     }
     iterations += 1;
   }
+}
+
+function toQuickJsPromise(vm: QuickJsContext, producer: () => Promise<string>): unknown {
+  const deferred = vm.newPromise();
+  producer()
+    .then((text) => {
+      const value = vm.newString(text);
+      deferred.resolve(value);
+      value.dispose();
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error ?? "unknown error");
+      const value = vm.newString(message);
+      deferred.reject(value);
+      value.dispose();
+    })
+    .finally(() => {
+      vm.runtime.executePendingJobs();
+    });
+  return deferred.handle;
 }
 
 async function ensurePackageInstalled(spec: string, ctx: HostContext, stats: HostStats): Promise<InstalledPackage> {
@@ -593,14 +618,14 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
-async function setGlobalJson(vm: Awaited<ReturnType<typeof newAsyncContext>>, key: string, value: unknown): Promise<void> {
+async function setGlobalJson(vm: QuickJsContext, key: string, value: unknown): Promise<void> {
   const handle = vm.newString(JSON.stringify(value));
   vm.setProp(vm.global, key, handle);
   handle.dispose();
-  await vm.evalCodeAsync(`globalThis.${key} = JSON.parse(globalThis.${key});`);
+  vm.unwrapResult(vm.evalCode(`globalThis.${key} = JSON.parse(globalThis.${key});`)).dispose();
 }
 
-function readGlobalJson(vm: Awaited<ReturnType<typeof newAsyncContext>>, key: string): unknown {
+function readGlobalJson(vm: QuickJsContext, key: string): unknown {
   const resultHandle = vm.getProp(vm.global, key);
   try {
     return vm.dump(resultHandle);
