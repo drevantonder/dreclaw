@@ -11,9 +11,6 @@ importers:
 
   .:
     dependencies:
-      '@jitl/quickjs-wasmfile-release-asyncify':
-        specifier: ^0.32.0
-        version: 0.32.0
       '@mariozechner/pi-agent-core':
         specifier: ^0.54.2
         version: 0.54.2(ws@8.19.0)(zod@3.25.76)
@@ -23,10 +20,10 @@ importers:
       '@sinclair/typebox':
         specifier: ^0.34.48
         version: 0.34.48
+      '@tootallnate/quickjs-emscripten':
+        specifier: ^0.23.0
+        version: 0.23.0
       quickjs-emscripten:
-        specifier: ^0.32.0
-        version: 0.32.0
-      quickjs-emscripten-core:
         specifier: ^0.32.0
         version: 0.32.0
     devDependencies:
