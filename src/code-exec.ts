@@ -90,6 +90,8 @@ type HostStats = {
   fetchBytes: number;
   fetchErrors: number;
   packageInstalls: number;
+  activeFetches: number;
+  fetchWaiters: Array<() => void>;
 };
 
 type QuickJsModule = Awaited<ReturnType<typeof newQuickJSAsyncWASMModuleFromVariant>>;
@@ -194,6 +196,8 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     fetchBytes: 0,
     fetchErrors: 0,
     packageInstalls: 0,
+    activeFetches: 0,
+    fetchWaiters: [],
   };
 
   if (!ctx.config.codeExecEnabled) {
@@ -234,13 +238,16 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   try {
     registerHostApi(vm, ctx, logs, stats);
     await setGlobalJson(vm, "__host_input", payload.input ?? null);
-    vm.unwrapResult(vm.evalCode(bootstrapRuntimeSource())).dispose();
+    const bootstrapResult = await vm.evalCodeAsync(bootstrapRuntimeSource());
+    vm.unwrapResult(bootstrapResult).dispose();
 
-    const valueHandle = vm.unwrapResult(vm.evalCode(code, "execute.js"));
+    const runResult = await vm.evalCodeAsync(code, "execute.js");
+    const valueHandle = vm.unwrapResult(runResult);
     const evalValue = vm.dump(valueHandle);
     valueHandle.dispose();
 
     runPendingJobs(vm.runtime, limits.execMaxHostCalls);
+    await flushAsyncWork(vm.runtime, stats, deadline, limits.execMaxHostCalls);
 
     const explicitResult = readGlobalJson(vm, "__exec_result");
     const result = explicitResult === null ? evalValue : explicitResult;
@@ -464,6 +471,8 @@ function normalizeModuleName(baseModuleName: string, requestedName: string): str
 }
 
 async function executeFetch(url: string, init: unknown, limits: CodeExecutionLimits, stats: HostStats): Promise<Record<string, unknown>> {
+  await acquireFetchSlot(limits, stats);
+  try {
   if (stats.fetchRequests >= limits.netMaxRequestsPerRun) {
     throw new Error("fetch request limit exceeded");
   }
@@ -496,6 +505,56 @@ async function executeFetch(url: string, init: unknown, limits: CodeExecutionLim
     headers,
     bodyText: text,
   };
+  } finally {
+    releaseFetchSlot(stats);
+  }
+}
+
+function acquireFetchSlot(limits: CodeExecutionLimits, stats: HostStats): Promise<void> {
+  if (stats.activeFetches < limits.netMaxParallel) {
+    stats.activeFetches += 1;
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const index = stats.fetchWaiters.indexOf(resume);
+      if (index >= 0) stats.fetchWaiters.splice(index, 1);
+      reject(new Error("fetch parallel limit wait timed out"));
+    }, limits.netRequestTimeoutMs);
+
+    const resume = () => {
+      clearTimeout(timer);
+      stats.activeFetches += 1;
+      resolve();
+    };
+    stats.fetchWaiters.push(resume);
+  });
+}
+
+function releaseFetchSlot(stats: HostStats): void {
+  if (stats.activeFetches > 0) stats.activeFetches -= 1;
+  const next = stats.fetchWaiters.shift();
+  if (next) next();
+}
+
+async function flushAsyncWork(
+  runtime: { hasPendingJob: () => boolean; executePendingJobs: (max?: number) => { error?: unknown } },
+  stats: HostStats,
+  deadline: number,
+  maxJobs: number,
+): Promise<void> {
+  while (runtime.hasPendingJob() || stats.activeFetches > 0 || stats.fetchWaiters.length > 0) {
+    if (Date.now() > deadline) {
+      throw new Error("Execution timed out");
+    }
+    runPendingJobs(runtime, maxJobs);
+    await sleep(10);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeFetchInit(init: unknown, maxRedirects: number): RequestInit {
@@ -617,7 +676,8 @@ async function setGlobalJson(vm: QuickJsContext, key: string, value: unknown): P
   const handle = vm.newString(JSON.stringify(value));
   vm.setProp(vm.global, key, handle);
   handle.dispose();
-  vm.unwrapResult(vm.evalCode(`globalThis.${key} = JSON.parse(globalThis.${key});`)).dispose();
+  const parseResult = await vm.evalCodeAsync(`globalThis.${key} = JSON.parse(globalThis.${key});`);
+  vm.unwrapResult(parseResult).dispose();
 }
 
 function readGlobalJson(vm: QuickJsContext, key: string): unknown {
