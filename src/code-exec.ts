@@ -243,14 +243,16 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
 
     const runResult = await vm.evalCodeAsync(code, "execute.js");
     const valueHandle = vm.unwrapResult(runResult);
-    const evalValue = vm.dump(valueHandle);
+    vm.setProp(vm.global, "__last_eval_result", valueHandle);
     valueHandle.dispose();
+
+    const settleResult = await vm.evalCodeAsync("globalThis.__exec_result = await globalThis.__last_eval_result;");
+    vm.unwrapResult(settleResult).dispose();
 
     runPendingJobs(vm.runtime, limits.execMaxHostCalls);
     await flushAsyncWork(vm.runtime, stats, deadline, limits.execMaxHostCalls);
 
-    const explicitResult = readGlobalJson(vm, "__exec_result");
-    const result = explicitResult === null ? evalValue : explicitResult;
+    const result = readGlobalJson(vm, "__exec_result");
     return {
       ok: true,
       result: clampOutput(result, limits.execMaxOutputBytes),
