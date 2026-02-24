@@ -33,20 +33,13 @@ export async function processTelegramUpdate(
     return { status: "ignored", reason: "unauthorized_user" };
   }
 
-  if (deps.sendTyping) {
-    try {
-      await deps.sendTyping(message.chat.id);
-    } catch (error) {
-      console.warn("telegram-typing-indicator-failed", {
-        chatId: message.chat.id,
-        error: error instanceof Error ? error.message : String(error ?? "unknown"),
-      });
-    }
-  }
-
-  const response = await deps.runSession({
-    updateId: update.update_id,
-    message,
+  const response = await runSessionWithTypingHeartbeat(message.chat.id, {
+    sendTyping: deps.sendTyping,
+    runSession: () =>
+      deps.runSession({
+        updateId: update.update_id,
+        message,
+      }),
   });
 
   return {
@@ -56,4 +49,49 @@ export async function processTelegramUpdate(
       text: response.text || "Done.",
     },
   };
+}
+
+async function runSessionWithTypingHeartbeat(
+  chatId: number,
+  params: {
+    sendTyping?: (chatId: number) => Promise<void>;
+    runSession: () => Promise<SessionResponse>;
+  },
+): Promise<SessionResponse> {
+  const sendTyping = params.sendTyping;
+  if (!sendTyping) {
+    return params.runSession();
+  }
+
+  let active = true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const intervalMs = 4000;
+
+  const pulse = async (): Promise<void> => {
+    if (!active) return;
+    try {
+      await sendTyping(chatId);
+    } catch (error) {
+      console.warn("telegram-typing-indicator-failed", {
+        chatId,
+        error: error instanceof Error ? error.message : String(error ?? "unknown"),
+      });
+    } finally {
+      if (active) {
+        timer = setTimeout(() => {
+          void pulse();
+        }, intervalMs);
+      }
+    }
+  };
+
+  void pulse();
+  try {
+    return await params.runSession();
+  } finally {
+    active = false;
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }

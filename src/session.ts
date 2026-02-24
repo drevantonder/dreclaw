@@ -211,7 +211,6 @@ export class SessionRuntime implements DurableObject {
       eventTasks.push(task);
     });
 
-    await progress.setStatus("Working...", true);
     const images = imageBlocks.map(toPiImageContent).filter((item): item is ImageContent => Boolean(item));
     await agent.prompt(userText || "[image message]", images);
     if (eventTasks.length) {
@@ -220,7 +219,6 @@ export class SessionRuntime implements DurableObject {
     if (this.shouldShowThinking()) {
       await progress.sendThinkingSummary(readFinalAssistantThinking(agent.state.messages));
     }
-    await progress.setStatus("Wrapping up...", true);
     const fsMetrics = shell.metricsDelta(fsMetricsStart);
     console.info("session-fs-metrics", {
       sessionId,
@@ -588,22 +586,15 @@ class TelegramProgressReporter {
     this.showThinking = params.showThinking;
   }
 
-  async setStatus(text: string, force = false): Promise<void> {
-    void text;
-    void force;
-  }
-
   async sendThinkingSummary(raw: string): Promise<void> {
     if (!this.showThinking) return;
     const text = truncateForLog(raw, 700);
     if (!text) return;
-    await this.setStatus("Analyzing...");
     await this.safeSendMessage(`Thinking:\n${text}`);
   }
 
   async onToolStart(name: string, args: Record<string, unknown>): Promise<void> {
     this.toolStartAtByName.set(name, Date.now());
-    await this.setStatus(statusTextForTool(name));
 
     if (this.mode === "verbose") {
       await this.safeSendMessage(`Tool start: ${name}`);
@@ -621,7 +612,6 @@ class TelegramProgressReporter {
     const elapsedMs = startedAt ? Date.now() - startedAt : 0;
 
     if (!ok) {
-      await this.setStatus(`Tool failed: ${name}`, true);
       const detail = truncateForLog(error || output || "error", 700);
       if (this.mode !== "compact") {
         await this.safeSendMessage(`Tool error: ${name}${detail ? ` ${detail}` : ""}`);
@@ -629,7 +619,6 @@ class TelegramProgressReporter {
       return;
     }
 
-    await this.setStatus("Working...");
     if (this.mode === "verbose") {
       await this.safeSendMessage(`Tool ok: ${name}${elapsedMs >= 3000 ? ` (${Math.round(elapsedMs / 100) / 10}s)` : ""}`);
       return;
@@ -638,9 +627,6 @@ class TelegramProgressReporter {
       const detail = truncateForLog(output, 700);
       await this.safeSendMessage(`Tool ok: ${name}${detail ? ` ${detail}` : ""}`);
       return;
-    }
-    if (elapsedMs >= 5000) {
-      await this.setStatus(`Still working (${name} took ${Math.round(elapsedMs / 1000)}s)...`, true);
     }
   }
 
@@ -656,19 +642,6 @@ class TelegramProgressReporter {
       });
     }
   }
-}
-
-function statusTextForTool(toolName: string): string {
-  if (toolName === "read" || toolName === "glob" || toolName === "grep") {
-    return "Reading project...";
-  }
-  if (toolName === "bash") {
-    return "Running command...";
-  }
-  if (toolName === "write" || toolName === "edit") {
-    return "Updating files...";
-  }
-  return `Running ${toolName}...`;
 }
 
 function truncateForLog(input: string, max: number): string {

@@ -141,4 +141,32 @@ describe("processTelegramUpdate", () => {
     expect(deps.sendTyping).toHaveBeenCalledTimes(1);
     expect(deps.runSession).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps sending typing while session is running", async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = makeDeps();
+      deps.runSession.mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 9500));
+        return { ok: true, text: "done" };
+      });
+
+      const pending = processTelegramUpdate(
+        { body: loadFixture("text-message.json"), allowedUserId: "42" },
+        deps,
+      );
+
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(deps.sendTyping.mock.calls.length).toBeGreaterThanOrEqual(3);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await pending;
+
+      const callsAfterComplete = deps.sendTyping.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(deps.sendTyping.mock.calls.length).toBe(callsAfterComplete);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

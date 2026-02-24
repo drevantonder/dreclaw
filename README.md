@@ -12,7 +12,7 @@ v0 is Worker-native: Telegram ingress, Durable Object session runtime, model/too
 - R2-backed filesystem for files, memories, and saved scripts
 - OpenCode Zen provider (`MODEL` + `BASE_URL`)
 - No Sandbox/container dependency in v0
-- Telegram UX uses a compact progress bubble by default (editable status + final answer)
+- Telegram UX keeps a typing indicator active during runs, then sends final answer
 
 ## Architecture (High-level)
 
@@ -80,7 +80,7 @@ pnpm deploy
 
 ### Telegram message modes
 
-- `compact` (default): typing + one progress status bubble + final reply.
+- `compact` (default): typing indicator while work runs + final reply.
 - `verbose`: compact behavior plus tool lifecycle updates (`Tool start`, `Tool ok/error`).
 - `debug`: verbose behavior plus detailed tool call arguments/output and thinking snippets (if enabled).
 
