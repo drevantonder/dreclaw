@@ -3,6 +3,13 @@ import type { TelegramMessage, TelegramUpdate } from "./types";
 const TELEGRAM_API = "https://api.telegram.org";
 const TELEGRAM_MAX_TEXT_LENGTH = 3900;
 
+type TelegramParseMode = "HTML" | "MarkdownV2";
+
+interface TelegramSendOptions {
+  parseMode?: TelegramParseMode;
+  disableWebPagePreview?: boolean;
+}
+
 export function parseUpdate(body: unknown): TelegramUpdate | null {
   if (!body || typeof body !== "object") return null;
   const data = body as Record<string, unknown>;
@@ -24,13 +31,16 @@ export async function sendTelegramMessage(
   token: string,
   chatId: number,
   text: string,
+  options: TelegramSendOptions = {},
 ): Promise<number | null> {
   const url = `${TELEGRAM_API}/bot${token}/sendMessage`;
-  const safeText = clampTelegramText(text);
+  const parseMode = options.parseMode ?? "HTML";
+  const safeText = clampTelegramText(parseMode === "HTML" ? formatTelegramHtml(text) : text);
   const body = {
     chat_id: chatId,
     text: safeText,
-    disable_web_page_preview: true,
+    parse_mode: parseMode,
+    disable_web_page_preview: options.disableWebPagePreview ?? true,
   };
 
   return withRetry(async () => {
@@ -53,14 +63,17 @@ export async function editTelegramMessage(
   chatId: number,
   messageId: number,
   text: string,
+  options: TelegramSendOptions = {},
 ): Promise<void> {
   const url = `${TELEGRAM_API}/bot${token}/editMessageText`;
-  const safeText = clampTelegramText(text);
+  const parseMode = options.parseMode ?? "HTML";
+  const safeText = clampTelegramText(parseMode === "HTML" ? formatTelegramHtml(text) : text);
   const body = {
     chat_id: chatId,
     message_id: messageId,
     text: safeText,
-    disable_web_page_preview: true,
+    parse_mode: parseMode,
+    disable_web_page_preview: options.disableWebPagePreview ?? true,
   };
 
   await withRetry(async () => {
@@ -102,6 +115,91 @@ function clampTelegramText(input: string): string {
   if (normalized.length <= TELEGRAM_MAX_TEXT_LENGTH) return normalized;
   return `${normalized.slice(0, TELEGRAM_MAX_TEXT_LENGTH - 1)}…`;
 }
+
+export function formatTelegramHtml(input: string): string {
+  const normalized = String(input ?? "").trim();
+  if (!normalized) return "Done.";
+  return normalized
+    .split("\n")
+    .map((line) => formatTelegramHtmlLine(line))
+    .join("\n");
+}
+
+function formatTelegramHtmlLine(line: string): string {
+  const trimmed = line.trim();
+  if (!trimmed) return "";
+
+  const separatorIndex = trimmed.indexOf(":");
+  if (separatorIndex <= 0) {
+    return escapeTelegramHtml(trimmed);
+  }
+
+  const rawLabel = trimmed.slice(0, separatorIndex);
+  const rawValue = trimmed.slice(separatorIndex + 1).trimStart();
+  if (!isTelegramStyledLabel(rawLabel)) {
+    return escapeTelegramHtml(trimmed);
+  }
+
+  if (!rawValue) {
+    return `<b>${escapeTelegramHtml(rawLabel)}:</b>`;
+  }
+  if (shouldRenderCodeValue(rawLabel)) {
+    return `<b>${escapeTelegramHtml(rawLabel)}:</b> <code>${escapeTelegramHtml(rawValue)}</code>`;
+  }
+  return `<b>${escapeTelegramHtml(rawLabel)}:</b> ${escapeTelegramHtml(rawValue)}`;
+}
+
+function isTelegramStyledLabel(label: string): boolean {
+  return TELEGRAM_STYLED_LABELS.has(label);
+}
+
+function shouldRenderCodeValue(label: string): boolean {
+  return TELEGRAM_CODE_VALUE_LABELS.has(label);
+}
+
+function escapeTelegramHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+const TELEGRAM_STYLED_LABELS = new Set<string>([
+  "Thinking",
+  "Tool start",
+  "Tool call",
+  "Tool ok",
+  "Tool error",
+  "Tools used",
+  "Failed tools",
+  "model",
+  "session",
+  "workspace",
+  "workspace_files",
+  "provider_auth",
+  "history_messages",
+  "details",
+  "usage",
+  "thinking",
+]);
+
+const TELEGRAM_CODE_VALUE_LABELS = new Set<string>([
+  "Tool start",
+  "Tool call",
+  "Tool ok",
+  "Tool error",
+  "Tools used",
+  "Failed tools",
+  "model",
+  "session",
+  "workspace",
+  "workspace_files",
+  "provider_auth",
+  "history_messages",
+  "details",
+  "thinking",
+]);
 
 export async function fetchImageAsDataUrl(token: string, fileId: string): Promise<string | null> {
   const getFileUrl = `${TELEGRAM_API}/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseUpdate } from "../../src/telegram";
+import { formatTelegramHtml, parseUpdate } from "../../src/telegram";
 
 describe("parseUpdate", () => {
   it("parses valid telegram update", () => {
@@ -23,5 +23,17 @@ describe("parseUpdate", () => {
     expect(parseUpdate(null)).toBeNull();
     expect(parseUpdate({})).toBeNull();
     expect(parseUpdate({ update_id: "1" })).toBeNull();
+  });
+});
+
+describe("formatTelegramHtml", () => {
+  it("escapes raw html", () => {
+    const formatted = formatTelegramHtml("<b>unsafe</b> & raw");
+    expect(formatted).toBe("&lt;b&gt;unsafe&lt;/b&gt; &amp; raw");
+  });
+
+  it("styles known labels", () => {
+    const formatted = formatTelegramHtml("Tool start: bash");
+    expect(formatted).toBe("<b>Tool start:</b> <code>bash</code>");
   });
 });

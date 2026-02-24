@@ -61,7 +61,8 @@ describe("telegram webhook e2e", () => {
     expect(timeline).toEqual(["typing", "message"]);
     const action = actions[0].body as { action: string };
     expect(action.action).toBe("typing");
-    const sent = sends[0].body as { text: string };
+    const sent = sends[0].body as { text: string; parse_mode?: string };
+    expect(sent.parse_mode).toBe("HTML");
     expect(sent.text).toContain("model:");
     expect(sent.text).toContain("provider_auth:");
     expect(sent.text).toContain("workspace_files:");

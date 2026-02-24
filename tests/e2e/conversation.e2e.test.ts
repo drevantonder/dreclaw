@@ -243,7 +243,7 @@ describe("conversation e2e", () => {
     const final = sends.at(-1)!;
     expect(final.parseMode).toBe("HTML");
     expect(final.text).toContain("Saved it.");
-    expect(final.text).toContain("Tools used: write");
+    expect(final.text).toContain("<b>Tools used:</b> <code>write</code>");
     expect(final.text).not.toContain("-> ok");
 
     const firstContext = modelCallContext.at(0);
@@ -312,7 +312,7 @@ describe("conversation e2e", () => {
     await callWebhook(env, 4002, "read /missing.md");
     expect(sends.some((message) => message.text.includes("Tool error: read"))).toBe(false);
     const firstFinal = sends.find((message) => message.text.includes("Tools used:"));
-    expect(firstFinal?.text).toContain("Failed tools: read");
+    expect(firstFinal?.text).toContain("<b>Failed tools:</b> <code>read</code>");
 
     await callWebhook(env, 4003, "what failed earlier?");
     expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
@@ -338,7 +338,7 @@ describe("conversation e2e", () => {
 
     const lastCall = modelCallOptions.at(-1);
     expect(lastCall?.thinkingLevel).toBe("medium");
-    const thinkingMessages = sends.filter((message) => message.text.startsWith("Thinking:"));
+    const thinkingMessages = sends.filter((message) => message.text.startsWith("<b>Thinking:</b>"));
     expect(thinkingMessages.length).toBe(1);
     expect(sends.at(-1)?.text).toContain("Done.");
   });
