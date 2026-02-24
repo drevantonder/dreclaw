@@ -95,8 +95,7 @@ export class SessionRuntime implements DurableObject {
     if (this.loaded) return;
     this.stateData = (await this.state.storage.get<SessionState>("session-state")) ?? { history: [] };
     this.stateData.prefs = normalizePrefs(this.stateData.prefs);
-    const legacyInjected = (this.stateData as { injected?: unknown }).injected;
-    this.stateData.customContext = normalizeCustomContextState(this.stateData.customContext, legacyInjected);
+    this.stateData.customContext = normalizeCustomContextState(this.stateData.customContext);
     this.loaded = true;
   }
 
@@ -389,18 +388,16 @@ export class SessionRuntime implements DurableObject {
   }
 }
 
-function normalizeCustomContextState(state: CustomContextState | undefined, legacyInjected?: unknown): CustomContextState {
+function normalizeCustomContextState(state: CustomContextState | undefined): CustomContextState {
   if (state) {
     return {
       version: Number.isFinite(state.version) && state.version > 0 ? Math.trunc(state.version) : 1,
       items: normalizeCustomContextItems(state.items),
     };
   }
-
-  const migrated = migrateLegacyInjectedToCustomContextItems(legacyInjected);
   return {
     version: 1,
-    items: migrated ?? cloneCustomContextItems(DEFAULT_CUSTOM_CONTEXT_ITEMS),
+    items: cloneCustomContextItems(DEFAULT_CUSTOM_CONTEXT_ITEMS),
   };
 }
 
@@ -438,40 +435,6 @@ function normalizeCustomContextItems(input: unknown): CustomContextItem[] {
     items.push({ id, text: parseCustomContextText(item.text) });
   }
   return items;
-}
-
-function migrateLegacyInjectedToCustomContextItems(input: unknown): CustomContextItem[] | null {
-  if (!input || typeof input !== "object") return null;
-  const state = input as Record<string, unknown>;
-  if (!Array.isArray(state.injectedMessages)) return null;
-
-  const items: CustomContextItem[] = [];
-  for (const raw of state.injectedMessages) {
-    if (!raw || typeof raw !== "object") continue;
-    const row = raw as Record<string, unknown>;
-    const id = typeof row.id === "string" ? row.id : "";
-    const message = row.message as Record<string, unknown> | undefined;
-    const content = message?.content;
-    const text = extractLegacyCustomContextText(content);
-    if (!id || !text) continue;
-    const normalizedId = parseCustomContextId(id);
-    items.push({ id: normalizedId, text: truncateCustomContextText(text) });
-  }
-  return items.length ? items : null;
-}
-
-function extractLegacyCustomContextText(content: unknown): string {
-  if (typeof content === "string") {
-    return content.trim();
-  }
-  if (Array.isArray(content)) {
-    return content
-      .filter((block) => block && typeof block === "object" && (block as Record<string, unknown>).type === "text")
-      .map((block) => String((block as Record<string, unknown>).text ?? ""))
-      .join("\n\n")
-      .trim();
-  }
-  return "";
 }
 
 function parseExpectedVersion(value: unknown): number | null {
