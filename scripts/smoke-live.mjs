@@ -83,12 +83,12 @@ async function main() {
 
   const tools = [
     {
-      name: "injected_messages.get",
+      name: "injected_messages_get",
       description: "Get current injected messages and version",
       parameters: Type.Object({}),
     },
     {
-      name: "injected_messages.set",
+      name: "injected_messages_set",
       description: "Create or update one injected message by id",
       parameters: Type.Object({
         id: Type.String(),
@@ -97,7 +97,7 @@ async function main() {
       }),
     },
     {
-      name: "injected_messages.delete",
+      name: "injected_messages_delete",
       description: "Delete one injected message by id",
       parameters: Type.Object({
         id: Type.String(),
@@ -156,7 +156,7 @@ async function main() {
 
     for (const call of toolCalls) {
       const argsObj = parseToolArgs(call.arguments);
-      if (call.name === "injected_messages.get") {
+      if (call.name === "injected_messages_get") {
         context.messages.push({
           role: "toolResult",
           toolCallId: call.id,
@@ -168,7 +168,7 @@ async function main() {
         continue;
       }
 
-      if (call.name === "injected_messages.set") {
+      if (call.name === "injected_messages_set") {
         const expectedVersion = argsObj.expected_version;
         if (typeof expectedVersion === "number" && expectedVersion !== version) {
           context.messages.push({
@@ -224,7 +224,7 @@ async function main() {
         continue;
       }
 
-      if (call.name === "injected_messages.delete") {
+      if (call.name === "injected_messages_delete") {
         const expectedVersion = argsObj.expected_version;
         if (typeof expectedVersion === "number" && expectedVersion !== version) {
           context.messages.push({

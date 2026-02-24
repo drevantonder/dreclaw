@@ -656,7 +656,7 @@ function parseDataUrl(url: string): { mimeType: string; data: string } | null {
 function createAgentTools(session: SessionRuntime): AgentTool[] {
   return [
     {
-      name: "injected_messages.get",
+      name: "injected_messages_get",
       label: "Get injected messages",
       description: "Return current injected messages and version",
       parameters: Type.Object({}),
@@ -669,7 +669,7 @@ function createAgentTools(session: SessionRuntime): AgentTool[] {
       },
     },
     {
-      name: "injected_messages.set",
+      name: "injected_messages_set",
       label: "Set injected message",
       description: "Create or update one injected message by id",
       parameters: Type.Object({
@@ -687,7 +687,7 @@ function createAgentTools(session: SessionRuntime): AgentTool[] {
       },
     },
     {
-      name: "injected_messages.delete",
+      name: "injected_messages_delete",
       label: "Delete injected message",
       description: "Delete one injected message by id",
       parameters: Type.Object({

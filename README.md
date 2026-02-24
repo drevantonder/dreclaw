@@ -6,7 +6,7 @@
 
 - Telegram private chat-only, single-user (me)
 - Commands: `/status`, `/reset`, `/details`, `/thinking`
-- Core tools: `injected_messages.get`, `injected_messages.set`, `injected_messages.delete`
+- Core tools: `injected_messages_get`, `injected_messages_set`, `injected_messages_delete`
 - Versioned `injected_messages` persisted in Durable Object session state
 - OpenCode Zen provider (`MODEL` + `BASE_URL`)
 
@@ -18,7 +18,7 @@ flowchart TD
   W --> DO[Durable Object Session]
   DO --> M[Model Loop]
   M --> IM[Injected Messages]
-  M --> T[Tools: injected_messages.get/set/delete]
+  M --> T[Tools: injected_messages_get/set/delete]
   DO --> W --> U
 ```
 
@@ -93,8 +93,8 @@ pnpm deploy
 
 - Durable conversation history lives in session state.
 - `injected_messages` live in session state with optimistic versioning.
-- `injected_messages.set` upserts one message by `id` with `expected_version` checks.
-- `injected_messages.delete` removes one message by `id` with `expected_version` checks.
+- `injected_messages_set` upserts one message by `id` with `expected_version` checks.
+- `injected_messages_delete` removes one message by `id` with `expected_version` checks.
 
 ## Auth model
 

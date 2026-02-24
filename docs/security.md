@@ -17,5 +17,5 @@ v0 security model is intentionally simple and single-user.
 ## Runtime boundaries
 
 - No Sandbox/container dependency in v0.
-- Tool execution is constrained to `injected_messages.get`, `injected_messages.set`, and `injected_messages.delete`.
+- Tool execution is constrained to `injected_messages_get`, `injected_messages_set`, and `injected_messages_delete`.
 - Only messages between runtime markers are editable via injected message management tools.

@@ -321,7 +321,7 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "injected_messages.get", arguments: {} }],
+        content: [{ type: "toolCall", id: "call-1", name: "injected_messages_get", arguments: {} }],
       },
       {
         stopReason: "endTurn",
@@ -331,8 +331,8 @@ describe("conversation e2e", () => {
 
     await callWebhook(env, 4010, "show injected messages");
 
-    expect(sends.some((message) => message.text.includes("Tool start") && message.text.includes("injected_messages.get"))).toBe(true);
-    expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("injected_messages.get"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool start") && message.text.includes("injected_messages_get"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("injected_messages_get"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Loaded.");
   });
 
@@ -347,7 +347,7 @@ describe("conversation e2e", () => {
           {
             type: "toolCall",
             id: "call-1",
-            name: "injected_messages.set",
+            name: "injected_messages_set",
             arguments: {
               id: "identity",
               expected_version: 1,
@@ -358,7 +358,7 @@ describe("conversation e2e", () => {
       },
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-2", name: "injected_messages.get", arguments: {} }],
+        content: [{ type: "toolCall", id: "call-2", name: "injected_messages_get", arguments: {} }],
       },
       {
         stopReason: "endTurn",
@@ -397,7 +397,7 @@ describe("conversation e2e", () => {
           {
             type: "toolCall",
             id: "call-1",
-            name: "injected_messages.set",
+            name: "injected_messages_set",
             arguments: {
               id: "identity",
               expected_version: 999,
@@ -411,7 +411,7 @@ describe("conversation e2e", () => {
         content: [{ type: "text", text: "Set failed." }],
       },
       (context: MockContext) => {
-        const hasToolError = context.systemPrompt.includes("tool=injected_messages.set") && context.systemPrompt.includes("ok=false");
+        const hasToolError = context.systemPrompt.includes("tool=injected_messages_set") && context.systemPrompt.includes("ok=false");
         expect(hasToolError).toBe(true);
         return {
           stopReason: "endTurn",
@@ -421,7 +421,7 @@ describe("conversation e2e", () => {
     );
 
     await callWebhook(env, 4013, "bad set");
-    expect(sends.some((message) => message.text.includes("Tool error: injected_messages.set"))).toBe(false);
+    expect(sends.some((message) => message.text.includes("Tool error: injected_messages_set"))).toBe(false);
 
     await callWebhook(env, 4014, "what failed earlier?");
     expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
@@ -458,7 +458,7 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "injected_messages.delete", arguments: { id: "memory", expected_version: 1 } }],
+        content: [{ type: "toolCall", id: "call-1", name: "injected_messages_delete", arguments: { id: "memory", expected_version: 1 } }],
       },
       {
         stopReason: "endTurn",
