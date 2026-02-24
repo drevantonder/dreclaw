@@ -8,6 +8,12 @@ v0 security model is intentionally simple and single-user.
 - Ignore all other events/users.
 - Keep a single public endpoint for Telegram ingress.
 
+## Cloudflare edge controls
+
+- WAF custom rule: block any non-`POST` request to `/telegram/webhook`.
+- Rate limiting rule: apply limits only to `POST /telegram/webhook` to reduce abuse/retry storms with minimal UX impact.
+- Rules are intentionally scoped to webhook ingress only; no broad site-wide challenge/captcha policy.
+
 ## Secret boundaries
 
 - Provider auth credentials are stored as Worker secrets.
