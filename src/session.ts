@@ -45,16 +45,12 @@ interface AgentRunResult {
   toolErrors: string[];
 }
 
-const SYSTEM_PROMPT =
-  "injected_messages is persistent editable startup context.\nProactively keep it current using provided tools.";
-const INJECTED_MESSAGES_START = "INJECTED_MESSAGES_START";
-const INJECTED_MESSAGES_MANIFEST = "INJECTED_MESSAGES_MANIFEST";
-const INJECTED_MESSAGES_END = "INJECTED_MESSAGES_END";
-const MAX_INJECTED_MESSAGES = 48;
-const MAX_INJECTED_MESSAGE_TEXT_CHARS = 10_000;
-const INJECTED_MESSAGE_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const SYSTEM_PROMPT = "custom_context is persistent editable startup context. Keep it current using provided tools.";
+const MAX_CUSTOM_CONTEXT_ITEMS = 48;
+const MAX_CUSTOM_CONTEXT_TEXT_CHARS = 10_000;
+const CUSTOM_CONTEXT_ID_RE = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
 
-const DEFAULT_INJECTED_MESSAGES: InjectedMessageItem[] = [
+const DEFAULT_CUSTOM_CONTEXT_ITEMS: InjectedMessageItem[] = [
   {
     id: "identity",
     message: {
@@ -179,8 +175,8 @@ export class SessionRuntime implements DurableObject {
         "session: healthy",
         `provider_auth: ${authReady ? "present" : "missing"}`,
         `history_messages: ${this.stateData.history.length}`,
-        `injected_messages_version: ${injected.version}`,
-        `injected_messages_count: ${injected.injectedMessages.length}`,
+        `custom_context_version: ${injected.version}`,
+        `custom_context_count: ${injected.injectedMessages.length}`,
       ].join("\n");
       await upsertSessionMeta(this.env.DRECLAW_DB, sessionId, payload.message.chat.id, this.getModelName(), authReady);
       return { ok: true, text: summary };
@@ -243,12 +239,18 @@ export class SessionRuntime implements DurableObject {
   ): Promise<AgentRunResult> {
     const model = resolvePiModel(runtime.model, runtime.baseUrl);
     const historyContext = renderHistoryContext(this.stateData.history);
-    const injectedContext = this.renderInjectedContextMessages();
+    const customContext = this.renderCustomContextXml();
+    const promptSections = [SYSTEM_PROMPT];
+    if (customContext) {
+      promptSections.push(`Custom context:\n${customContext}`);
+    }
+    if (historyContext) {
+      promptSections.push(`Recent context:\n${historyContext}`);
+    }
     const { Agent } = await loadAgentCore();
     const agent = new Agent({
       initialState: {
-        systemPrompt: historyContext ? `${SYSTEM_PROMPT}\n\nRecent context:\n${historyContext}` : SYSTEM_PROMPT,
-        messages: injectedContext as never,
+        systemPrompt: promptSections.join("\n\n"),
         model,
         thinkingLevel: this.shouldShowThinking() ? "medium" : "off",
         tools: createAgentTools(this),
@@ -288,33 +290,23 @@ export class SessionRuntime implements DurableObject {
     return current;
   }
 
-  private renderInjectedContextMessages(): Array<Record<string, unknown>> {
+  private renderCustomContextXml(): string {
     const injected = this.getInjectedState();
-    const ids = injected.injectedMessages.map((item) => item.id).join(",") || "(none)";
-    const start = {
-      role: "assistant",
-      content: [{ type: "text", text: `${INJECTED_MESSAGES_START} version=${injected.version}` }],
-      timestamp: Date.now(),
-    };
-    const manifest = {
-      role: "assistant",
-      content: [{ type: "text", text: `${INJECTED_MESSAGES_MANIFEST} ids=${ids}` }],
-      timestamp: Date.now(),
-    };
-    const records = injected.injectedMessages.map((item) => ({ ...item.message, timestamp: Date.now() }));
-    const end = {
-      role: "assistant",
-      content: [{ type: "text", text: INJECTED_MESSAGES_END }],
-      timestamp: Date.now(),
-    };
-    return [start, manifest, ...records, end];
+    const items = [...injected.injectedMessages].sort((a, b) => a.id.localeCompare(b.id));
+    const body = items
+      .map((item) => {
+        const content = customContextContentToText(item.message.content);
+        return `<custom_context id="${escapeXml(item.id)}">\n${escapeXml(content)}\n</custom_context>`;
+      })
+      .join("\n");
+    return `<custom_context_manifest version="${injected.version}" count="${items.length}">\n${body}\n</custom_context_manifest>`;
   }
 
-  async getInjectedMessagesPayload(): Promise<{ version: number; injected_messages: Array<{ id: string; role: InjectedRole; content: unknown }> }> {
+  async getInjectedMessagesPayload(): Promise<{ version: number; custom_context: Array<{ id: string; role: InjectedRole; content: unknown }> }> {
     const injected = this.getInjectedState();
     return {
       version: injected.version,
-      injected_messages: injected.injectedMessages.map((item) => ({
+      custom_context: injected.injectedMessages.map((item) => ({
         id: item.id,
         role: item.message.role,
         content: deepClone(item.message.content),
@@ -333,15 +325,15 @@ export class SessionRuntime implements DurableObject {
       throw new Error(`Version conflict: expected ${expectedVersion}, current ${current.version}`);
     }
 
-    const id = parseInjectedMessageId(payload.id);
-    const message = normalizeIncomingInjectedMessage(payload.message);
+    const id = parseCustomContextId(payload.id);
+    const message = normalizeIncomingCustomContextMessage(payload.message);
     const nextMessages = cloneInjectedMessages(current.injectedMessages);
     const existingIndex = nextMessages.findIndex((item) => item.id === id);
     if (existingIndex >= 0) {
       nextMessages[existingIndex] = { id, message };
     } else {
-      if (nextMessages.length >= MAX_INJECTED_MESSAGES) {
-        throw new Error(`injected_messages exceeds max of ${MAX_INJECTED_MESSAGES}`);
+      if (nextMessages.length >= MAX_CUSTOM_CONTEXT_ITEMS) {
+        throw new Error(`custom_context exceeds max of ${MAX_CUSTOM_CONTEXT_ITEMS}`);
       }
       nextMessages.push({ id, message });
     }
@@ -360,11 +352,11 @@ export class SessionRuntime implements DurableObject {
     if (expectedVersion !== null && expectedVersion !== current.version) {
       throw new Error(`Version conflict: expected ${expectedVersion}, current ${current.version}`);
     }
-    const id = parseInjectedMessageId(payload.id);
+    const id = parseCustomContextId(payload.id);
     const nextMessages = cloneInjectedMessages(current.injectedMessages);
     const existingIndex = nextMessages.findIndex((item) => item.id === id);
     if (existingIndex < 0) {
-      throw new Error(`Injected message not found: ${id}`);
+      throw new Error(`custom_context entry not found: ${id}`);
     }
     nextMessages.splice(existingIndex, 1);
     this.stateData.injected = {
@@ -442,7 +434,7 @@ export class SessionRuntime implements DurableObject {
 
 function normalizeInjectedState(state: InjectedMessagesState | undefined): InjectedMessagesState {
   if (!state) {
-    return { version: 1, injectedMessages: cloneInjectedMessages(DEFAULT_INJECTED_MESSAGES) };
+    return { version: 1, injectedMessages: cloneInjectedMessages(DEFAULT_CUSTOM_CONTEXT_ITEMS) };
   }
   const version = Number.isFinite(state.version) && state.version > 0 ? Math.trunc(state.version) : 1;
   const injectedMessages = normalizeInjectedItems(state.injectedMessages);
@@ -480,10 +472,10 @@ function parseExpectedVersion(value: unknown): number | null {
 
 function normalizeInjectedItems(input: unknown): InjectedMessageItem[] {
   if (!Array.isArray(input)) {
-    return cloneInjectedMessages(DEFAULT_INJECTED_MESSAGES);
+    return cloneInjectedMessages(DEFAULT_CUSTOM_CONTEXT_ITEMS);
   }
-  if (input.length > MAX_INJECTED_MESSAGES) {
-    throw new Error(`injected_messages exceeds max of ${MAX_INJECTED_MESSAGES}`);
+  if (input.length > MAX_CUSTOM_CONTEXT_ITEMS) {
+    throw new Error(`custom_context exceeds max of ${MAX_CUSTOM_CONTEXT_ITEMS}`);
   }
   if (!input.length) return [];
 
@@ -497,12 +489,12 @@ function validateInjectedItems(input: unknown[]): InjectedMessageItem[] {
   const seenIds = new Set<string>();
   for (const item of input) {
     if (!item || typeof item !== "object") {
-      throw new Error("Each injected item must be an object");
+      throw new Error("Each custom_context entry must be an object");
     }
     const row = item as Record<string, unknown>;
-    const id = parseInjectedMessageId(row.id);
+    const id = parseCustomContextId(row.id);
     if (seenIds.has(id)) {
-      throw new Error(`Duplicate injected message id: ${id}`);
+      throw new Error(`Duplicate custom_context id: ${id}`);
     }
     seenIds.add(id);
     const message = validateInjectedMessage(row.message);
@@ -522,18 +514,18 @@ function migrateLegacyInjectedMessages(input: unknown[]): InjectedMessageItem[] 
 
 function validateInjectedMessage(input: unknown): InjectedMessage {
   if (!input || typeof input !== "object") {
-    throw new Error("Injected message must be an object");
+    throw new Error("custom_context entry must be an object");
   }
   const row = input as Record<string, unknown>;
   const role = row.role;
   if (role !== "system" && role !== "user" && role !== "assistant" && role !== "toolResult") {
-    throw new Error("Injected message role must be system, user, assistant, or toolResult");
+    throw new Error("custom_context role must be system, user, assistant, or toolResult");
   }
   ensureValidMessageContent(row.content, role);
   return { role, content: deepClone(row.content) };
 }
 
-function normalizeIncomingInjectedMessage(input: unknown): InjectedMessage {
+function normalizeIncomingCustomContextMessage(input: unknown): InjectedMessage {
   if (typeof input === "string") {
     ensureValidMessageContent(input, "system");
     return { role: "system", content: input };
@@ -541,32 +533,32 @@ function normalizeIncomingInjectedMessage(input: unknown): InjectedMessage {
   return validateInjectedMessage(input);
 }
 
-function parseInjectedMessageId(input: unknown): string {
+function parseCustomContextId(input: unknown): string {
   if (typeof input !== "string") {
     throw new Error("id must be a string");
   }
   const id = input.trim().toLowerCase();
-  if (!INJECTED_MESSAGE_ID_RE.test(id)) {
-    throw new Error("id must match ^[a-z0-9][a-z0-9-]{0,63}$");
+  if (!CUSTOM_CONTEXT_ID_RE.test(id)) {
+    throw new Error("id must match ^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$");
   }
   return id;
 }
 
 function ensureValidMessageContent(content: unknown, role: InjectedRole): void {
   if (typeof content === "string") {
-    if (content.length > MAX_INJECTED_MESSAGE_TEXT_CHARS) {
-      throw new Error("Injected message content exceeds max length");
+    if (content.length > MAX_CUSTOM_CONTEXT_TEXT_CHARS) {
+      throw new Error("custom_context content exceeds max length");
     }
     return;
   }
 
   if (!Array.isArray(content)) {
-    throw new Error("Injected message content must be string or array");
+    throw new Error("custom_context content must be string or array");
   }
 
   for (const block of content) {
     if (!block || typeof block !== "object") {
-      throw new Error("Injected message block must be an object");
+      throw new Error("custom_context block must be an object");
     }
     const value = block as Record<string, unknown>;
     const type = value.type;
@@ -574,8 +566,8 @@ function ensureValidMessageContent(content: unknown, role: InjectedRole): void {
       if (typeof value.text !== "string") {
         throw new Error("text block requires string text");
       }
-      if (value.text.length > MAX_INJECTED_MESSAGE_TEXT_CHARS) {
-        throw new Error("Injected text block exceeds max length");
+      if (value.text.length > MAX_CUSTOM_CONTEXT_TEXT_CHARS) {
+        throw new Error("custom_context text block exceeds max length");
       }
       continue;
     }
@@ -591,12 +583,37 @@ function ensureValidMessageContent(content: unknown, role: InjectedRole): void {
       if (!Array.isArray(value.content)) throw new Error("toolResult block requires content array");
       continue;
     }
-    throw new Error(`Unsupported injected message block type: ${String(type)}`);
+    throw new Error(`Unsupported custom_context block type: ${String(type)}`);
   }
 
   if (role === "toolResult") {
     return;
   }
+}
+
+function customContextContentToText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const textBlocks = content
+      .filter((block) => typeof block === "object" && block !== null && (block as Record<string, unknown>).type === "text")
+      .map((block) => String((block as Record<string, unknown>).text ?? ""))
+      .filter(Boolean);
+    if (textBlocks.length > 0) {
+      return textBlocks.join("\n\n");
+    }
+  }
+  return JSON.stringify(content, null, 2);
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 function resolvePiModel(model: string, baseUrl: string) {
@@ -684,9 +701,9 @@ function parseDataUrl(url: string): { mimeType: string; data: string } | null {
 function createAgentTools(session: SessionRuntime): AgentTool[] {
   return [
     {
-      name: "injected_messages_get",
-      label: "Get injected messages",
-      description: "Return current injected messages and version",
+      name: "custom_context_get",
+      label: "Get custom context",
+      description: "Return current custom context and version",
       parameters: Type.Object({}),
       execute: async () => {
         const data = await session.getInjectedMessagesPayload();
@@ -697,9 +714,9 @@ function createAgentTools(session: SessionRuntime): AgentTool[] {
       },
     },
     {
-      name: "injected_messages_set",
-      label: "Set injected message",
-      description: "Create or update one injected message by id",
+      name: "custom_context_set",
+      label: "Set custom context",
+      description: "Create or update one custom context entry by id",
       parameters: Type.Object({
         id: Type.String(),
         message: Type.Any(),
@@ -715,9 +732,9 @@ function createAgentTools(session: SessionRuntime): AgentTool[] {
       },
     },
     {
-      name: "injected_messages_delete",
-      label: "Delete injected message",
-      description: "Delete one injected message by id",
+      name: "custom_context_delete",
+      label: "Delete custom context",
+      description: "Delete one custom context entry by id",
       parameters: Type.Object({
         id: Type.String(),
         expected_version: Type.Optional(Type.Number()),
