@@ -6,7 +6,7 @@
 
 - Telegram private chat-only, single-user (me)
 - Commands: `/status`, `/reset`, `/factory-reset`, `/details`, `/thinking`
-- Core tools: `custom_context_get`, `custom_context_set`, `custom_context_delete`
+- Core tools: `search`, `execute`, `custom_context_get`, `custom_context_set`, `custom_context_delete`
 - Versioned `custom_context` persisted in Durable Object session state
 - OpenCode Zen provider (`MODEL` + `BASE_URL`)
 
@@ -18,7 +18,7 @@ flowchart TD
   W --> DO[Durable Object Session]
   DO --> M[Model Loop]
   M --> CC[Custom Context]
-  M --> T[Tools: custom_context_get/set/delete]
+  M --> T[Tools: search/execute + custom_context_get/set/delete]
   DO --> W --> U
 ```
 
@@ -29,6 +29,7 @@ flowchart TD
   - `<custom_context id="...">...</custom_context>` entries (sorted by id)
   - `</custom_context_manifest>`
 - Agent can inspect/replace custom context with versioned tools.
+- Agent can run sandboxed JS with `execute`; `search` lists runtime limits/capabilities and installed packages.
 
 ## Setup
 
@@ -96,6 +97,8 @@ pnpm deploy
 - `custom_context` lives in session state with optimistic versioning.
 - `custom_context_set` upserts one context entry by `id` with `expected_version` checks.
 - `custom_context_delete` removes one context entry by `id` with `expected_version` checks.
+- `search` returns QuickJS runtime capabilities/limits and package inventory.
+- `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, and `fetch` inside the runtime.
 
 ## Auth model
 
