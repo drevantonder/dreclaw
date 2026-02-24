@@ -270,7 +270,7 @@ describe("conversation e2e", () => {
     modelQueue.length = 0;
   });
 
-  it("uses compact progress by default and injects message markers", async () => {
+  it("uses compact progress by default and compiles custom context xml", async () => {
     const { env } = createEnv();
     const { sends, actions } = setupTelegramFetch();
 
@@ -288,31 +288,16 @@ describe("conversation e2e", () => {
     expect(final.text).toContain("Saved it.");
 
     const firstContext = modelCallContext.at(0);
-    const firstMessages = firstContext?.messages ?? [];
-    const startMarker = firstMessages.find(
-      (message) =>
-        message.role === "assistant" &&
-        Array.isArray(message.content) &&
-        message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("INJECTED_MESSAGES_START")),
-    );
-    const endMarker = firstMessages.find(
-      (message) =>
-        message.role === "assistant" &&
-        Array.isArray(message.content) &&
-        message.content.some((block: Record<string, unknown>) => block.type === "text" && block.text === "INJECTED_MESSAGES_END"),
-    );
-    const manifest = firstMessages.find(
-      (message) =>
-        message.role === "assistant" &&
-        Array.isArray(message.content) &&
-        message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("INJECTED_MESSAGES_MANIFEST")),
-    );
-    expect(startMarker).toBeTruthy();
-    expect(manifest).toBeTruthy();
-    expect(endMarker).toBeTruthy();
+    const systemPrompt = firstContext?.systemPrompt ?? "";
+    expect(systemPrompt).toContain('<custom_context_manifest version="1" count="3">');
+    expect(systemPrompt).toContain('<custom_context id="identity">');
+    expect(systemPrompt).toContain('<custom_context id="memory">');
+    expect(systemPrompt).toContain('<custom_context id="soul">');
+    expect(systemPrompt.indexOf('id="identity"')).toBeLessThan(systemPrompt.indexOf('id="memory"'));
+    expect(systemPrompt.indexOf('id="memory"')).toBeLessThan(systemPrompt.indexOf('id="soul"'));
   });
 
-  it("supports verbose mode via /details and shows injected_messages tool lifecycle", async () => {
+  it("supports verbose mode via /details and shows custom_context tool lifecycle", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
@@ -321,7 +306,7 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "injected_messages_get", arguments: {} }],
+        content: [{ type: "toolCall", id: "call-1", name: "custom_context_get", arguments: {} }],
       },
       {
         stopReason: "endTurn",
@@ -329,14 +314,14 @@ describe("conversation e2e", () => {
       },
     );
 
-    await callWebhook(env, 4010, "show injected messages");
+    await callWebhook(env, 4010, "show custom context");
 
-    expect(sends.some((message) => message.text.includes("Tool start") && message.text.includes("injected_messages_get"))).toBe(true);
-    expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("injected_messages_get"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool start") && message.text.includes("custom_context_get"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("custom_context_get"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Loaded.");
   });
 
-  it("supports injected_messages.set then get", async () => {
+  it("supports custom_context.set then get", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
@@ -347,7 +332,7 @@ describe("conversation e2e", () => {
           {
             type: "toolCall",
             id: "call-1",
-            name: "injected_messages_set",
+            name: "custom_context_set",
             arguments: {
               id: "identity",
               expected_version: 1,
@@ -358,7 +343,7 @@ describe("conversation e2e", () => {
       },
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-2", name: "injected_messages_get", arguments: {} }],
+        content: [{ type: "toolCall", id: "call-2", name: "custom_context_get", arguments: {} }],
       },
       {
         stopReason: "endTurn",
@@ -370,12 +355,7 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Updated.");
 
     modelQueue.push((context: MockContext) => {
-      const hasNewIdentity = context.messages.some(
-        (message) =>
-          message.role === "system" &&
-          Array.isArray(message.content) &&
-          message.content.some((block: Record<string, unknown>) => block.type === "text" && block.text === "New identity."),
-      );
+      const hasNewIdentity = context.systemPrompt.includes("New identity.");
       expect(hasNewIdentity).toBe(true);
       return {
         stopReason: "endTurn",
@@ -386,7 +366,7 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Saw it.");
   });
 
-  it("accepts string message for injected_messages_set", async () => {
+  it("accepts string message for custom_context_set", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
@@ -397,7 +377,7 @@ describe("conversation e2e", () => {
           {
             type: "toolCall",
             id: "call-1",
-            name: "injected_messages_set",
+            name: "custom_context_set",
             arguments: {
               id: "memory",
               expected_version: 1,
@@ -411,12 +391,7 @@ describe("conversation e2e", () => {
         content: [{ type: "text", text: "Saved simple memory." }],
       },
       (context: MockContext) => {
-        const hasStringMemory = context.messages.some(
-          (message) =>
-            message.role === "system" &&
-            typeof message.content === "string" &&
-            message.content.includes("called Dre"),
-        );
+        const hasStringMemory = context.systemPrompt.includes("called Dre");
         expect(hasStringMemory).toBe(true);
         return {
           stopReason: "endTurn",
@@ -443,7 +418,7 @@ describe("conversation e2e", () => {
           {
             type: "toolCall",
             id: "call-1",
-            name: "injected_messages_set",
+            name: "custom_context_set",
             arguments: {
               id: "identity",
               expected_version: 999,
@@ -457,7 +432,7 @@ describe("conversation e2e", () => {
         content: [{ type: "text", text: "Set failed." }],
       },
       (context: MockContext) => {
-        const hasToolError = context.systemPrompt.includes("tool=injected_messages_set") && context.systemPrompt.includes("ok=false");
+        const hasToolError = context.systemPrompt.includes("tool=custom_context_set") && context.systemPrompt.includes("ok=false");
         expect(hasToolError).toBe(true);
         return {
           stopReason: "endTurn",
@@ -467,7 +442,7 @@ describe("conversation e2e", () => {
     );
 
     await callWebhook(env, 4013, "bad set");
-    expect(sends.some((message) => message.text.includes("Tool error: injected_messages_set"))).toBe(false);
+    expect(sends.some((message) => message.text.includes("Tool error: custom_context_set"))).toBe(false);
 
     await callWebhook(env, 4014, "what failed earlier?");
     expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
@@ -497,26 +472,21 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Done.");
   });
 
-  it("supports injected_messages.delete by id", async () => {
+  it("supports custom_context.delete by id", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "injected_messages_delete", arguments: { id: "memory", expected_version: 1 } }],
+        content: [{ type: "toolCall", id: "call-1", name: "custom_context_delete", arguments: { id: "memory", expected_version: 1 } }],
       },
       {
         stopReason: "endTurn",
         content: [{ type: "text", text: "Deleted." }],
       },
       (context: MockContext) => {
-        const hasMemoryMessage = context.messages.some(
-          (message) =>
-            message.role === "system" &&
-            Array.isArray(message.content) &&
-            message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("# MEMORY")),
-        );
+        const hasMemoryMessage = context.systemPrompt.includes('<custom_context id="memory">');
         expect(hasMemoryMessage).toBe(false);
         return {
           stopReason: "endTurn",
@@ -532,7 +502,7 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Confirmed delete.");
   });
 
-  it("keeps injected messages across /reset", async () => {
+  it("keeps custom context across /reset", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
@@ -543,7 +513,7 @@ describe("conversation e2e", () => {
           {
             type: "toolCall",
             id: "call-1",
-            name: "injected_messages_set",
+            name: "custom_context_set",
             arguments: {
               id: "identity",
               expected_version: 1,
@@ -557,12 +527,7 @@ describe("conversation e2e", () => {
         content: [{ type: "text", text: "Stored." }],
       },
       (context: MockContext) => {
-        const hasPersistedIdentity = context.messages.some(
-          (message) =>
-            message.role === "system" &&
-            Array.isArray(message.content) &&
-            message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("Persist me.")),
-        );
+        const hasPersistedIdentity = context.systemPrompt.includes("Persist me.");
         expect(hasPersistedIdentity).toBe(true);
         return {
           stopReason: "endTurn",
@@ -581,7 +546,7 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Still here.");
   });
 
-  it("resets injected messages on /factory-reset", async () => {
+  it("resets custom context on /factory-reset", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
@@ -592,7 +557,7 @@ describe("conversation e2e", () => {
           {
             type: "toolCall",
             id: "call-1",
-            name: "injected_messages_set",
+            name: "custom_context_set",
             arguments: {
               id: "identity",
               expected_version: 1,
@@ -606,12 +571,7 @@ describe("conversation e2e", () => {
         content: [{ type: "text", text: "Stored." }],
       },
       (context: MockContext) => {
-        const hasPersistedIdentity = context.messages.some(
-          (message) =>
-            message.role === "system" &&
-            Array.isArray(message.content) &&
-            message.content.some((block: Record<string, unknown>) => block.type === "text" && String(block.text ?? "").includes("Persist me.")),
-        );
+        const hasPersistedIdentity = context.systemPrompt.includes("Persist me.");
         expect(hasPersistedIdentity).toBe(false);
         return {
           stopReason: "endTurn",
