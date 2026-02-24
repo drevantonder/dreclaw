@@ -603,9 +603,20 @@ function safeJsonParse(text: string): unknown {
 
 async function getQuickJsModule(): Promise<QuickJsModule> {
   if (!quickJsModulePromise) {
+    ensureEmscriptenGlobals();
     quickJsModulePromise = newQuickJSAsyncWASMModuleFromVariant(QUICKJS_ASYNC_SINGLEFILE_VARIANT);
   }
   return quickJsModulePromise;
+}
+
+function ensureEmscriptenGlobals(): void {
+  const value = globalThis as Record<string, unknown>;
+  if (!value.location || typeof value.location !== "object") {
+    value.location = { href: "https://workers.invalid/" };
+  }
+  if (!value.document || typeof value.document !== "object") {
+    value.document = { currentScript: { src: "https://workers.invalid/quickjs.js" } };
+  }
 }
 
 async function setGlobalJson(vm: QuickJsContext, key: string, value: unknown): Promise<void> {
