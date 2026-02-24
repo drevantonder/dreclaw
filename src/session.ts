@@ -2,6 +2,14 @@ import { Type } from "@sinclair/typebox";
 import type { AgentEvent, AgentTool } from "@mariozechner/pi-agent-core";
 import { getModel as piGetModel } from "@mariozechner/pi-ai/dist/models.js";
 import type { ImageContent } from "@mariozechner/pi-ai/dist/types.js";
+import {
+  executeCode,
+  getCodeExecutionConfig,
+  normalizeCodeRuntimeState,
+  searchCodeRuntime,
+  type CodeExecutionConfig,
+  type CodeRuntimeState,
+} from "./code-exec";
 import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
 import { DEFAULT_BASE_URL, type Env, type ProgressMode, type SessionRequest, type SessionResponse } from "./types";
 
@@ -24,6 +32,7 @@ interface SessionState {
     showThinking?: boolean;
   };
   customContext?: CustomContextState;
+  codeRuntime?: CodeRuntimeState;
 }
 
 interface RuntimeConfig {
@@ -96,6 +105,7 @@ export class SessionRuntime implements DurableObject {
     this.stateData = (await this.state.storage.get<SessionState>("session-state")) ?? { history: [] };
     this.stateData.prefs = normalizePrefs(this.stateData.prefs);
     this.stateData.customContext = normalizeCustomContextState(this.stateData.customContext);
+    this.stateData.codeRuntime = normalizeCodeRuntimeState(this.stateData.codeRuntime);
     this.loaded = true;
   }
 
@@ -113,6 +123,7 @@ export class SessionRuntime implements DurableObject {
         history: [],
         prefs: normalizePrefs(this.stateData.prefs),
         customContext: normalizeCustomContextState(undefined),
+        codeRuntime: normalizeCodeRuntimeState(undefined),
       };
       await this.save();
       return { ok: true, text: "Factory reset complete. Defaults restored." };
@@ -124,6 +135,7 @@ export class SessionRuntime implements DurableObject {
         history: [],
         prefs: normalizePrefs(this.stateData.prefs),
         customContext: cloneCustomContextState(currentCustomContext),
+        codeRuntime: this.getCodeRuntimeState(),
       };
       await this.save();
       return { ok: true, text: "Session reset. Conversation context cleared." };
@@ -133,6 +145,8 @@ export class SessionRuntime implements DurableObject {
       const authReady = await this.workerAuthReady();
       const customContext = this.getCustomContextState();
       const debugEnabled = this.getProgressMode() === "debug";
+      const codeRuntime = this.getCodeRuntimeState();
+      const codeConfig = this.getCodeExecutionConfig();
       const summary = [
         `model: ${this.getModelName()}`,
         "session: healthy",
@@ -141,6 +155,8 @@ export class SessionRuntime implements DurableObject {
         `history_messages: ${this.stateData.history.length}`,
         `custom_context_version: ${customContext.version}`,
         `custom_context_count: ${customContext.items.length}`,
+        `code_exec_enabled: ${codeConfig.codeExecEnabled ? "yes" : "no"}`,
+        `installed_packages: ${codeRuntime.installedPackages.length}`,
       ].join("\n");
       return { ok: true, text: summary };
     }
@@ -388,6 +404,46 @@ export class SessionRuntime implements DurableObject {
     if (!model) throw new Error("Missing MODEL");
     return model;
   }
+
+  private getCodeRuntimeState(): CodeRuntimeState {
+    const current = normalizeCodeRuntimeState(this.stateData.codeRuntime);
+    this.stateData.codeRuntime = current;
+    return current;
+  }
+
+  private getCodeExecutionConfig(): CodeExecutionConfig {
+    return getCodeExecutionConfig(this.env as unknown as Record<string, string | undefined>);
+  }
+
+  searchCodePayload(payload: { query?: unknown }): unknown {
+    return searchCodeRuntime(
+      {
+        query: typeof payload.query === "string" ? payload.query : "",
+      },
+      {
+        config: this.getCodeExecutionConfig(),
+        state: this.getCodeRuntimeState(),
+        saveState: async () => undefined,
+      },
+    );
+  }
+
+  async executeCodePayload(payload: { code: unknown; input?: unknown }): Promise<unknown> {
+    return executeCode(
+      {
+        code: typeof payload.code === "string" ? payload.code : "",
+        input: payload.input,
+      },
+      {
+        config: this.getCodeExecutionConfig(),
+        state: this.getCodeRuntimeState(),
+        saveState: async (next) => {
+          this.stateData.codeRuntime = normalizeCodeRuntimeState(next);
+          await this.save();
+        },
+      },
+    );
+  }
 }
 
 function normalizeCustomContextState(state: CustomContextState | undefined): CustomContextState {
@@ -569,6 +625,39 @@ function parseDataUrl(url: string): { mimeType: string; data: string } | null {
 
 function createAgentTools(session: SessionRuntime): AgentTool[] {
   return [
+    {
+      name: "search",
+      label: "Search runtime",
+      description: "Search runtime capabilities and installed packages",
+      parameters: Type.Object({
+        query: Type.Optional(Type.String()),
+      }),
+      execute: async (_toolCallId, params) => {
+        const payload = params as { query?: unknown };
+        const result = session.searchCodePayload(payload);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: { ok: true },
+        };
+      },
+    },
+    {
+      name: "execute",
+      label: "Execute code",
+      description: "Run JavaScript in QuickJS runtime",
+      parameters: Type.Object({
+        code: Type.String(),
+        input: Type.Optional(Type.Any()),
+      }),
+      execute: async (_toolCallId, params) => {
+        const payload = params as { code: unknown; input?: unknown };
+        const result = await session.executeCodePayload(payload);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: { ok: true },
+        };
+      },
+    },
     {
       name: "custom_context_get",
       label: "Get custom context",
