@@ -8,7 +8,7 @@
 - Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/thinking`
 - Core tools: `search`, `execute`, `custom_context_get`, `custom_context_set`, `custom_context_delete`
 - Versioned `custom_context` persisted in Durable Object session state
-- OpenCode Zen provider (`MODEL` + `BASE_URL`)
+- OpenCode Zen provider via AI SDK (`MODEL` + `BASE_URL`)
 
 ## Architecture (High-level)
 
@@ -28,7 +28,7 @@ flowchart TD
   - `<custom_context_manifest version="<n>" count="<m>">`
   - `<custom_context id="...">...</custom_context>` entries (sorted by id)
   - `</custom_context_manifest>`
-- Agent can inspect/replace custom context with versioned tools.
+- Agent loop runs on AI SDK `ToolLoopAgent` and can inspect/replace custom context with versioned tools.
 - Agent can run sandboxed JS with `execute`; `search` lists runtime limits/capabilities and installed packages.
 
 ## Setup

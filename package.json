@@ -19,12 +19,11 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "@jitl/quickjs-singlefile-cjs-release-asyncify": "^0.32.0",
-    "@mariozechner/pi-agent-core": "^0.54.2",
-    "@mariozechner/pi-ai": "^0.54.2",
-    "@sinclair/typebox": "^0.34.48",
-    "@tootallnate/quickjs-emscripten": "^0.23.0",
-    "quickjs-emscripten-core": "^0.32.0"
+    "@ai-sdk/openai-compatible": "^2.0.30",
+    "@jitl/quickjs-wasmfile-release-asyncify": "^0.32.0",
+    "ai": "^6.0.98",
+    "quickjs-emscripten-core": "^0.32.0",
+    "zod": "^4.3.6"
   },
   "pnpm": {
     "overrides": {

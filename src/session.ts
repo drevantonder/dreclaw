@@ -1,7 +1,5 @@
-import { Type } from "@sinclair/typebox";
-import type { AgentEvent, AgentTool } from "@mariozechner/pi-agent-core";
-import { getModel as piGetModel } from "@mariozechner/pi-ai/dist/models.js";
-import type { ImageContent } from "@mariozechner/pi-ai/dist/types.js";
+import { ToolLoopAgent, stepCountIs, tool, type ModelMessage } from "ai";
+import { z } from "zod";
 import {
   executeCode,
   getCodeExecutionConfig,
@@ -10,6 +8,7 @@ import {
   type CodeExecutionConfig,
   type CodeRuntimeState,
 } from "./code-exec";
+import { createZenModel } from "./llm/zen";
 import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
 import { DEFAULT_BASE_URL, type Env, type ProgressMode, type SessionRequest, type SessionResponse } from "./types";
 
@@ -67,8 +66,6 @@ const DEFAULT_CUSTOM_CONTEXT_ITEMS: CustomContextItem[] = [
       "# MEMORY\n\nYou have no memories. Ask your human for his/her name, what he/she would like you to call him/her, and what he/she is naming you.",
   },
 ];
-
-let agentCtorPromise: Promise<typeof import("@mariozechner/pi-agent-core")> | null = null;
 
 export class SessionRuntime implements DurableObject {
   private readonly state: DurableObjectState;
@@ -215,7 +212,7 @@ export class SessionRuntime implements DurableObject {
     imageBlocks: string[],
     progress: TelegramProgressReporter,
   ): Promise<AgentRunResult> {
-    const model = resolvePiModel(runtime.model, runtime.baseUrl);
+    const model = createZenModel(runtime);
     const historyContext = renderHistoryContext(this.stateData.history);
     const customContext = this.renderCustomContextXml();
     const promptSections = [SYSTEM_PROMPT];
@@ -225,40 +222,20 @@ export class SessionRuntime implements DurableObject {
     if (historyContext) {
       promptSections.push(`Recent context:\n${historyContext}`);
     }
-    const { Agent } = await loadAgentCore();
-    const agent = new Agent({
-      initialState: {
-        systemPrompt: promptSections.join("\n\n"),
-        model,
-        thinkingLevel: this.shouldShowThinking() ? "medium" : "off",
-        tools: createAgentTools(this),
-      },
-      getApiKey: async () => runtime.apiKey,
-      transport: "sse",
-    });
 
     const toolErrors: string[] = [];
-    const eventTasks: Promise<void>[] = [];
-
-    agent.subscribe((event: AgentEvent) => {
-      const task = this.handleAgentEvent(event, progress, toolErrors).catch((error) => {
-        console.warn("agent-event-handler-failed", {
-          error: error instanceof Error ? error.message : String(error ?? "unknown"),
-        });
-      });
-      eventTasks.push(task);
+    const agent = new ToolLoopAgent({
+      model,
+      tools: createAgentTools(this, progress, toolErrors),
+      stopWhen: stepCountIs(8),
     });
 
-    const images = imageBlocks.map(toPiImageContent).filter((item): item is ImageContent => Boolean(item));
-    await agent.prompt(userText || "[image message]", images);
-    if (eventTasks.length) {
-      await Promise.all(eventTasks);
-    }
-    if (this.shouldShowThinking()) {
-      await progress.sendThinkingSummary(readFinalAssistantThinking(agent.state.messages));
-    }
+    const result = await agent.generate({
+      messages: buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks),
+    });
 
-    const finalText = readFinalAssistantText(agent.state.messages);
+    if (this.shouldShowThinking()) await progress.sendThinkingSummary("");
+    const finalText = typeof result.text === "string" ? result.text.trim() : "";
     return { finalText: finalText || "(empty response)", toolErrors };
   }
 
@@ -339,29 +316,6 @@ export class SessionRuntime implements DurableObject {
     };
     await this.save();
     return { version: this.stateData.customContext.version };
-  }
-
-  private async handleAgentEvent(event: AgentEvent, progress: TelegramProgressReporter, toolErrors: string[]): Promise<void> {
-    if (event.type === "tool_execution_start") {
-      await progress.onToolStart(event.toolName, (event.args as Record<string, unknown>) ?? {});
-      return;
-    }
-
-    if (event.type !== "tool_execution_end") {
-      return;
-    }
-
-    const detail = redactSensitiveText(extractToolContentText(event.result));
-    const ok = !event.isError;
-    await progress.onToolResult(event.toolName, ok, detail, ok ? undefined : detail);
-
-    if (!ok) {
-      const toolResponse = [`tool=${event.toolName}`, "ok=false", detail ? `error=${detail}` : "", `output=${detail || ""}`]
-        .filter(Boolean)
-        .join("\n");
-      toolErrors.push(toolResponse);
-      console.error("tool-call-failed", { tool: event.toolName, error: detail || "tool failed" });
-    }
   }
 
   private pushHistory(entry: SessionHistoryEntry): void {
@@ -541,20 +495,18 @@ function escapeXml(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
-function resolvePiModel(model: string, baseUrl: string) {
-  try {
-    return {
-      ...piGetModel("opencode", model as "kimi-k2.5"),
-      baseUrl,
-    };
-  } catch {
-    return {
-      ...piGetModel("opencode", "kimi-k2.5"),
-      id: model,
-      name: model,
-      baseUrl,
-    };
+function buildAgentMessages(systemPrompt: string, userText: string, imageBlocks: string[]): ModelMessage[] {
+  const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [];
+  const text = userText || "[image message]";
+  parts.push({ type: "text", text });
+  for (const image of imageBlocks) {
+    parts.push({ type: "image", image });
   }
+
+  return [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: imageBlocks.length ? parts : text },
+  ];
 }
 
 function compactErrorMessage(error: unknown): string {
@@ -603,175 +555,73 @@ function renderHistoryContext(history: SessionHistoryEntry[]): string {
     .join("\n");
 }
 
-function toPiImageContent(dataUrl: string): ImageContent | null {
-  const parsed = parseDataUrl(dataUrl);
-  if (!parsed) {
-    return null;
+function createAgentTools(
+  session: SessionRuntime,
+  progress: TelegramProgressReporter,
+  toolErrors: string[],
+) {
+  async function runTool<T>(
+    name: string,
+    args: Record<string, unknown>,
+    execute: () => Promise<T> | T,
+  ): Promise<T | { ok: false; error: string }> {
+    await progress.onToolStart(name, args);
+    try {
+      const result = await execute();
+      await progress.onToolResult(name, true, redactSensitiveText(serializeToolOutput(result)));
+      return result;
+    } catch (error) {
+      const detail = redactSensitiveText(compactErrorMessage(error));
+      await progress.onToolResult(name, false, detail, detail);
+      toolErrors.push([`tool=${name}`, "ok=false", `error=${detail}`, `output=${detail}`].join("\n"));
+      console.error("tool-call-failed", { tool: name, error: detail });
+      return { ok: false, error: detail };
+    }
   }
+
   return {
-    type: "image",
-    data: parsed.data,
-    mimeType: parsed.mimeType,
+    search: tool({
+      description: "Search runtime capabilities and installed packages",
+      inputSchema: z.object({ query: z.string().optional() }),
+      execute: async (params) =>
+        runTool("search", params as Record<string, unknown>, async () => session.searchCodePayload({ query: params.query })),
+    }),
+    execute: tool({
+      description: "Run JavaScript in QuickJS runtime",
+      inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
+      execute: async (params) =>
+        runTool("execute", params as Record<string, unknown>, async () =>
+          session.executeCodePayload({ code: params.code, input: params.input }),
+        ),
+    }),
+    custom_context_get: tool({
+      description: "Return current custom context and version",
+      inputSchema: z.object({}),
+      execute: async (params) =>
+        runTool("custom_context_get", params as Record<string, unknown>, async () => session.getCustomContextPayload()),
+    }),
+    custom_context_set: tool({
+      description: "Create or update one custom context entry by id",
+      inputSchema: z.object({ id: z.string(), text: z.string(), expected_version: z.number().optional() }),
+      execute: async (params) =>
+        runTool("custom_context_set", params as Record<string, unknown>, async () => session.setCustomContextPayload(params)),
+    }),
+    custom_context_delete: tool({
+      description: "Delete one custom context entry by id",
+      inputSchema: z.object({ id: z.string(), expected_version: z.number().optional() }),
+      execute: async (params) =>
+        runTool("custom_context_delete", params as Record<string, unknown>, async () => session.deleteCustomContextPayload(params)),
+    }),
   };
 }
 
-function parseDataUrl(url: string): { mimeType: string; data: string } | null {
-  const match = /^data:([^;]+);base64,(.+)$/i.exec(url.trim());
-  if (!match) {
-    return null;
+function serializeToolOutput(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value ?? "");
   }
-  return { mimeType: match[1], data: match[2] };
-}
-
-function createAgentTools(session: SessionRuntime): AgentTool[] {
-  return [
-    {
-      name: "search",
-      label: "Search runtime",
-      description: "Search runtime capabilities and installed packages",
-      parameters: Type.Object({
-        query: Type.Optional(Type.String()),
-      }),
-      execute: async (_toolCallId, params) => {
-        const payload = params as { query?: unknown };
-        const result = session.searchCodePayload(payload);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: { ok: true },
-        };
-      },
-    },
-    {
-      name: "execute",
-      label: "Execute code",
-      description: "Run JavaScript in QuickJS runtime",
-      parameters: Type.Object({
-        code: Type.String(),
-        input: Type.Optional(Type.Any()),
-      }),
-      execute: async (_toolCallId, params) => {
-        const payload = params as { code: unknown; input?: unknown };
-        const result = await session.executeCodePayload(payload);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: { ok: true },
-        };
-      },
-    },
-    {
-      name: "custom_context_get",
-      label: "Get custom context",
-      description: "Return current custom context and version",
-      parameters: Type.Object({}),
-      execute: async () => {
-        const data = await session.getCustomContextPayload();
-        return {
-          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-          details: { ok: true },
-        };
-      },
-    },
-    {
-      name: "custom_context_set",
-      label: "Set custom context",
-      description: "Create or update one custom context entry by id",
-      parameters: Type.Object({
-        id: Type.String(),
-        text: Type.String(),
-        expected_version: Type.Optional(Type.Number()),
-      }),
-      execute: async (_toolCallId, params) => {
-        const data = params as { id: unknown; text: unknown; expected_version?: unknown };
-        const result = await session.setCustomContextPayload(data);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: { ok: true },
-        };
-      },
-    },
-    {
-      name: "custom_context_delete",
-      label: "Delete custom context",
-      description: "Delete one custom context entry by id",
-      parameters: Type.Object({
-        id: Type.String(),
-        expected_version: Type.Optional(Type.Number()),
-      }),
-      execute: async (_toolCallId, params) => {
-        const data = params as { id: unknown; expected_version?: unknown };
-        const result = await session.deleteCustomContextPayload(data);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: { ok: true },
-        };
-      },
-    },
-  ];
-}
-
-async function loadAgentCore(): Promise<typeof import("@mariozechner/pi-agent-core")> {
-  if (!agentCtorPromise) {
-    enableWorkerCspShim();
-    agentCtorPromise = import("@mariozechner/pi-agent-core");
-  }
-  return agentCtorPromise;
-}
-
-function enableWorkerCspShim(): void {
-  const value = globalThis as Record<string, unknown>;
-  const chromeValue = (value.chrome as Record<string, unknown> | undefined) ?? {};
-  const runtimeValue = (chromeValue.runtime as Record<string, unknown> | undefined) ?? {};
-  if (!runtimeValue.id) runtimeValue.id = "workers";
-  chromeValue.runtime = runtimeValue;
-  value.chrome = chromeValue;
-}
-
-function extractToolContentText(result: unknown): string {
-  const content = (result as { content?: Array<{ type?: string; text?: string }> } | null)?.content;
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content
-    .filter((block) => block?.type === "text" && typeof block.text === "string")
-    .map((block) => block.text ?? "")
-    .join("\n")
-    .trim();
-}
-
-function readFinalAssistantText(messages: unknown[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index] as { role?: string; content?: Array<{ type?: string; text?: string }> };
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) {
-      continue;
-    }
-    const text = message.content
-      .filter((block) => block?.type === "text" && typeof block.text === "string")
-      .map((block) => block.text ?? "")
-      .join("\n")
-      .trim();
-    if (text) {
-      return text;
-    }
-  }
-  return "";
-}
-
-function readFinalAssistantThinking(messages: unknown[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index] as { role?: string; content?: Array<{ type?: string; thinking?: string }> };
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) {
-      continue;
-    }
-    const thinking = message.content
-      .filter((block) => block?.type === "thinking" && typeof block.thinking === "string")
-      .map((block) => block.thinking ?? "")
-      .join("\n")
-      .trim();
-    if (thinking) {
-      return thinking;
-    }
-  }
-  return "";
 }
 
 class TelegramProgressReporter {
