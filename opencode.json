@@ -9,7 +9,12 @@
     "linear": {
       "type": "remote",
       "enabled": true,
-		"url": "https://mcp.linear.app/mcp"
-		}
+		  "url": "https://mcp.linear.app/mcp"
+		},
+    "posthog": {
+      "type": "remote",
+      "enabled": true,
+      "url": "https://mcp.posthog.com/mcp"
+    }
   }
 }
