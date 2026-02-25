@@ -372,11 +372,11 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
   });
 
-  it("shows thinking when /thinking on, even in compact mode", async () => {
+  it("shows thinking blocks when /show-thinking on, even in compact mode", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
-    await callWebhook(env, 4008, "/thinking on");
+    await callWebhook(env, 4008, "/show-thinking on");
 
     modelQueue.push({
       stopReason: "endTurn",
@@ -391,7 +391,8 @@ describe("conversation e2e", () => {
     const lastCall = modelCallOptions.at(-1);
     expect(lastCall).toBeDefined();
     const thinkingMessages = sends.filter((message) => message.text.startsWith("<b>Thinking:</b>"));
-    expect(thinkingMessages.length).toBe(0);
+    expect(thinkingMessages.length).toBe(1);
+    expect(thinkingMessages[0]?.text).toContain("Check markers then answer briefly.");
     expect(sends.at(-1)?.text).toContain("Done.");
   });
 

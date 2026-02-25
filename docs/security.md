@@ -29,4 +29,4 @@ v0 security model is intentionally simple and single-user.
 ## Dependency posture
 
 - `pnpm.overrides.minimatch` is pinned to `^10.2.1` in `package.json` to remediate `GHSA-3ppc-4f35-3m26` (ReDoS in older minimatch versions).
-- This override exists because minimatch is brought transitively by the model stack (`@mariozechner/pi-ai` chain), and we want audit-clean deploys while upstream dependency trees converge.
+- This override exists because minimatch is brought transitively by runtime/tooling dependencies, and we want audit-clean deploys while dependency trees converge.

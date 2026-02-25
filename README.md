@@ -5,7 +5,7 @@
 ## v0 Scope
 
 - Telegram private chat-only, single-user (me)
-- Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/thinking`
+- Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/show-thinking`
 - Core tools: `search`, `execute`, `custom_context_get`, `custom_context_set`, `custom_context_delete`
 - Versioned `custom_context` persisted in Durable Object session state
 - OpenCode Zen provider via AI SDK (`MODEL` + `BASE_URL`)
@@ -76,7 +76,7 @@ pnpm deploy
 - `/reset` clears conversation context only (keeps `custom_context`).
 - `/factory-reset` clears conversation context and restores default `custom_context`.
 - `/debug on|off` toggles tool/progress debug messages.
-- `/thinking on|off` toggles thinking message visibility.
+- `/show-thinking on|off` toggles thinking block visibility.
 
 ### Telegram message modes
 

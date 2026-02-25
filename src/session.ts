@@ -172,18 +172,18 @@ export class SessionRuntime implements DurableObject {
       return { ok: true, text: `debug ${nextDebug ? "enabled" : "disabled"}.` };
     }
 
-    if (text.startsWith("/thinking")) {
+    if (text.startsWith("/show-thinking")) {
       const nextThinking = parseThinkingFlag(text);
       if (nextThinking === null) {
         const current = this.shouldShowThinking() ? "on" : "off";
-        return { ok: true, text: `thinking: ${current}\nusage: /thinking on|off` };
+        return { ok: true, text: `show-thinking: ${current}\nusage: /show-thinking on|off` };
       }
       this.stateData.prefs = {
         ...normalizePrefs(this.stateData.prefs),
         showThinking: nextThinking,
       };
       await this.save();
-      return { ok: true, text: `thinking ${nextThinking ? "enabled" : "disabled"}.` };
+      return { ok: true, text: `show-thinking ${nextThinking ? "enabled" : "disabled"}.` };
     }
 
     const runtime = this.getRuntimeConfig();
@@ -234,7 +234,7 @@ export class SessionRuntime implements DurableObject {
       messages: buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks),
     });
 
-    if (this.shouldShowThinking()) await progress.sendThinkingSummary("");
+    await progress.sendThinkingBlocks(extractThinkingBlocks(result.response.messages));
     const finalText = typeof result.text === "string" ? result.text.trim() : "";
     return { finalText: finalText || "(empty response)", toolErrors };
   }
@@ -643,11 +643,13 @@ class TelegramProgressReporter {
     this.showThinking = params.showThinking;
   }
 
-  async sendThinkingSummary(raw: string): Promise<void> {
+  async sendThinkingBlocks(blocks: string[]): Promise<void> {
     if (!this.showThinking) return;
-    const text = truncateForLog(raw, 700);
-    if (!text) return;
-    await this.safeSendMessage(`Thinking:\n${text}`);
+    for (const block of blocks) {
+      const text = truncateForLog(block, 700);
+      if (!text) continue;
+      await this.safeSendMessage(`Thinking:\n${text}`);
+    }
   }
 
   async onToolStart(name: string, args: Record<string, unknown>): Promise<void> {
@@ -685,6 +687,29 @@ class TelegramProgressReporter {
       });
     }
   }
+}
+
+function extractThinkingBlocks(messages: unknown[]): string[] {
+  const blocks: string[] = [];
+  for (const message of messages) {
+    const role = (message as { role?: unknown })?.role;
+    if (role !== "assistant") continue;
+    const content = (message as { content?: unknown })?.content;
+    if (!Array.isArray(content)) continue;
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const type = (item as { type?: unknown }).type;
+      if (type !== "thinking" && type !== "reasoning") continue;
+      const textValue =
+        (item as { thinking?: unknown }).thinking ??
+        (item as { text?: unknown }).text ??
+        (item as { reasoning?: unknown }).reasoning;
+      if (typeof textValue !== "string") continue;
+      const compact = textValue.trim();
+      if (compact) blocks.push(compact);
+    }
+  }
+  return blocks;
 }
 
 function truncateForLog(input: string, max: number): string {
