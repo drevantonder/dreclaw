@@ -49,7 +49,7 @@ interface AgentRunResult {
 }
 
 const SYSTEM_PROMPT =
-  "custom_context is persistent editable startup context. Keep it current using provided tools. execute supports async/await and network requests via fetch in the QuickJS runtime. Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available.";
+  "custom_context is persistent editable startup context. Keep it current using provided tools. execute supports async/await and network requests via fetch in the QuickJS runtime. Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
 const MAX_CUSTOM_CONTEXT_ITEMS = 48;
 const MAX_CUSTOM_CONTEXT_TEXT_CHARS = 10_000;
 const CUSTOM_CONTEXT_ID_RE = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
@@ -221,7 +221,8 @@ export class SessionRuntime implements DurableObject {
     const model = this.createModel(runtime);
     const historyContext = renderHistoryContext(this.stateData.history);
     const customContext = this.renderCustomContextXml();
-    const promptSections = [SYSTEM_PROMPT];
+    const nowIso = new Date().toISOString();
+    const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${nowIso}`];
     if (customContext) {
       promptSections.push(`Custom context:\n${customContext}`);
     }
