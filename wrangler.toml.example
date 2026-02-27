@@ -4,6 +4,9 @@ compatibility_date = "2026-02-22"
 compatibility_flags = ["nodejs_compat"]
 route = "REPLACE_WITH_WORKER_ROUTE"
 
+[ai]
+binding = "AI"
+
 [[rules]]
 type = "CompiledWasm"
 globs = ["**/*.wasm"]

@@ -23,6 +23,9 @@ importers:
       quickjs-emscripten-core:
         specifier: ^0.32.0
         version: 0.32.0
+      workers-ai-provider:
+        specifier: ^3.1.2
+        version: 3.1.2(@ai-sdk/provider@3.0.8)(ai@6.0.99(zod@4.3.6))
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -657,6 +660,12 @@ packages:
     engines: {node: '>=8'}
     hasBin: true
 
+  workers-ai-provider@3.1.2:
+    resolution: {integrity: sha512-ZXCWZIWk9rmjVKo0rUmbLQrRXdKWViAdqyV/cdqNQYT7FlSwITyZfZG/9CaInKKRDQQdBNvdPyB2+LWIz1E8Bw==}
+    peerDependencies:
+      '@ai-sdk/provider': ^3.0.0
+      ai: ^6.0.0
+
   yaml@2.8.2:
     resolution: {integrity: sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A==}
     engines: {node: '>= 14.6'}
@@ -1164,6 +1173,11 @@ snapshots:
     dependencies:
       siginfo: 2.0.0
       stackback: 0.0.2
+
+  workers-ai-provider@3.1.2(@ai-sdk/provider@3.0.8)(ai@6.0.99(zod@4.3.6)):
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      ai: 6.0.99(zod@4.3.6)
 
   yaml@2.8.2:
     optional: true

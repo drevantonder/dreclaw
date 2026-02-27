@@ -8,7 +8,7 @@
 - Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/show-thinking`
 - Core tools: `search`, `execute`, `custom_context_get`, `custom_context_set`, `custom_context_delete`
 - Versioned `custom_context` persisted in Durable Object session state
-- OpenCode Zen provider via AI SDK (`MODEL` + `BASE_URL`)
+- AI SDK provider switch: `zen` (OpenCode Zen) or `workers` (Workers AI)
 
 ## Architecture (High-level)
 
@@ -29,6 +29,7 @@ flowchart TD
   - `<custom_context id="...">...</custom_context>` entries (sorted by id)
   - `</custom_context_manifest>`
 - Agent loop runs on AI SDK `ToolLoopAgent` and can inspect/replace custom context with versioned tools.
+- Workers AI runs via `workers-ai-provider` binding (`env.AI`) when `AI_PROVIDER=workers`.
 - Agent can run sandboxed JS with `execute`; `search` lists runtime limits/capabilities and installed packages.
 
 ## Setup
@@ -59,7 +60,7 @@ set -a; source .env; set +a
 pnpm secrets:sync
 ```
 
-This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `OPENCODE_ZEN_API_KEY`, `MODEL`, `BASE_URL`).
+This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPENCODE_ZEN_API_KEY`, `MODEL`, `BASE_URL`).
 
 ### Deploy
 

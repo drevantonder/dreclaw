@@ -9,6 +9,7 @@ import {
   type CodeRuntimeState,
 } from "./code-exec";
 import { createZenModel } from "./llm/zen";
+import { createWorkersModel } from "./llm/workers";
 import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
 import { DEFAULT_BASE_URL, type Env, type ProgressMode, type SessionRequest, type SessionResponse } from "./types";
 
@@ -35,9 +36,11 @@ interface SessionState {
 }
 
 interface RuntimeConfig {
+  provider: "zen" | "workers";
   model: string;
-  baseUrl: string;
-  apiKey: string;
+  baseUrl?: string;
+  apiKey?: string;
+  aiBinding?: Ai;
 }
 
 interface AgentRunResult {
@@ -144,8 +147,10 @@ export class SessionRuntime implements DurableObject {
       const debugEnabled = this.getProgressMode() === "debug";
       const codeRuntime = this.getCodeRuntimeState();
       const codeConfig = this.getCodeExecutionConfig();
+      const provider = this.getProvider();
       const summary = [
-        `model: ${this.getModelName()}`,
+        `model: ${this.getModelName(provider)}`,
+        `provider: ${provider}`,
         "session: healthy",
         `provider_auth: ${authReady ? "present" : "missing"}`,
         `debug: ${debugEnabled ? "on" : "off"}`,
@@ -212,7 +217,7 @@ export class SessionRuntime implements DurableObject {
     imageBlocks: string[],
     progress: TelegramProgressReporter,
   ): Promise<AgentRunResult> {
-    const model = createZenModel(runtime);
+    const model = this.createModel(runtime);
     const historyContext = renderHistoryContext(this.stateData.history);
     const customContext = this.renderCustomContextXml();
     const promptSections = [SYSTEM_PROMPT];
@@ -340,23 +345,49 @@ export class SessionRuntime implements DurableObject {
   }
 
   private async workerAuthReady(): Promise<boolean> {
+    if (this.getProvider() === "workers") {
+      return Boolean(this.env.AI);
+    }
     return Boolean(this.env.OPENCODE_ZEN_API_KEY?.trim());
   }
 
   private getRuntimeConfig(): RuntimeConfig {
-    const model = this.getModelName();
+    const provider = this.getProvider();
+    const model = this.getModelName(provider);
+
+    if (provider === "workers") {
+      if (!this.env.AI) throw new Error("Missing AI binding");
+      return { provider, model, aiBinding: this.env.AI };
+    }
 
     const apiKey = this.env.OPENCODE_ZEN_API_KEY?.trim();
     if (!apiKey) throw new Error("Missing OPENCODE_ZEN_API_KEY");
 
     const baseUrl = this.env.BASE_URL?.trim() || DEFAULT_BASE_URL;
-    return { model, apiKey, baseUrl };
+    return { provider, model, apiKey, baseUrl };
   }
 
-  private getModelName(): string {
+  private getProvider(): "zen" | "workers" {
+    const provider = this.env.AI_PROVIDER?.trim().toLowerCase();
+    if (provider === "workers") return "workers";
+    return "zen";
+  }
+
+  private getModelName(provider: "zen" | "workers"): string {
     const model = this.env.MODEL?.trim();
-    if (!model) throw new Error("Missing MODEL");
+    if (model) return model;
+    if (provider === "workers") return "@cf/zai-org/glm-4.7-flash";
+    throw new Error("Missing MODEL");
     return model;
+  }
+
+  private createModel(runtime: RuntimeConfig) {
+    if (runtime.provider === "workers") {
+      if (!runtime.aiBinding) throw new Error("Missing AI binding");
+      return createWorkersModel(runtime.aiBinding, runtime.model);
+    }
+    if (!runtime.apiKey || !runtime.baseUrl) throw new Error("Missing Zen runtime config");
+    return createZenModel({ model: runtime.model, apiKey: runtime.apiKey, baseUrl: runtime.baseUrl });
   }
 
   private getCodeRuntimeState(): CodeRuntimeState {

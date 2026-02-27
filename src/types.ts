@@ -4,9 +4,11 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_ALLOWED_USER_ID: string;
+  AI_PROVIDER?: string;
   MODEL: string;
   BASE_URL?: string;
   OPENCODE_ZEN_API_KEY?: string;
+  AI?: Ai;
   CODE_EXEC_ENABLED?: string;
   NET_FETCH_ENABLED?: string;
   PKG_INSTALL_ENABLED?: string;
