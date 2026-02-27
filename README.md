@@ -75,13 +75,13 @@ pnpm deploy
 - `/status` shows runtime/session/auth + custom context metadata.
 - `/reset` clears conversation context only (keeps `custom_context`).
 - `/factory-reset` clears conversation context and restores default `custom_context`.
-- `/debug on|off` toggles tool/progress debug messages.
+- `/debug on|off` toggles debug previews and per-step tool summaries.
 - `/show-thinking on|off` toggles thinking block visibility.
 
 ### Telegram message modes
 
 - `compact` (default): typing indicator while work runs + final reply.
-- `debug`: compact behavior plus tool call/result messages.
+- `debug`: compact behavior plus friendly tool previews and per-step summaries.
 
 ## Testing
 
