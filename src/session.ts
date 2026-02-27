@@ -45,7 +45,7 @@ interface RuntimeConfig {
 
 interface AgentRunResult {
   finalText: string;
-  toolErrors: string[];
+  toolTranscripts: string[];
 }
 
 const SYSTEM_PROMPT =
@@ -203,8 +203,8 @@ export class SessionRuntime implements DurableObject {
     const run = await this.runAgentLoop(runtime, text, imageBlocks, progress);
     const responseText = run.finalText.trim() || "(empty response)";
     this.pushHistory({ role: "user", content: text || "[image]" });
-    for (const toolError of run.toolErrors) {
-      this.pushHistory({ role: "tool", content: toolError });
+    for (const transcript of run.toolTranscripts) {
+      this.pushHistory({ role: "tool", content: transcript });
     }
     this.pushHistory({ role: "assistant", content: responseText });
 
@@ -229,10 +229,10 @@ export class SessionRuntime implements DurableObject {
       promptSections.push(`Recent context:\n${historyContext}`);
     }
 
-    const toolErrors: string[] = [];
+    const toolTranscripts: string[] = [];
     const agent = new ToolLoopAgent({
       model,
-      tools: createAgentTools(this, progress, toolErrors),
+      tools: createAgentTools(this, progress, toolTranscripts),
       stopWhen: stepCountIs(8),
     });
 
@@ -242,7 +242,7 @@ export class SessionRuntime implements DurableObject {
 
     await progress.sendThinkingBlocks(extractThinkingBlocks(result.response.messages));
     const finalText = typeof result.text === "string" ? result.text.trim() : "";
-    return { finalText: finalText || "(empty response)", toolErrors };
+    return { finalText: finalText || "(empty response)", toolTranscripts };
   }
 
   private getCustomContextState(): CustomContextState {
@@ -590,7 +590,7 @@ function renderHistoryContext(history: SessionHistoryEntry[]): string {
 function createAgentTools(
   session: SessionRuntime,
   progress: TelegramProgressReporter,
-  toolErrors: string[],
+  toolTranscripts: string[],
 ) {
   async function runTool<T>(
     name: string,
@@ -600,12 +600,13 @@ function createAgentTools(
     await progress.onToolPreview(name, args);
     try {
       const result = await execute();
+      toolTranscripts.push(renderToolTranscript(name, true, args, result));
       await progress.onStepSummary({ tools: [name], okCount: 1, errorCount: 0 });
       return result;
     } catch (error) {
       const detail = redactSensitiveText(compactErrorMessage(error));
       await progress.onStepSummary({ tools: [name], okCount: 0, errorCount: 1, error: detail });
-      toolErrors.push([`tool=${name}`, "ok=false", `error=${detail}`, `output=${detail}`].join("\n"));
+      toolTranscripts.push(renderToolTranscript(name, false, args, undefined, detail));
       console.error("tool-call-failed", { tool: name, error: detail });
       return { ok: false, error: detail };
     }
@@ -645,6 +646,41 @@ function createAgentTools(
         runTool("custom_context_delete", params as Record<string, unknown>, async () => session.deleteCustomContextPayload(params)),
     }),
   };
+}
+
+function renderToolTranscript(
+  name: string,
+  ok: boolean,
+  args: Record<string, unknown>,
+  output?: unknown,
+  error?: string,
+): string {
+  const serializedArgs = redactSensitiveText(serializeToolArgsForHistory(name, args));
+  const outputText = redactSensitiveText(truncateForLog(serializeUnknown(output), 1200));
+  return [
+    `tool=${name}`,
+    `ok=${ok}`,
+    `args=${serializedArgs}`,
+    ok ? `output=${outputText}` : `error=${error || "tool failed"}`,
+  ].join("\n");
+}
+
+function serializeToolArgsForHistory(name: string, args: Record<string, unknown>): string {
+  if (name === "execute") {
+    const code = typeof args.code === "string" ? truncateForLog(args.code, 1200) : "";
+    const input = Object.prototype.hasOwnProperty.call(args, "input") ? truncateForLog(serializeUnknown(args.input), 320) : "";
+    return JSON.stringify({ code, ...(input ? { input } : {}) });
+  }
+  return truncateForLog(serializeUnknown(args), 700);
+}
+
+function serializeUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value ?? "");
+  }
 }
 
 class TelegramProgressReporter {
