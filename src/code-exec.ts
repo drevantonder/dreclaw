@@ -713,11 +713,8 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   return Math.trunc(value);
 }
 
-function bumpHostCall(stats: HostStats, maxHostCalls: number): void {
+function bumpHostCall(stats: HostStats, _maxHostCalls: number): void {
   stats.hostCalls += 1;
-  if (stats.hostCalls > maxHostCalls) {
-    throw new Error("Maximum host calls exceeded");
-  }
 }
 
 function truncate(input: string, maxChars: number): string {
