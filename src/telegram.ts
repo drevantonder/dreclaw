@@ -9,6 +9,7 @@ type TelegramParseMode = "HTML" | "MarkdownV2";
 interface TelegramSendOptions {
   parseMode?: TelegramParseMode;
   disableWebPagePreview?: boolean;
+  rawHtml?: boolean;
 }
 
 export function parseUpdate(body: unknown): TelegramUpdate | null {
@@ -36,7 +37,9 @@ export async function sendTelegramMessage(
 ): Promise<number | null> {
   const url = `${TELEGRAM_API}/bot${token}/sendMessage`;
   const parseMode = options.parseMode ?? "HTML";
-  const safeText = clampTelegramText(parseMode === "HTML" ? formatTelegramHtml(text) : text);
+  const safeText = clampTelegramText(
+    parseMode === "HTML" ? (options.rawHtml ? String(text ?? "") : formatTelegramHtml(text)) : text,
+  );
   const body = {
     chat_id: chatId,
     text: safeText,

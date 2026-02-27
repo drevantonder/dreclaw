@@ -678,9 +678,9 @@ class TelegramProgressReporter {
     if (this.mode === "compact") return;
     const preview = buildToolPreview(name, args);
     if (!preview) return;
-    if (this.seenPreviews.has(preview)) return;
-    this.seenPreviews.add(preview);
-    await this.safeSendMessage(preview);
+    if (this.seenPreviews.has(preview.key)) return;
+    this.seenPreviews.add(preview.key);
+    await this.safeSendMessage(preview.text, preview.rawHtml ?? false);
   }
 
   async onStepSummary(params: {
@@ -696,11 +696,11 @@ class TelegramProgressReporter {
     await this.safeSendMessage(`${base}${detail}`);
   }
 
-  private async safeSendMessage(text: string): Promise<void> {
+  private async safeSendMessage(text: string, rawHtml = false): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
     try {
-      await sendTelegramMessage(this.token, this.chatId, trimmed);
+      await sendTelegramMessage(this.token, this.chatId, trimmed, { rawHtml });
     } catch (error) {
       console.warn("telegram-progress-send-failed", {
         chatId: this.chatId,
@@ -710,27 +710,45 @@ class TelegramProgressReporter {
   }
 }
 
-function buildToolPreview(name: string, args: Record<string, unknown>): string | null {
+function buildToolPreview(name: string, args: Record<string, unknown>): { key: string; text: string; rawHtml?: boolean } | null {
   if (name === "search") {
     const query = typeof args.query === "string" ? truncateForLog(args.query, 80) : "";
-    if (!query) return "Searching runtime...";
-    return `Searching \"${query}\"...`;
+    if (!query) return { key: "search:runtime", text: "Searching runtime..." };
+    return { key: `search:${query}`, text: `Searching \"${query}\"...` };
   }
   if (name === "execute") {
-    return "Running code snippet...";
+    const code = typeof args.code === "string" ? args.code.trim() : "";
+    if (!code) {
+      return { key: "execute:empty", text: "Running code snippet..." };
+    }
+    const snippet = truncateCodePreview(code, 1200);
+    return {
+      key: `execute:${snippet}`,
+      rawHtml: true,
+      text: `Executing JavaScript:\n<pre><code>${escapeHtml(snippet)}</code></pre>`,
+    };
   }
   if (name === "custom_context_get") {
-    return "Checking saved context...";
+    return { key: "custom_context_get", text: "Checking saved context..." };
   }
   if (name === "custom_context_set") {
     const id = typeof args.id === "string" ? truncateForLog(args.id, 40) : "memory";
-    return `Updating ${id}...`;
+    return { key: `custom_context_set:${id}`, text: `Updating ${id}...` };
   }
   if (name === "custom_context_delete") {
     const id = typeof args.id === "string" ? truncateForLog(args.id, 40) : "memory";
-    return `Removing ${id}...`;
+    return { key: `custom_context_delete:${id}`, text: `Removing ${id}...` };
   }
   return null;
+}
+
+function truncateCodePreview(code: string, maxChars: number): string {
+  if (code.length <= maxChars) return code;
+  return `${code.slice(0, maxChars - 14)}\n// ...truncated`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
 function extractThinkingBlocks(messages: unknown[]): string[] {

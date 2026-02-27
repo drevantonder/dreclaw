@@ -459,6 +459,39 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Executed.");
   });
 
+  it("shows execute tool code block preview in debug mode", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    await callWebhook(env, 4131, "/debug on");
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "execute",
+            arguments: { code: "const total = 1 + 2;\nreturn total;" },
+          },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Done." }],
+      },
+    );
+
+    await callWebhook(env, 4132, "run quick code");
+
+    const codePreview = sends.find((message) => message.text.includes("<pre><code>const total = 1 + 2;"));
+    expect(codePreview).toBeDefined();
+    expect(codePreview?.text).toContain("return total;");
+    expect(sends.some((message) => message.text.includes("Step:</b> tools=[execute] ok=1 error=0"))).toBe(true);
+    expect(sends.at(-1)?.text).toContain("Done.");
+  });
+
   it("keeps custom context across /reset", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
