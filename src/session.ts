@@ -565,14 +565,14 @@ function createAgentTools(
     args: Record<string, unknown>,
     execute: () => Promise<T> | T,
   ): Promise<T | { ok: false; error: string }> {
-    await progress.onToolStart(name, args);
+    await progress.onToolPreview(name, args);
     try {
       const result = await execute();
-      await progress.onToolResult(name, true, redactSensitiveText(serializeToolOutput(result)));
+      await progress.onStepSummary({ tools: [name], okCount: 1, errorCount: 0 });
       return result;
     } catch (error) {
       const detail = redactSensitiveText(compactErrorMessage(error));
-      await progress.onToolResult(name, false, detail, detail);
+      await progress.onStepSummary({ tools: [name], okCount: 0, errorCount: 1, error: detail });
       toolErrors.push([`tool=${name}`, "ok=false", `error=${detail}`, `output=${detail}`].join("\n"));
       console.error("tool-call-failed", { tool: name, error: detail });
       return { ok: false, error: detail };
@@ -615,21 +615,12 @@ function createAgentTools(
   };
 }
 
-function serializeToolOutput(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value ?? "");
-  }
-}
-
 class TelegramProgressReporter {
   private readonly token: string;
   private readonly chatId: number;
   private readonly mode: ProgressMode;
   private readonly showThinking: boolean;
-  private toolStartAtByName = new Map<string, number>();
+  private seenPreviews = new Set<string>();
 
   constructor(params: {
     token: string;
@@ -652,27 +643,26 @@ class TelegramProgressReporter {
     }
   }
 
-  async onToolStart(name: string, args: Record<string, unknown>): Promise<void> {
+  async onToolPreview(name: string, args: Record<string, unknown>): Promise<void> {
     if (this.mode === "compact") return;
-    this.toolStartAtByName.set(name, Date.now());
-    await this.safeSendMessage(`Tool call: ${name} ${truncateForLog(JSON.stringify(args), 420)}`);
+    const preview = buildToolPreview(name, args);
+    if (!preview) return;
+    if (this.seenPreviews.has(preview)) return;
+    this.seenPreviews.add(preview);
+    await this.safeSendMessage(preview);
   }
 
-  async onToolResult(name: string, ok: boolean, output: string, error?: string): Promise<void> {
+  async onStepSummary(params: {
+    tools: string[];
+    okCount: number;
+    errorCount: number;
+    error?: string;
+  }): Promise<void> {
     if (this.mode === "compact") return;
-    const startedAt = this.toolStartAtByName.get(name);
-    this.toolStartAtByName.delete(name);
-    const elapsedMs = startedAt ? Date.now() - startedAt : 0;
-
-    if (!ok) {
-      const detail = truncateForLog(error || output || "error", 700);
-      await this.safeSendMessage(`Tool error: ${name}${detail ? ` ${detail}` : ""}`);
-      return;
-    }
-
-    const detail = truncateForLog(output, 700);
-    const elapsed = elapsedMs >= 3000 ? ` (${Math.round(elapsedMs / 100) / 10}s)` : "";
-    await this.safeSendMessage(`Tool ok: ${name}${elapsed}${detail ? ` ${detail}` : ""}`);
+    const names = params.tools.join(", ");
+    const base = `Step: tools=[${names}] ok=${params.okCount} error=${params.errorCount}`;
+    const detail = params.error ? ` ${truncateForLog(params.error, 220)}` : "";
+    await this.safeSendMessage(`${base}${detail}`);
   }
 
   private async safeSendMessage(text: string): Promise<void> {
@@ -687,6 +677,29 @@ class TelegramProgressReporter {
       });
     }
   }
+}
+
+function buildToolPreview(name: string, args: Record<string, unknown>): string | null {
+  if (name === "search") {
+    const query = typeof args.query === "string" ? truncateForLog(args.query, 80) : "";
+    if (!query) return "Searching runtime...";
+    return `Searching \"${query}\"...`;
+  }
+  if (name === "execute") {
+    return "Running code snippet...";
+  }
+  if (name === "custom_context_get") {
+    return "Checking saved context...";
+  }
+  if (name === "custom_context_set") {
+    const id = typeof args.id === "string" ? truncateForLog(args.id, 40) : "memory";
+    return `Updating ${id}...`;
+  }
+  if (name === "custom_context_delete") {
+    const id = typeof args.id === "string" ? truncateForLog(args.id, 40) : "memory";
+    return `Removing ${id}...`;
+  }
+  return null;
 }
 
 function extractThinkingBlocks(messages: unknown[]): string[] {

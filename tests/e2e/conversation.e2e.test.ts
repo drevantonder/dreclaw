@@ -197,7 +197,7 @@ describe("conversation e2e", () => {
     expect(systemPrompt.indexOf('id="memory"')).toBeLessThan(systemPrompt.indexOf('id="soul"'));
   });
 
-  it("supports debug mode via /debug and shows custom_context tool lifecycle", async () => {
+  it("supports debug mode via /debug and shows tool previews + step summary", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
 
@@ -216,8 +216,8 @@ describe("conversation e2e", () => {
 
     await callWebhook(env, 4010, "show custom context");
 
-    expect(sends.some((message) => message.text.includes("Tool call") && message.text.includes("custom_context_get"))).toBe(true);
-    expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("custom_context_get"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Checking saved context..."))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Step:</b> tools=[custom_context_get] ok=1 error=0"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Loaded.");
   });
 
@@ -241,8 +241,8 @@ describe("conversation e2e", () => {
 
     await callWebhook(env, 4022, "show custom context");
 
-    expect(sends.some((message) => message.text.includes("Tool call") && message.text.includes("custom_context_get"))).toBe(false);
-    expect(sends.some((message) => message.text.includes("Tool ok") && message.text.includes("custom_context_get"))).toBe(false);
+    expect(sends.some((message) => message.text.includes("Checking saved context..."))).toBe(false);
+    expect(sends.some((message) => message.text.includes("Step:</b> tools=[custom_context_get]"))).toBe(false);
   });
 
   it("supports custom_context.set then get", async () => {
