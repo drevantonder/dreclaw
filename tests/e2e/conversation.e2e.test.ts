@@ -443,7 +443,7 @@ describe("conversation e2e", () => {
             id: "call-2",
             name: "execute",
             arguments: {
-              code: "globalThis.__exec_result = { sum: 1 + 2, inputName: input?.name ?? null, hasPkg: !!globalThis.pkg }",
+              code: "const value = await Promise.resolve(1 + 2);\nglobalThis.__exec_result = { sum: value, inputName: input?.name ?? null, hasPkg: !!globalThis.pkg };\nglobalThis.__exec_result;",
               input: { name: "dre" },
             },
           },

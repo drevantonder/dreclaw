@@ -239,8 +239,7 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     const bootstrapResult = await vm.evalCodeAsync(bootstrapRuntimeSource());
     vm.unwrapResult(bootstrapResult).dispose();
 
-    const runResult = await vm.evalCodeAsync(code, "execute.js");
-    const valueHandle = vm.unwrapResult(runResult);
+    const valueHandle = await evalUserCodeWithAwaitFallback(vm, code);
     vm.setProp(vm.global, "__last_eval_result", valueHandle);
     valueHandle.dispose();
 
@@ -290,6 +289,64 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     vm.runtime.removeInterruptHandler();
     vm.dispose();
   }
+}
+
+async function evalUserCodeWithAwaitFallback(vm: QuickJsContext, code: string) {
+  try {
+    const runResult = await vm.evalCodeAsync(code, "execute.js");
+    return vm.unwrapResult(runResult);
+  } catch (error) {
+    if (!shouldRetryTopLevelAwait(error, code)) {
+      throw error;
+    }
+    const wrapped = wrapTopLevelAwaitCode(code);
+    const runResult = await vm.evalCodeAsync(wrapped, "execute.js");
+    return vm.unwrapResult(runResult);
+  }
+}
+
+function shouldRetryTopLevelAwait(error: unknown, code: string): boolean {
+  if (!/\bawait\b/.test(code)) return false;
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  const lowered = text.toLowerCase();
+  return lowered.includes("expecting ';'") || lowered.includes("unexpected token") || lowered.includes("await");
+}
+
+function wrapTopLevelAwaitCode(code: string): string {
+  const body = maybeInjectImplicitReturn(code);
+  return `(async () => {\n${indentCode(body, 2)}\n})()`;
+}
+
+function maybeInjectImplicitReturn(code: string): string {
+  const lines = code.split("\n");
+  let index = lines.length - 1;
+  while (index >= 0 && !lines[index]?.trim()) index -= 1;
+  if (index < 0) return code;
+  const target = lines[index].trim();
+  if (!looksLikeExpressionStatement(target)) {
+    return code;
+  }
+  const leading = /^\s*/.exec(lines[index])?.[0] ?? "";
+  const expression = target.replace(/;\s*$/, "");
+  lines[index] = `${leading}return ${expression};`;
+  return lines.join("\n");
+}
+
+function looksLikeExpressionStatement(line: string): boolean {
+  if (!line) return false;
+  if (line.startsWith("//") || line.startsWith("/*") || line === "{" || line === "}") return false;
+  if (/^(const|let|var|if|for|while|switch|try|catch|finally|function|class|return|throw|import|export)\b/.test(line)) {
+    return false;
+  }
+  return true;
+}
+
+function indentCode(code: string, spaces: number): string {
+  const prefix = " ".repeat(spaces);
+  return code
+    .split("\n")
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
 }
 
 function registerHostApi(
