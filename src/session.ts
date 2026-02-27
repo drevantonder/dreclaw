@@ -49,7 +49,7 @@ interface AgentRunResult {
 }
 
 const SYSTEM_PROMPT =
-  "custom_context is persistent editable startup context. Keep it current using provided tools. execute supports async/await and network requests via fetch in the QuickJS runtime.";
+  "custom_context is persistent editable startup context. Keep it current using provided tools. execute supports async/await and network requests via fetch in the QuickJS runtime. Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available.";
 const MAX_CUSTOM_CONTEXT_ITEMS = 48;
 const MAX_CUSTOM_CONTEXT_TEXT_CHARS = 10_000;
 const CUSTOM_CONTEXT_ID_RE = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
