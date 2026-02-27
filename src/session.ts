@@ -49,7 +49,7 @@ interface AgentRunResult {
 }
 
 const SYSTEM_PROMPT =
-  "custom_context is persistent editable startup context. Keep it current using provided tools. execute supports async/await and network requests via fetch in the QuickJS runtime. Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
+  "custom_context is persistent editable startup context. Keep it current using provided tools. execute supports async/await and network requests via fetch in the QuickJS runtime. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
 const MAX_CUSTOM_CONTEXT_ITEMS = 48;
 const MAX_CUSTOM_CONTEXT_TEXT_CHARS = 10_000;
 const CUSTOM_CONTEXT_ID_RE = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
@@ -615,7 +615,7 @@ function createAgentTools(
 
   return {
     search: tool({
-      description: "Search runtime capabilities and installed packages",
+      description: "Inspect local QuickJS runtime capabilities and installed packages (not web search)",
       inputSchema: z.object({ query: z.string().optional() }),
       execute: async (params) =>
         runTool("search", params as Record<string, unknown>, async () => session.searchCodePayload({ query: params.query })),
