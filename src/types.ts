@@ -46,8 +46,10 @@ export interface Env {
   MEMORY_MAX_INJECT_TOKENS?: string;
   MEMORY_REFLECTION_EVERY_TURNS?: string;
   MEMORY_EMBEDDING_MODEL?: string;
+  RUN_SLICE_STEPS?: string;
   DRECLAW_DB: D1Database;
   SESSION_RUNTIME: DurableObjectNamespace;
+  AGENT_RUN_QUEUE?: Queue;
 }
 
 export interface TelegramUpdate {

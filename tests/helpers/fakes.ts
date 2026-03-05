@@ -8,6 +8,7 @@ export class FakeD1 {
   readonly oauthStates = new Map<string, Record<string, unknown>>();
   readonly oauthTokens = new Map<string, Record<string, unknown>>();
   readonly vfsEntries = new Map<string, Record<string, unknown>>();
+  readonly agentRuns = new Map<string, Record<string, unknown>>();
   vfsRevision = 0;
 
   prepare(sql: string) {
@@ -28,6 +29,9 @@ export class FakeD1 {
         .filter((row) => row.deleted_at === null || row.deleted_at === undefined)
         .sort((a, b) => String(a.path).localeCompare(String(b.path)));
       return { results: rows };
+    }
+    if (sql.includes("FROM agent_runs")) {
+      return { results: [...this.agentRuns.values()] };
     }
     return { results: [] };
   }
@@ -112,6 +116,91 @@ export class FakeD1 {
       this.vfsRevision += 1;
       return { meta: { changes: 1 } };
     }
+    if (sql.includes("INSERT OR IGNORE INTO agent_runs")) {
+      const id = String(args[0]);
+      const updateId = Number(args[1]);
+      if ([...this.agentRuns.values()].some((row) => Number(row.update_id) === updateId)) {
+        return { meta: { changes: 0 } };
+      }
+      this.agentRuns.set(id, {
+        id,
+        update_id: updateId,
+        chat_id: Number(args[2]),
+        payload_json: String(args[3]),
+        status: "queued",
+        attempts: 0,
+        result_text: null,
+        error_message: null,
+        created_at: String(args[4]),
+        updated_at: String(args[5]),
+        delivered_at: null,
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE agent_runs SET status = 'running'")) {
+      const id = String(args[1]);
+      const current = this.agentRuns.get(id);
+      if (!current) return { meta: { changes: 0 } };
+      if (!["queued", "running"].includes(String(current.status))) return { meta: { changes: 0 } };
+      current.status = "running";
+      current.error_message = null;
+      current.updated_at = String(args[0]);
+      this.agentRuns.set(id, current);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE agent_runs SET status = 'completed'")) {
+      const id = String(args[2]);
+      const current = this.agentRuns.get(id);
+      if (!current) return { meta: { changes: 0 } };
+      current.status = "completed";
+      current.result_text = String(args[0]);
+      current.error_message = null;
+      current.updated_at = String(args[1]);
+      this.agentRuns.set(id, current);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE agent_runs SET status = 'queued', payload_json")) {
+      const id = String(args[2]);
+      const current = this.agentRuns.get(id);
+      if (!current) return { meta: { changes: 0 } };
+      current.status = "queued";
+      current.payload_json = String(args[0]);
+      current.updated_at = String(args[1]);
+      this.agentRuns.set(id, current);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE agent_runs SET status = 'queued'")) {
+      const id = String(args[2]);
+      const current = this.agentRuns.get(id);
+      if (!current) return { meta: { changes: 0 } };
+      current.status = "queued";
+      current.attempts = Number(current.attempts ?? 0) + 1;
+      current.error_message = String(args[0]);
+      current.updated_at = String(args[1]);
+      this.agentRuns.set(id, current);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE agent_runs SET delivered_at")) {
+      const id = String(args[2]);
+      const current = this.agentRuns.get(id);
+      if (!current || current.delivered_at) return { meta: { changes: 0 } };
+      current.delivered_at = String(args[0]);
+      current.updated_at = String(args[1]);
+      this.agentRuns.set(id, current);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE agent_runs SET status = 'cancelled'")) {
+      const chatId = Number(args[1]);
+      let changes = 0;
+      for (const run of this.agentRuns.values()) {
+        if (Number(run.chat_id) === chatId && ["queued", "running"].includes(String(run.status))) {
+          run.status = "cancelled";
+          run.updated_at = String(args[0]);
+          changes += 1;
+        }
+      }
+      return { meta: { changes } };
+    }
     return { meta: { changes: 0 } };
   }
 
@@ -136,6 +225,10 @@ export class FakeD1 {
     if (sql.includes("SELECT COUNT(*) AS count FROM vfs_entries")) {
       const count = [...this.vfsEntries.values()].filter((row) => row.deleted_at === null || row.deleted_at === undefined).length;
       return { count };
+    }
+    if (sql.includes("SELECT id, update_id, chat_id, payload_json, status, attempts, result_text, error_message, created_at, updated_at, delivered_at FROM agent_runs")) {
+      const id = String(args[0]);
+      return this.agentRuns.get(id) ?? null;
     }
     return null;
   }
@@ -170,6 +263,7 @@ class FakeDurableObjectState {
 export function createEnv() {
   const db = new FakeD1();
   const runtimes = new Map<string, SessionRuntime>();
+  const queueMessages: unknown[] = [];
 
   const base = {
     TELEGRAM_BOT_TOKEN: "test-bot-token",
@@ -209,10 +303,16 @@ export function createEnv() {
     },
   };
 
+  const fakeQueue = {
+    send: async (body: unknown) => {
+      queueMessages.push(body);
+    },
+  } as unknown as Queue;
+
   const env: Env = {
     ...base,
     SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
   };
 
-  return { env, db };
+  return { env, db, queueMessages, fakeQueue };
 }

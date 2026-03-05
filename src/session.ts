@@ -76,6 +76,24 @@ interface AgentRunResult {
   toolTranscripts: string[];
 }
 
+interface AgentRunCheckpoint {
+  messages: ModelMessage[];
+  toolTranscripts: string[];
+  imageBlocks: string[];
+}
+
+interface QueueRunStepRequest {
+  sessionRequest: SessionRequest;
+  checkpoint?: AgentRunCheckpoint;
+  sliceSteps?: number;
+}
+
+interface QueueRunStepResponse {
+  done: boolean;
+  text?: string;
+  checkpoint?: AgentRunCheckpoint;
+}
+
 const SYSTEM_PROMPT =
   "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute supports async/await, network requests via fetch, and explicit memory APIs (memory.find, memory.save, memory.remove) in the QuickJS runtime. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
@@ -100,6 +118,13 @@ export class SessionRuntime implements DurableObject {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
     await this.load();
+    const url = new URL(request.url);
+    if (url.pathname === "/run-step") {
+      const payload = (await request.json()) as QueueRunStepRequest;
+      const response = await this.runQueueStep(payload);
+      return Response.json(response);
+    }
+
     const payload = (await request.json()) as SessionRequest;
     const sessionId = this.state.id.toString();
 
@@ -113,6 +138,54 @@ export class SessionRuntime implements DurableObject {
       await this.save();
       return Response.json({ ok: false, text: `Failed: ${message}` } satisfies SessionResponse);
     }
+  }
+
+  private async runQueueStep(payload: QueueRunStepRequest): Promise<QueueRunStepResponse> {
+    const sessionRequest = payload.sessionRequest;
+    this.activeChatId = sessionRequest.message.chat.id;
+    await this.migrateLegacyCustomContext(sessionRequest.message.chat.id);
+
+    const userText = sessionRequest.message.text ?? sessionRequest.message.caption ?? "";
+    const text = userText.trim();
+    const checkpoint = payload.checkpoint;
+    const imageBlocks = checkpoint?.imageBlocks ?? (await this.loadImages(sessionRequest.message));
+    const runtime = this.getRuntimeConfig();
+    const run = await this.runAgentSlice(runtime, {
+      userText: text,
+      imageBlocks,
+      chatId: sessionRequest.message.chat.id,
+      messages: checkpoint?.messages,
+      toolTranscripts: checkpoint?.toolTranscripts ?? [],
+      sliceSteps: normalizeSliceSteps(payload.sliceSteps),
+    });
+
+    if (!run.done) {
+      return {
+        done: false,
+        checkpoint: {
+          messages: run.messages,
+          toolTranscripts: run.toolTranscripts,
+          imageBlocks,
+        },
+      };
+    }
+
+    const responseText = run.finalText.trim() || "(empty response)";
+    this.pushHistory({ role: "user", content: text || "[image]" });
+    for (const transcript of run.toolTranscripts) {
+      this.pushHistory({ role: "tool", content: transcript });
+    }
+    this.pushHistory({ role: "assistant", content: responseText });
+
+    await this.persistMemoryTurn({
+      chatId: sessionRequest.message.chat.id,
+      userText: text || "[image]",
+      assistantText: responseText,
+      toolTranscripts: run.toolTranscripts,
+    });
+
+    await this.save();
+    return { done: true, text: responseText };
   }
 
   private async load(): Promise<void> {
@@ -258,27 +331,52 @@ export class SessionRuntime implements DurableObject {
     draftReporter: TelegramDraftReporter,
     chatId: number,
   ): Promise<AgentRunResult> {
-    const model = this.createModel(runtime);
-    const historyContext = renderHistoryContext(this.stateData.history);
-    const nowIso = new Date().toISOString();
-    const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${nowIso}`];
-    if (historyContext) {
-      promptSections.push(`Recent context:\n${historyContext}`);
-    }
-    const memoryContext = await this.renderMemoryContext(chatId, userText);
-    if (memoryContext) {
-      promptSections.push(`Memory context:\n${memoryContext}`);
-    }
+    const result = await this.runAgentSlice(runtime, {
+      userText,
+      imageBlocks,
+      chatId,
+      messages: undefined,
+      toolTranscripts: [],
+      sliceSteps: 8,
+      progress,
+      draftReporter,
+    });
+    return {
+      finalText: result.finalText || "(empty response)",
+      toolTranscripts: result.toolTranscripts,
+    };
+  }
 
-    const toolTranscripts: string[] = [];
+  private async runAgentSlice(
+    runtime: RuntimeConfig,
+    params: {
+      userText: string;
+      imageBlocks: string[];
+      chatId: number;
+      messages?: ModelMessage[];
+      toolTranscripts: string[];
+      sliceSteps: number;
+      progress?: TelegramProgressReporter;
+      draftReporter?: TelegramDraftReporter;
+    },
+  ): Promise<{ done: boolean; finalText: string; toolTranscripts: string[]; messages: ModelMessage[] }> {
+    const model = this.createModel(runtime);
+    const messages =
+      params.messages && params.messages.length
+        ? params.messages
+        : await this.buildPromptMessages(params.chatId, params.userText, params.imageBlocks);
+
+    const toolTranscripts = [...params.toolTranscripts];
+    const progress = params.progress ?? new SilentProgressReporter();
+    const draftReporter = params.draftReporter ?? new SilentDraftReporter();
     const agent = new ToolLoopAgent({
       model,
       tools: createAgentTools(this, progress, toolTranscripts),
-      stopWhen: stepCountIs(8),
+      stopWhen: stepCountIs(params.sliceSteps),
     });
 
     const stream = await agent.stream({
-      messages: buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks),
+      messages,
     });
     for await (const delta of stream.textStream) {
       await draftReporter.onTextDelta(delta);
@@ -289,7 +387,28 @@ export class SessionRuntime implements DurableObject {
     await progress.sendThinkingBlocks(extractThinkingBlocks(response.messages));
     const generatedText = await stream.text;
     const finalText = typeof generatedText === "string" ? generatedText.trim() : "";
-    return { finalText: finalText || "(empty response)", toolTranscripts };
+    const nextMessages = (response.messages as unknown as ModelMessage[]) ?? messages;
+    const done = Boolean(finalText || hasAssistantText(nextMessages));
+    return {
+      done,
+      finalText: finalText || extractAssistantText(nextMessages),
+      toolTranscripts,
+      messages: nextMessages,
+    };
+  }
+
+  private async buildPromptMessages(chatId: number, userText: string, imageBlocks: string[]): Promise<ModelMessage[]> {
+    const historyContext = renderHistoryContext(this.stateData.history);
+    const nowIso = new Date().toISOString();
+    const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${nowIso}`];
+    if (historyContext) {
+      promptSections.push(`Recent context:\n${historyContext}`);
+    }
+    const memoryContext = await this.renderMemoryContext(chatId, userText);
+    if (memoryContext) {
+      promptSections.push(`Memory context:\n${memoryContext}`);
+    }
+    return buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks);
   }
 
   private async handleGoogleCommand(text: string, chatId: number, telegramUserId: number): Promise<SessionResponse> {
@@ -844,7 +963,16 @@ function renderHistoryContext(history: SessionHistoryEntry[]): string {
 
 function createAgentTools(
   session: SessionRuntime,
-  progress: TelegramProgressReporter,
+  progress: {
+    onToolPreview(name: string, args: Record<string, unknown>): Promise<void>;
+    onStepSummary(params: {
+      tools: string[];
+      okCount: number;
+      errorCount: number;
+      error?: string;
+      resultPreview?: string;
+    }): Promise<void>;
+  },
   toolTranscripts: string[],
 ) {
   async function runTool<T>(
@@ -1046,6 +1174,36 @@ class TelegramDraftReporter {
   }
 }
 
+class SilentProgressReporter {
+  async sendThinkingBlocks(_blocks: string[]): Promise<void> {
+    return;
+  }
+
+  async onToolPreview(_name: string, _args: Record<string, unknown>): Promise<void> {
+    return;
+  }
+
+  async onStepSummary(_params: {
+    tools: string[];
+    okCount: number;
+    errorCount: number;
+    error?: string;
+    resultPreview?: string;
+  }): Promise<void> {
+    return;
+  }
+}
+
+class SilentDraftReporter {
+  async onTextDelta(_delta: string): Promise<void> {
+    return;
+  }
+
+  async flush(): Promise<void> {
+    return;
+  }
+}
+
 function buildTelegramDraftId(updateId: number): number {
   const numericUpdateId = Number.isFinite(updateId) ? Math.trunc(updateId) : 0;
   const normalized = Math.abs(numericUpdateId) % 2_000_000_000;
@@ -1181,4 +1339,33 @@ function redactSensitiveText(input: string): string {
     redacted = redacted.replace(pattern, (_match, prefix: string) => `${prefix}[REDACTED]`);
   }
   return redacted;
+}
+
+function hasAssistantText(messages: ModelMessage[]): boolean {
+  return extractAssistantText(messages).length > 0;
+}
+
+function extractAssistantText(messages: ModelMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as { role?: unknown; content?: unknown };
+    if (message.role !== "assistant") continue;
+    const content = message.content;
+    if (typeof content === "string") return content.trim();
+    if (Array.isArray(content)) {
+      const text = content
+        .filter((block): block is { type?: unknown; text?: unknown } => Boolean(block && typeof block === "object"))
+        .filter((block) => block.type === "text")
+        .map((block) => String(block.text ?? ""))
+        .join("\n")
+        .trim();
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function normalizeSliceSteps(value: unknown): number {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 2;
+  return Math.min(8, Math.max(1, Math.trunc(numeric)));
 }

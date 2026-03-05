@@ -37,6 +37,20 @@ export interface PutVfsEntryInput {
   overwrite: boolean;
 }
 
+export interface AgentRunRecord {
+  id: string;
+  updateId: number;
+  chatId: number;
+  payloadJson: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  attempts: number;
+  resultText: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt: string | null;
+}
+
 export interface MemoryEpisodeRecord {
   id: string;
   chatId: number;
@@ -243,6 +257,106 @@ export async function deleteVfsEntry(db: D1Database, path: string, nowIso: strin
   }, 150);
 }
 
+export async function createAgentRun(
+  db: D1Database,
+  input: {
+    id: string;
+    updateId: number;
+    chatId: number;
+    payloadJson: string;
+    nowIso: string;
+  },
+): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare(
+        "INSERT OR IGNORE INTO agent_runs (id, update_id, chat_id, payload_json, status, attempts, result_text, error_message, created_at, updated_at, delivered_at) VALUES (?, ?, ?, ?, 'queued', 0, NULL, NULL, ?, ?, NULL)",
+      )
+      .bind(input.id, input.updateId, input.chatId, input.payloadJson, input.nowIso, input.nowIso)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
+export async function getAgentRun(db: D1Database, id: string): Promise<AgentRunRecord | null> {
+  return retryOnce(async () => {
+    const row = await db
+      .prepare(
+        "SELECT id, update_id, chat_id, payload_json, status, attempts, result_text, error_message, created_at, updated_at, delivered_at FROM agent_runs WHERE id = ?",
+      )
+      .bind(id)
+      .first<Record<string, unknown>>();
+    return row ? mapAgentRunRecord(row) : null;
+  }, 150);
+}
+
+export async function markAgentRunRunning(db: D1Database, id: string, nowIso: string): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare(
+        "UPDATE agent_runs SET status = 'running', error_message = NULL, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')",
+      )
+      .bind(nowIso, id)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
+export async function markAgentRunCompleted(db: D1Database, id: string, resultText: string, nowIso: string): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare("UPDATE agent_runs SET status = 'completed', result_text = ?, error_message = NULL, updated_at = ? WHERE id = ?")
+      .bind(resultText, nowIso, id)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
+export async function markAgentRunRetryableFailure(
+  db: D1Database,
+  id: string,
+  errorMessage: string,
+  nowIso: string,
+): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare("UPDATE agent_runs SET status = 'queued', attempts = attempts + 1, error_message = ?, updated_at = ? WHERE id = ?")
+      .bind(errorMessage, nowIso, id)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
+export async function updateAgentRunPayload(db: D1Database, id: string, payloadJson: string, nowIso: string): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare("UPDATE agent_runs SET status = 'queued', payload_json = ?, updated_at = ? WHERE id = ?")
+      .bind(payloadJson, nowIso, id)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
+export async function claimAgentRunDelivery(db: D1Database, id: string, nowIso: string): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare("UPDATE agent_runs SET delivered_at = ?, updated_at = ? WHERE id = ? AND delivered_at IS NULL")
+      .bind(nowIso, nowIso, id)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
+export async function cancelActiveRunsForChat(db: D1Database, chatId: number, nowIso: string): Promise<number> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare("UPDATE agent_runs SET status = 'cancelled', updated_at = ? WHERE chat_id = ? AND status IN ('queued', 'running')")
+      .bind(nowIso, chatId)
+      .run();
+    return Number(result.meta.changes ?? 0);
+  }, 150);
+}
+
 function mapGoogleOAuthStateRecord(row: Record<string, unknown>): GoogleOAuthStateRecord {
   return {
     state: String(row.state ?? ""),
@@ -283,6 +397,27 @@ function mapVfsEntryRecord(row: Record<string, unknown>): VfsEntryRecord {
     version: Number(row.version ?? 0),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapAgentRunRecord(row: Record<string, unknown>): AgentRunRecord {
+  const status = String(row.status ?? "queued");
+  const normalizedStatus: AgentRunRecord["status"] =
+    status === "running" || status === "completed" || status === "failed" || status === "cancelled"
+      ? status
+      : "queued";
+  return {
+    id: String(row.id ?? ""),
+    updateId: Number(row.update_id ?? 0),
+    chatId: Number(row.chat_id ?? 0),
+    payloadJson: String(row.payload_json ?? "{}"),
+    status: normalizedStatus,
+    attempts: Number(row.attempts ?? 0),
+    resultText: row.result_text === null || row.result_text === undefined ? null : String(row.result_text),
+    errorMessage: row.error_message === null || row.error_message === undefined ? null : String(row.error_message),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+    deliveredAt: row.delivered_at === null || row.delivered_at === undefined ? null : String(row.delivered_at),
   };
 }
 
