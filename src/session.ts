@@ -30,6 +30,7 @@ import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
 import { getMemoryConfig } from "./memory/config";
 import { embedText } from "./memory/embeddings";
+import { executeMemoryFind, executeMemoryRemove, executeMemorySave } from "./memory/execute-api";
 import { retrieveMemoryContext } from "./memory/retrieve";
 import { runMemoryReflection, buildMemoryId } from "./memory/reflection";
 import { extractFacts, scoreSalience } from "./memory/salience";
@@ -70,7 +71,7 @@ interface AgentRunResult {
 }
 
 const SYSTEM_PROMPT =
-  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute supports async/await and network requests via fetch in the QuickJS runtime. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
+  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute supports async/await, network requests via fetch, and explicit memory APIs (memory.find, memory.save, memory.remove) in the QuickJS runtime. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const TELEGRAM_DRAFT_MIN_INTERVAL_MS = 600;
 const TELEGRAM_DRAFT_MIN_DELTA_CHARS = 80;
@@ -461,6 +462,11 @@ export class SessionRuntime implements DurableObject {
           this.stateData.codeRuntime = normalizeCodeRuntimeState(next);
           await this.save();
         },
+        memory: {
+          find: async (input) => this.executeMemoryFindPayload(input),
+          save: async (input) => this.executeMemorySavePayload(input),
+          remove: async (input) => this.executeMemoryRemovePayload(input),
+        },
         googleAuth: {
           getAccessToken: async () => this.getGoogleAccessToken(),
           allowedServices: ["gmail", "drive", "sheets", "docs", "calendar"],
@@ -539,6 +545,49 @@ export class SessionRuntime implements DurableObject {
       const detail = compactErrorMessage(error);
       throw new Error(`Memory config error: ${detail}`);
     }
+  }
+
+  private getSessionChatId(): number {
+    const raw = Number(this.state.id.toString());
+    if (!Number.isFinite(raw)) {
+      throw new Error("Unable to resolve session chat id");
+    }
+    return Math.trunc(raw);
+  }
+
+  private async executeMemoryFindPayload(input: unknown): Promise<unknown> {
+    const memory = this.getMemoryConfigSafe();
+    if (!memory.enabled) throw new Error("Memory is disabled");
+    return executeMemoryFind({
+      env: this.env,
+      db: this.env.DRECLAW_DB,
+      chatId: this.getSessionChatId(),
+      embeddingModel: memory.embeddingModel,
+      payload: input,
+    });
+  }
+
+  private async executeMemorySavePayload(input: unknown): Promise<unknown> {
+    const memory = this.getMemoryConfigSafe();
+    if (!memory.enabled) throw new Error("Memory is disabled");
+    return executeMemorySave({
+      env: this.env,
+      db: this.env.DRECLAW_DB,
+      chatId: this.getSessionChatId(),
+      embeddingModel: memory.embeddingModel,
+      payload: input,
+    });
+  }
+
+  private async executeMemoryRemovePayload(input: unknown): Promise<unknown> {
+    const memory = this.getMemoryConfigSafe();
+    if (!memory.enabled) throw new Error("Memory is disabled");
+    return executeMemoryRemove({
+      env: this.env,
+      db: this.env.DRECLAW_DB,
+      chatId: this.getSessionChatId(),
+      payload: input,
+    });
   }
 
   private async renderMemoryContext(chatId: number, query: string): Promise<string> {

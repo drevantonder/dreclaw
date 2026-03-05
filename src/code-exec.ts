@@ -84,6 +84,11 @@ type HostContext = {
   config: CodeExecutionConfig;
   state: CodeRuntimeState;
   saveState: (state: CodeRuntimeState) => Promise<void>;
+  memory?: {
+    find: (payload: unknown) => Promise<unknown>;
+    save: (payload: unknown) => Promise<unknown>;
+    remove: (payload: unknown) => Promise<unknown>;
+  };
   googleAuth?: {
     getAccessToken: () => Promise<{ accessToken: string; scope: string }>;
     allowedServices?: string[];
@@ -217,6 +222,9 @@ export function searchCodeRuntime(payload: SearchInput, ctx: HostContext): Searc
         "pkg.list",
         "fetch",
         "google.execute",
+        "memory.find",
+        "memory.save",
+        "memory.remove",
         "console.log",
         "console.warn",
         "console.error",
@@ -489,6 +497,42 @@ function registerHostApi(
   });
   vm.setProp(vm.global, "__host_google_call", googleCallFn);
   googleCallFn.dispose();
+
+  const memoryFindFn = vm.newAsyncifiedFunction("__host_memory_find", async (argsHandle) => {
+    bumpHostCall(stats, limits.execMaxHostCalls);
+    if (!ctx.memory) {
+      throw new Error("Memory runtime is not configured");
+    }
+    const args = safeJsonParse(vm.getString(argsHandle));
+    const result = await ctx.memory.find(args);
+    return vm.newString(JSON.stringify(result));
+  });
+  vm.setProp(vm.global, "__host_memory_find", memoryFindFn);
+  memoryFindFn.dispose();
+
+  const memorySaveFn = vm.newAsyncifiedFunction("__host_memory_save", async (argsHandle) => {
+    bumpHostCall(stats, limits.execMaxHostCalls);
+    if (!ctx.memory) {
+      throw new Error("Memory runtime is not configured");
+    }
+    const args = safeJsonParse(vm.getString(argsHandle));
+    const result = await ctx.memory.save(args);
+    return vm.newString(JSON.stringify(result));
+  });
+  vm.setProp(vm.global, "__host_memory_save", memorySaveFn);
+  memorySaveFn.dispose();
+
+  const memoryRemoveFn = vm.newAsyncifiedFunction("__host_memory_remove", async (argsHandle) => {
+    bumpHostCall(stats, limits.execMaxHostCalls);
+    if (!ctx.memory) {
+      throw new Error("Memory runtime is not configured");
+    }
+    const args = safeJsonParse(vm.getString(argsHandle));
+    const result = await ctx.memory.remove(args);
+    return vm.newString(JSON.stringify(result));
+  });
+  vm.setProp(vm.global, "__host_memory_remove", memoryRemoveFn);
+  memoryRemoveFn.dispose();
 }
 
 function bootstrapRuntimeSource(): string {
@@ -624,6 +668,30 @@ globalThis.google = {
       params,
       body,
     }),
+};
+
+globalThis.memory = {
+  find: async (query, opts = {}) => {
+    const options = opts && typeof opts === "object" ? opts : {};
+    const payload = {
+      query: String(query ?? ""),
+      topK: "topK" in options ? Number(options.topK) : undefined,
+    };
+    return JSON.parse(await globalThis.__host_memory_find(JSON.stringify(payload)));
+  },
+  save: async (text, opts = {}) => {
+    const options = opts && typeof opts === "object" ? opts : {};
+    const payload = {
+      text: String(text ?? ""),
+      kind: "kind" in options ? String(options.kind) : undefined,
+      confidence: "confidence" in options ? Number(options.confidence) : undefined,
+    };
+    return JSON.parse(await globalThis.__host_memory_save(JSON.stringify(payload)));
+  },
+  remove: async (target) => {
+    const payload = { target: String(target ?? "") };
+    return JSON.parse(await globalThis.__host_memory_remove(JSON.stringify(payload)));
+  },
 };
 
 globalThis.input = globalThis.__host_input;

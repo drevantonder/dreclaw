@@ -100,6 +100,7 @@ pnpm deploy
 - Memory writes are salience-gated and consolidated through reflection.
 - `search` returns QuickJS runtime capabilities/limits and package inventory.
 - `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, and `fetch` inside the runtime.
+- `execute` also exposes `memory.find(query, opts?)`, `memory.save(text, opts?)`, and `memory.remove(target)` for direct memory control.
 - `execute` exposes `google.execute({...})` for Google API calls.
 
 ### Google OAuth setup

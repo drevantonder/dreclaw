@@ -349,6 +349,34 @@ export async function listMemoryFactsByIds(db: D1Database, chatId: number, ids: 
   }, 150);
 }
 
+export async function getActiveMemoryFactByTarget(
+  db: D1Database,
+  chatId: number,
+  target: string,
+): Promise<MemoryFactRecord | null> {
+  const normalized = target.trim();
+  if (!normalized) return null;
+  return retryOnce(async () => {
+    const row = await db
+      .prepare(
+        "SELECT id, chat_id, kind, text, confidence, created_at, updated_at, superseded_by FROM memory_facts WHERE chat_id = ? AND superseded_by IS NULL AND (id = ? OR lower(text) = lower(?)) LIMIT 1",
+      )
+      .bind(chatId, normalized, normalized)
+      .first<Record<string, unknown>>();
+    return row ? mapMemoryFactRecord(row) : null;
+  }, 150);
+}
+
+export async function deleteMemoryFactById(db: D1Database, chatId: number, factId: string): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare("DELETE FROM memory_facts WHERE chat_id = ? AND id = ?")
+      .bind(chatId, factId)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
 export async function deleteMemoryForChat(db: D1Database, chatId: number): Promise<void> {
   await retryOnce(async () => {
     await db.prepare("DELETE FROM memory_fact_sources WHERE episode_id IN (SELECT id FROM memory_episodes WHERE chat_id = ?)").bind(chatId).run();
