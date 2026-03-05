@@ -17,13 +17,13 @@ v0 security model is intentionally simple and single-user.
 ## Secret boundaries
 
 - Provider auth credentials are stored as Worker secrets.
-- Auth data must never be placed in `custom_context`.
+- Auth data must never be persisted to memory facts/episodes.
 - `/status` and logs must not expose secrets or tokens.
 
 ## Runtime boundaries
 
 - No Sandbox/container dependency in v0.
-- Tool execution is constrained to `search`, `execute`, and custom context management tools.
+- Tool execution is constrained to `search` and `execute`; memory persistence is runtime-managed.
 - `execute` runs in QuickJS with strict resource limits and host-call limits.
 - Google API access in `execute` is gated by stored OAuth refresh token + configured allowed services.
 - Refresh token is encrypted at rest in D1 with `GOOGLE_OAUTH_ENCRYPTION_KEY`.

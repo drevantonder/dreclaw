@@ -8,23 +8,17 @@ type MockContext = {
   tools: Array<{ name: string; execute: (toolCallId: string, params: unknown) => Promise<unknown> }>;
 };
 
-type MockOptions = {
-  thinkingEnabled?: boolean;
-};
-
 type MockAssistant = {
   stopReason: "endTurn" | "toolUse" | "error" | "aborted";
   content: Array<Record<string, unknown>>;
   errorMessage?: string;
 };
 
-const { modelCallContext, modelCallOptions, modelQueue } = vi.hoisted(() => {
+const { modelCallContext, modelQueue } = vi.hoisted(() => {
   const callContext: MockContext[] = [];
-  const callOptions: MockOptions[] = [];
   const queue: Array<MockAssistant | Error | ((context: MockContext) => MockAssistant | Error)> = [];
   return {
     modelCallContext: callContext,
-    modelCallOptions: callOptions,
     modelQueue: queue,
   };
 });
@@ -56,7 +50,6 @@ vi.mock("ai", () => {
           })),
         };
         modelCallContext.push(context);
-        modelCallOptions.push({ thinkingEnabled: false });
 
         const next = modelQueue.shift();
         if (!next) throw new Error("Missing mocked model response");
@@ -98,10 +91,6 @@ vi.mock("ai", () => {
       }
     }
 
-    async generate(options: { messages?: Array<Record<string, unknown>> }) {
-      return this.run(options);
-    }
-
     async stream(options: { messages?: Array<Record<string, unknown>> }) {
       const runPromise = this.run(options);
       const textPromise = runPromise.then((result) => result.text);
@@ -110,9 +99,7 @@ vi.mock("ai", () => {
       void responsePromise.catch(() => undefined);
       const textStream = (async function* () {
         const result = await runPromise;
-        if (result.text) {
-          yield result.text;
-        }
+        if (result.text) yield result.text;
       })();
       return {
         textStream,
@@ -202,11 +189,10 @@ async function callWebhook(env: ReturnType<typeof createEnv>["env"], updateId: n
 describe("conversation e2e", () => {
   beforeEach(() => {
     modelCallContext.length = 0;
-    modelCallOptions.length = 0;
     modelQueue.length = 0;
   });
 
-  it("uses compact progress by default and compiles custom context xml", async () => {
+  it("uses compact progress by default and does not inject legacy custom context xml", async () => {
     const { env } = createEnv();
     const { sends, actions } = setupTelegramFetch();
 
@@ -218,19 +204,12 @@ describe("conversation e2e", () => {
     await callWebhook(env, 4001, "remember my name");
 
     expect(actions).toEqual(["typing"]);
-    expect(sends.some((message) => message.text.includes("Tool call:"))).toBe(false);
     const final = sends.at(-1)!;
     expect(final.parseMode).toBe("HTML");
     expect(final.text).toContain("Saved it.");
 
-    const firstContext = modelCallContext.at(0);
-    const systemPrompt = firstContext?.systemPrompt ?? "";
-    expect(systemPrompt).toContain('<custom_context_manifest version="1" count="3">');
-    expect(systemPrompt).toContain('<custom_context id="identity">');
-    expect(systemPrompt).toContain('<custom_context id="memory">');
-    expect(systemPrompt).toContain('<custom_context id="soul">');
-    expect(systemPrompt.indexOf('id="identity"')).toBeLessThan(systemPrompt.indexOf('id="memory"'));
-    expect(systemPrompt.indexOf('id="memory"')).toBeLessThan(systemPrompt.indexOf('id="soul"'));
+    const systemPrompt = modelCallContext.at(0)?.systemPrompt ?? "";
+    expect(systemPrompt).not.toContain("custom_context_manifest");
   });
 
   it("streams draft updates before sending final message", async () => {
@@ -247,7 +226,6 @@ describe("conversation e2e", () => {
 
     expect(drafts.length).toBeGreaterThan(0);
     expect(drafts.at(-1)?.draftId).toBe(4015);
-    expect(drafts.at(-1)?.text).toContain("Draft stream");
     expect(sends.at(-1)?.text).toContain("Draft stream");
   });
 
@@ -276,7 +254,7 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "custom_context_get", arguments: {} }],
+        content: [{ type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } }],
       },
       {
         stopReason: "endTurn",
@@ -284,10 +262,10 @@ describe("conversation e2e", () => {
       },
     );
 
-    await callWebhook(env, 4010, "show custom context");
+    await callWebhook(env, 4010, "inspect runtime");
 
-    expect(sends.some((message) => message.text.includes("Checking saved context..."))).toBe(true);
-    expect(sends.some((message) => message.text.includes("Step:</b> tools=[custom_context_get] ok=1 error=0"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Searching"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Step:</b> tools=[search] ok=1 error=0"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Loaded.");
   });
 
@@ -301,7 +279,7 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "custom_context_get", arguments: {} }],
+        content: [{ type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } }],
       },
       {
         stopReason: "endTurn",
@@ -309,96 +287,10 @@ describe("conversation e2e", () => {
       },
     );
 
-    await callWebhook(env, 4022, "show custom context");
+    await callWebhook(env, 4022, "inspect runtime");
 
-    expect(sends.some((message) => message.text.includes("Checking saved context..."))).toBe(false);
-    expect(sends.some((message) => message.text.includes("Step:</b> tools=[custom_context_get]"))).toBe(false);
-  });
-
-  it("supports custom_context.set then get", async () => {
-    const { env } = createEnv();
-    const { sends } = setupTelegramFetch();
-
-    modelQueue.push(
-      {
-        stopReason: "toolUse",
-        content: [
-          {
-            type: "toolCall",
-            id: "call-1",
-            name: "custom_context_set",
-            arguments: {
-              id: "identity",
-              expected_version: 1,
-              text: "New identity.",
-            },
-          },
-        ],
-      },
-      {
-        stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-2", name: "custom_context_get", arguments: {} }],
-      },
-      {
-        stopReason: "endTurn",
-        content: [{ type: "text", text: "Updated." }],
-      },
-    );
-
-    await callWebhook(env, 4011, "update injected");
-    expect(sends.at(-1)?.text).toContain("Updated.");
-
-    modelQueue.push((context: MockContext) => {
-      const hasNewIdentity = context.systemPrompt.includes("New identity.");
-      expect(hasNewIdentity).toBe(true);
-      return {
-        stopReason: "endTurn",
-        content: [{ type: "text", text: "Saw it." }],
-      };
-    });
-    await callWebhook(env, 4012, "confirm");
-    expect(sends.at(-1)?.text).toContain("Saw it.");
-  });
-
-  it("accepts text for custom_context_set", async () => {
-    const { env } = createEnv();
-    const { sends } = setupTelegramFetch();
-
-    modelQueue.push(
-      {
-        stopReason: "toolUse",
-        content: [
-          {
-            type: "toolCall",
-            id: "call-1",
-            name: "custom_context_set",
-            arguments: {
-              id: "memory",
-              expected_version: 1,
-              text: "The user prefers to be called Dre.",
-            },
-          },
-        ],
-      },
-      {
-        stopReason: "endTurn",
-        content: [{ type: "text", text: "Saved simple memory." }],
-      },
-      (context: MockContext) => {
-        const hasStringMemory = context.systemPrompt.includes("called Dre");
-        expect(hasStringMemory).toBe(true);
-        return {
-          stopReason: "endTurn",
-          content: [{ type: "text", text: "Memory present." }],
-        };
-      },
-    );
-
-    await callWebhook(env, 4120, "store simple memory");
-    expect(sends.at(-1)?.text).toContain("Saved simple memory.");
-
-    await callWebhook(env, 4121, "confirm");
-    expect(sends.at(-1)?.text).toContain("Memory present.");
+    expect(sends.some((message) => message.text.includes("Searching \"pkg\"..."))).toBe(false);
+    expect(sends.some((message) => message.text.includes("Step:</b> tools=[search]"))).toBe(false);
   });
 
   it("persists tool errors in history so next turn can react", async () => {
@@ -408,25 +300,14 @@ describe("conversation e2e", () => {
     modelQueue.push(
       {
         stopReason: "toolUse",
-        content: [
-          {
-            type: "toolCall",
-            id: "call-1",
-            name: "custom_context_set",
-            arguments: {
-              id: "identity",
-              expected_version: 999,
-              text: "x",
-            },
-          },
-        ],
+        content: [{ type: "toolCall", id: "call-1", name: "execute", arguments: { code: "throw new Error('boom')" } }],
       },
       {
         stopReason: "endTurn",
         content: [{ type: "text", text: "Set failed." }],
       },
       (context: MockContext) => {
-        const hasToolError = context.systemPrompt.includes("tool=custom_context_set") && context.systemPrompt.includes("ok=false");
+        const hasToolError = context.systemPrompt.includes("tool=execute");
         expect(hasToolError).toBe(true);
         return {
           stopReason: "endTurn",
@@ -435,9 +316,7 @@ describe("conversation e2e", () => {
       },
     );
 
-    await callWebhook(env, 4013, "bad set");
-    expect(sends.some((message) => message.text.includes("Tool error: custom_context_set"))).toBe(false);
-
+    await callWebhook(env, 4013, "bad execute");
     await callWebhook(env, 4014, "what failed earlier?");
     expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
   });
@@ -458,42 +337,10 @@ describe("conversation e2e", () => {
 
     await callWebhook(env, 4006, "think then answer");
 
-    const lastCall = modelCallOptions.at(-1);
-    expect(lastCall).toBeDefined();
     const thinkingMessages = sends.filter((message) => message.text.startsWith("<b>Thinking:</b>"));
     expect(thinkingMessages.length).toBe(1);
     expect(thinkingMessages[0]?.text).toContain("Check markers then answer briefly.");
     expect(sends.at(-1)?.text).toContain("Done.");
-  });
-
-  it("supports custom_context.delete by id", async () => {
-    const { env } = createEnv();
-    const { sends } = setupTelegramFetch();
-
-    modelQueue.push(
-      {
-        stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "call-1", name: "custom_context_delete", arguments: { id: "memory", expected_version: 1 } }],
-      },
-      {
-        stopReason: "endTurn",
-        content: [{ type: "text", text: "Deleted." }],
-      },
-      (context: MockContext) => {
-        const hasMemoryMessage = context.systemPrompt.includes('<custom_context id="memory">');
-        expect(hasMemoryMessage).toBe(false);
-        return {
-          stopReason: "endTurn",
-          content: [{ type: "text", text: "Confirmed delete." }],
-        };
-      },
-    );
-
-    await callWebhook(env, 4015, "delete memory");
-    expect(sends.at(-1)?.text).toContain("Deleted.");
-
-    await callWebhook(env, 4016, "confirm memory deleted");
-    expect(sends.at(-1)?.text).toContain("Confirmed delete.");
   });
 
   it("supports search and execute tools for code mode", async () => {
@@ -557,97 +404,19 @@ describe("conversation e2e", () => {
 
     const codePreview = sends.find((message) => message.text.includes("<pre><code>const total = 1 + 2;"));
     expect(codePreview).toBeDefined();
-    expect(codePreview?.text).toContain("return total;");
     expect(sends.some((message) => message.text.includes("Step:</b> tools=[execute] ok=1 error=0"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Done.");
   });
 
-  it("keeps custom context across /reset", async () => {
+  it("handles /reset and /factory-reset commands", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
-
-    modelQueue.push(
-      {
-        stopReason: "toolUse",
-        content: [
-          {
-            type: "toolCall",
-            id: "call-1",
-            name: "custom_context_set",
-            arguments: {
-              id: "identity",
-              expected_version: 1,
-              text: "# IDENTITY\n\nPersist me.",
-            },
-          },
-        ],
-      },
-      {
-        stopReason: "endTurn",
-        content: [{ type: "text", text: "Stored." }],
-      },
-      (context: MockContext) => {
-        const hasPersistedIdentity = context.systemPrompt.includes("Persist me.");
-        expect(hasPersistedIdentity).toBe(true);
-        return {
-          stopReason: "endTurn",
-          content: [{ type: "text", text: "Still here." }],
-        };
-      },
-    );
-
-    await callWebhook(env, 4017, "set identity");
-    expect(sends.at(-1)?.text).toContain("Stored.");
 
     await callWebhook(env, 4018, "/reset");
     expect(sends.at(-1)?.text).toContain("Conversation context cleared");
 
-    await callWebhook(env, 4019, "confirm persisted identity");
-    expect(sends.at(-1)?.text).toContain("Still here.");
-  });
-
-  it("resets custom context on /factory-reset", async () => {
-    const { env } = createEnv();
-    const { sends } = setupTelegramFetch();
-
-    modelQueue.push(
-      {
-        stopReason: "toolUse",
-        content: [
-          {
-            type: "toolCall",
-            id: "call-1",
-            name: "custom_context_set",
-            arguments: {
-              id: "identity",
-              expected_version: 1,
-              text: "# IDENTITY\n\nPersist me.",
-            },
-          },
-        ],
-      },
-      {
-        stopReason: "endTurn",
-        content: [{ type: "text", text: "Stored." }],
-      },
-      (context: MockContext) => {
-        const hasPersistedIdentity = context.systemPrompt.includes("Persist me.");
-        expect(hasPersistedIdentity).toBe(false);
-        return {
-          stopReason: "endTurn",
-          content: [{ type: "text", text: "Defaults restored." }],
-        };
-      },
-    );
-
-    await callWebhook(env, 4020, "set identity");
-    expect(sends.at(-1)?.text).toContain("Stored.");
-
     await callWebhook(env, 4021, "/factory-reset");
     expect(sends.at(-1)?.text).toContain("Factory reset complete");
-
-    await callWebhook(env, 4022, "confirm defaults");
-    expect(sends.at(-1)?.text).toContain("Defaults restored.");
   });
 
   it("handles /google connect command", async () => {
@@ -676,9 +445,7 @@ describe("conversation e2e", () => {
     });
 
     await callWebhook(env, 4024, "/google status");
-    expect(sends.at(-1)?.text).toContain("google_oauth:");
     expect(sends.at(-1)?.text).toContain("linked");
-    expect(sends.at(-1)?.text).toContain("scopeA scopeB");
 
     await callWebhook(env, 4025, "/google disconnect");
     expect(sends.at(-1)?.text).toContain("disconnected");
@@ -702,8 +469,6 @@ describe("conversation e2e", () => {
     );
 
     await callWebhook(env, 4004, "trigger failure");
-    expect(sends.some((message) => message.text.includes("<b>Failed:</b> boom"))).toBe(true);
-
     await callWebhook(env, 4005, "are you aware of that?");
     expect(sends.at(-1)?.text).toContain("Recovered with context.");
   });

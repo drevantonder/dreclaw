@@ -7,6 +7,10 @@ route = "REPLACE_WITH_WORKER_ROUTE"
 [ai]
 binding = "AI"
 
+[[vectorize]]
+binding = "VECTORIZE_MEMORY"
+index_name = "REPLACE_WITH_VECTORIZE_INDEX_NAME"
+
 [[rules]]
 type = "CompiledWasm"
 globs = ["**/*.wasm"]
@@ -33,6 +37,11 @@ PKG_MAX_SPEC_LENGTH = "120"
 PKG_MAX_MODULE_BYTES = "3145728"
 PKG_MAX_TOTAL_INSTALL_BYTES_PER_RUN = "15728640"
 PKG_MAX_INSTALLS_PER_RUN = "5"
+MEMORY_ENABLED = "true"
+MEMORY_RETENTION_DAYS = "90"
+MEMORY_MAX_INJECT_TOKENS = "1500"
+MEMORY_REFLECTION_EVERY_TURNS = "8"
+MEMORY_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 
 [observability]
 enabled = true

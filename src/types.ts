@@ -16,6 +16,7 @@ export interface Env {
   GOOGLE_OAUTH_SCOPES?: string;
   GOOGLE_OAUTH_ENCRYPTION_KEY?: string;
   AI?: Ai;
+  VECTORIZE_MEMORY?: VectorizeIndex;
   CODE_EXEC_ENABLED?: string;
   NET_FETCH_ENABLED?: string;
   PKG_INSTALL_ENABLED?: string;
@@ -36,6 +37,11 @@ export interface Env {
   PKG_MAX_MODULE_BYTES?: string;
   PKG_MAX_TOTAL_INSTALL_BYTES_PER_RUN?: string;
   PKG_MAX_INSTALLS_PER_RUN?: string;
+  MEMORY_ENABLED?: string;
+  MEMORY_RETENTION_DAYS?: string;
+  MEMORY_MAX_INJECT_TOKENS?: string;
+  MEMORY_REFLECTION_EVERY_TURNS?: string;
+  MEMORY_EMBEDDING_MODEL?: string;
   DRECLAW_DB: D1Database;
   SESSION_RUNTIME: DurableObjectNamespace;
 }

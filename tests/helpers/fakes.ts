@@ -131,6 +131,7 @@ export function createEnv() {
     GOOGLE_OAUTH_SCOPES: "https://www.googleapis.com/auth/gmail.readonly",
     GOOGLE_OAUTH_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     CODE_EXEC_ENABLED: "false",
+    MEMORY_ENABLED: "false",
     DRECLAW_DB: db as unknown as D1Database,
   };
 
