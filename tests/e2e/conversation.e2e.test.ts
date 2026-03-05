@@ -364,6 +364,30 @@ describe("conversation e2e", () => {
     expect(sends.length).toBe(3);
   });
 
+  it("does not resend prior interstitial text as final reply when final step has no text", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "Found it! Using the global fs object:" },
+          { type: "toolCall", id: "call-1", name: "search", arguments: { query: "global fs" } },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [],
+      },
+    );
+
+    await callWebhook(env, 40315, "inspect runtime");
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.text).toContain("Found it! Using the global fs object:");
+  });
+
   it("does not send interstitial message when tool step has no text", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
@@ -598,6 +622,26 @@ describe("conversation e2e", () => {
     const thinkingMessages = sends.filter((message) => message.text.startsWith("<b>Thinking:</b>"));
     expect(thinkingMessages.length).toBe(1);
     expect(thinkingMessages[0]?.text).toContain("provider delta thought");
+  });
+
+  it("preserves spaces across reasoning deltas", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    await callWebhook(env, 4016, "/show-thinking on");
+
+    modelQueue.push({
+      stopReason: "endTurn",
+      content: [
+        { type: "reasoning", reasoning: "The user wants spaces preserved." },
+        { type: "text", text: "Done." },
+      ],
+    });
+
+    await callWebhook(env, 4017, "reasoning spacing test");
+
+    const thinkingMessage = sends.find((message) => message.text.startsWith("<b>Thinking:</b>"));
+    expect(thinkingMessage?.text).toContain("The user wants spaces preserved.");
   });
 
   it("supports search and execute tools for code mode", async () => {

@@ -207,7 +207,7 @@ export class SessionRuntime implements DurableObject {
       };
     }
 
-    const responseText = run.finalText.trim() || "(empty response)";
+    const responseText = run.finalText.trim();
     const combinedUserText = [text, ...pendingTexts].filter(Boolean).join("\n\n") || "[image]";
     this.pushHistory({ role: "user", content: combinedUserText });
     for (const interstitialText of run.interstitialAssistantTexts) {
@@ -216,7 +216,9 @@ export class SessionRuntime implements DurableObject {
     for (const transcript of run.toolTranscripts) {
       this.pushHistory({ role: "tool", content: transcript });
     }
-    this.pushHistory({ role: "assistant", content: responseText });
+    if (responseText) {
+      this.pushHistory({ role: "assistant", content: responseText });
+    }
 
     await this.persistMemoryTurn({
       chatId: sessionRequest.message.chat.id,
@@ -347,7 +349,7 @@ export class SessionRuntime implements DurableObject {
       draftId: buildTelegramDraftId(payload.updateId),
     });
     const run = await this.runAgentLoop(runtime, text, imageBlocks, progress, draftReporter, payload.message.chat.id);
-    const responseText = run.finalText.trim() || "(empty response)";
+    const responseText = run.finalText.trim();
     this.pushHistory({ role: "user", content: text || "[image]" });
     for (const interstitialText of run.interstitialAssistantTexts) {
       this.pushHistory({ role: "assistant", content: interstitialText });
@@ -355,7 +357,9 @@ export class SessionRuntime implements DurableObject {
     for (const transcript of run.toolTranscripts) {
       this.pushHistory({ role: "tool", content: transcript });
     }
-    this.pushHistory({ role: "assistant", content: responseText });
+    if (responseText) {
+      this.pushHistory({ role: "assistant", content: responseText });
+    }
 
     await this.persistMemoryTurn({
       chatId: payload.message.chat.id,
@@ -394,7 +398,7 @@ export class SessionRuntime implements DurableObject {
       draftReporter,
     });
     return {
-      finalText: result.finalText || "(empty response)",
+      finalText: result.finalText,
       toolTranscripts: result.toolTranscripts,
       interstitialAssistantTexts: result.interstitialAssistantTexts,
     };
@@ -531,7 +535,7 @@ export class SessionRuntime implements DurableObject {
         type === "reasoning-start" ||
         type === "reasoning-end"
       ) {
-        const thinkingText = extractThinkingText(part);
+        const thinkingText = extractThinkingText(part, type === "reasoning-delta");
         logStreamTrace("thinking", {
           stepNumber: currentStepNumber,
           type,
@@ -590,7 +594,6 @@ export class SessionRuntime implements DurableObject {
         void currentStepHasToolCall;
       }
     }
-    await draftReporter.flush();
     if (currentReasoningText.trim()) {
       await progress.sendThinkingChunk(currentReasoningText);
       currentReasoningText = "";
@@ -599,11 +602,15 @@ export class SessionRuntime implements DurableObject {
     const response = await stream.response;
     const generatedText = await stream.text;
     const finalText = typeof generatedText === "string" ? generatedText.trim() : "";
+    if (!finalText) {
+      await draftReporter.flush();
+    }
     const nextMessages = (response.messages as unknown as ModelMessage[]) ?? mergedMessages;
-    const done = Boolean(finalText || hasAssistantText(nextMessages));
+    const fallbackText = finalText ? "" : extractAssistantText(nextMessages, emittedAssistantKeys);
+    const done = Boolean(finalText || fallbackText || interstitialAssistantTexts.length || hasAssistantText(nextMessages));
     return {
       done,
-      finalText: finalText || extractAssistantText(nextMessages),
+      finalText: finalText || fallbackText,
       toolTranscripts,
       interstitialAssistantTexts,
       openAssistantText: currentStepText,
@@ -1566,7 +1573,7 @@ function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-function extractThinkingText(input: unknown): string {
+function extractThinkingText(input: unknown, preserveWhitespace = false): string {
   if (!input || typeof input !== "object") return "";
   const textValue =
     (input as { thinking?: unknown }).thinking ??
@@ -1574,7 +1581,8 @@ function extractThinkingText(input: unknown): string {
     (input as { reasoning?: unknown }).reasoning ??
     (input as { textDelta?: unknown }).textDelta ??
     (input as { delta?: unknown }).delta;
-  return typeof textValue === "string" ? textValue.trim() : "";
+  if (typeof textValue !== "string") return "";
+  return preserveWhitespace ? textValue : textValue.trim();
 }
 
 function extractAssistantTextForToolCall(messages: unknown[], targetToolCallId?: string): string {
@@ -1682,12 +1690,18 @@ function hasAssistantText(messages: ModelMessage[]): boolean {
   return extractAssistantText(messages).length > 0;
 }
 
-function extractAssistantText(messages: ModelMessage[]): string {
+function extractAssistantText(messages: ModelMessage[], emittedAssistantKeys?: Iterable<string>): string {
+  const seenKeys = emittedAssistantKeys ? new Set(emittedAssistantKeys) : undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index] as { role?: unknown; content?: unknown };
     if (message.role !== "assistant") continue;
     const content = message.content;
-    if (typeof content === "string") return content.trim();
+    if (typeof content === "string") {
+      const text = content.trim();
+      if (!text) continue;
+      if (seenKeys?.has(`assistant:${hashProgressText(text)}`)) continue;
+      return text;
+    }
     if (Array.isArray(content)) {
       const text = content
         .filter((block): block is { type?: unknown; text?: unknown } => Boolean(block && typeof block === "object"))
@@ -1695,7 +1709,9 @@ function extractAssistantText(messages: ModelMessage[]): string {
         .map((block) => String(block.text ?? ""))
         .join("\n")
         .trim();
-      if (text) return text;
+      if (!text) continue;
+      if (seenKeys?.has(`assistant:${hashProgressText(text)}`)) continue;
+      return text;
     }
   }
   return "";

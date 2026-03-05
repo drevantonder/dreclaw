@@ -160,7 +160,7 @@ async function handleTelegramWebhook(request: Request, env: Env, _ctx: Execution
     },
   );
 
-  if (result.status === "reply") {
+  if (result.status === "reply" && result.reply.text.trim()) {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, result.reply.chatId, result.reply.text);
   }
 
@@ -278,10 +278,10 @@ async function continueRunBurst(
     }
 
     const completedAt = new Date().toISOString();
-    const text = step.text || "Done.";
+    const text = step.text?.trim() ?? "";
     await markAgentRunCompleted(env.DRECLAW_DB, runId, text, completedAt);
     const deliver = await claimAgentRunDelivery(env.DRECLAW_DB, runId, completedAt);
-    if (deliver) {
+    if (deliver && text) {
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, run.chatId, text);
     }
     return { done: true };

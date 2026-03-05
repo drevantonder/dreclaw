@@ -50,7 +50,7 @@ export async function processTelegramUpdate(
     status: "reply",
     reply: {
       chatId: message.chat.id,
-      text: response.text || "Done.",
+      text: response.text || "",
     },
   };
 }
