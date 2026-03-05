@@ -35,7 +35,10 @@ vi.mock("ai", () => {
       this.tools = options?.tools ?? {};
     }
 
-    private async run(options: { messages?: Array<Record<string, unknown>> }) {
+    private async run(options: {
+      messages?: Array<Record<string, unknown>>;
+      onStepFinish?: (event: { text: string; toolCalls: Array<Record<string, unknown>> }) => Promise<void> | void;
+    }) {
       const messages = [...(options.messages ?? [])];
 
       while (true) {
@@ -64,6 +67,11 @@ vi.mock("ai", () => {
         messages.push(assistantMessage);
 
         const toolCalls = resolved.content.filter((block) => block.type === "toolCall");
+        const stepText = resolved.content
+          .filter((block) => block.type === "text")
+          .map((block) => String(block.text ?? ""))
+          .join("\n")
+          .trim();
         for (const toolCall of toolCalls) {
           const toolCallId = String(toolCall.id ?? "");
           const toolName = String(toolCall.name ?? "");
@@ -78,6 +86,8 @@ vi.mock("ai", () => {
           });
         }
 
+        await options.onStepFinish?.({ text: stepText, toolCalls });
+
         if (resolved.stopReason === "toolUse") continue;
         if (resolved.stopReason === "endTurn") {
           const text = resolved.content
@@ -91,7 +101,10 @@ vi.mock("ai", () => {
       }
     }
 
-    async stream(options: { messages?: Array<Record<string, unknown>> }) {
+    async stream(options: {
+      messages?: Array<Record<string, unknown>>;
+      onStepFinish?: (event: { text: string; toolCalls: Array<Record<string, unknown>> }) => Promise<void> | void;
+    }) {
       const runPromise = this.run(options);
       const textPromise = runPromise.then((result) => result.text);
       const responsePromise = runPromise.then((result) => result.response);
@@ -245,6 +258,85 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Fallback stream");
   });
 
+  it("sends interstitial assistant text before tool results continue", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "I'll quickly check that." },
+          { type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Done." }],
+      },
+    );
+
+    await callWebhook(env, 4030, "inspect runtime");
+
+    expect(sends[0]?.text).toContain("I'll quickly check that.");
+    expect(sends.at(-1)?.text).toContain("Done.");
+    expect(sends.length).toBe(2);
+  });
+
+  it("sends multiple interstitial assistant texts across tool steps", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "First, checking runtime." },
+          { type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } },
+        ],
+      },
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "Now running a snippet." },
+          { type: "toolCall", id: "call-2", name: "execute", arguments: { code: "1 + 1" } },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "All good." }],
+      },
+    );
+
+    await callWebhook(env, 4031, "inspect runtime and execute");
+
+    expect(sends[0]?.text).toContain("First, checking runtime.");
+    expect(sends[1]?.text).toContain("Now running a snippet.");
+    expect(sends[2]?.text).toContain("All good.");
+    expect(sends.length).toBe(3);
+  });
+
+  it("does not send interstitial message when tool step has no text", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } }],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Done." }],
+      },
+    );
+
+    await callWebhook(env, 4032, "inspect runtime");
+
+    expect(sends.length).toBe(1);
+    expect(sends[0]?.text).toContain("Done.");
+  });
+
   it("supports debug mode via /debug and shows tool previews + step summary", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
@@ -319,6 +411,35 @@ describe("conversation e2e", () => {
     await callWebhook(env, 4013, "bad execute");
     await callWebhook(env, 4014, "what failed earlier?");
     expect(sends.at(-1)?.text).toContain("I can see the previous tool error.");
+  });
+
+  it("persists interstitial assistant text in context for the next turn", async () => {
+    const { env } = createEnv();
+    setupTelegramFetch();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "Interim note before tools." },
+          { type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Done." }],
+      },
+      (context: MockContext) => {
+        expect(context.systemPrompt).toContain("assistant: Interim note before tools.");
+        return {
+          stopReason: "endTurn",
+          content: [{ type: "text", text: "Seen." }],
+        };
+      },
+    );
+
+    await callWebhook(env, 4033, "do tools");
+    await callWebhook(env, 4034, "what did you say earlier?");
   });
 
   it("shows thinking blocks when /show-thinking on, even in compact mode", async () => {
