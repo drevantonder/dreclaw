@@ -179,4 +179,65 @@ describe("telegram webhook e2e", () => {
     expect(res.status).toBe(413);
     expect(sendMock).not.toHaveBeenCalled();
   });
+
+  it("handles google oauth callback and stores encrypted refresh token", async () => {
+    const { env, db } = createEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/sendChatAction") || url.includes("/sendMessage")) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        if (url === "https://oauth2.googleapis.com/token") {
+          const body = String(init?.body ?? "");
+          if (body.includes("grant_type=authorization_code")) {
+            return new Response(
+              JSON.stringify({
+                access_token: "access-token",
+                refresh_token: "refresh-token",
+                scope: "scope-a scope-b",
+                expires_in: 3600,
+                token_type: "Bearer",
+              }),
+              { status: 200 },
+            );
+          }
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const webhookReq = new Request("https://test.local/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify(makeUpdate(1004, "/google connect")),
+    });
+    const webhookRes = await app.fetch(webhookReq, env, {} as ExecutionContext);
+    expect(webhookRes.status).toBe(200);
+
+    const state = [...db.oauthStates.keys()][0];
+    expect(state).toBeTruthy();
+
+    const callbackReq = new Request(`https://test.local/google/oauth/callback?state=${state}&code=good-code`, {
+      method: "GET",
+    });
+    const callbackRes = await app.fetch(callbackReq, env, {} as ExecutionContext);
+    expect(callbackRes.status).toBe(200);
+    expect(db.oauthTokens.has("default")).toBe(true);
+  });
+
+  it("rejects google oauth callback with unknown state", async () => {
+    const { env } = createEnv();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })));
+
+    const callbackReq = new Request("https://test.local/google/oauth/callback?state=missing&code=bad", { method: "GET" });
+    const callbackRes = await app.fetch(callbackReq, env, {} as ExecutionContext);
+    expect(callbackRes.status).toBe(400);
+    const text = await callbackRes.text();
+    expect(text).toContain("Invalid or expired state");
+  });
 });
