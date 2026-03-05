@@ -1,5 +1,6 @@
 import { ToolLoopAgent, stepCountIs, tool, type ModelMessage } from "ai";
 import { z } from "zod";
+import { decodeEncryptionKey, decryptSecret } from "./crypto";
 import { createGoogleOAuthState, deleteGoogleOAuthToken, getGoogleOAuthToken } from "./db";
 import {
   executeCode,
@@ -9,7 +10,12 @@ import {
   type CodeExecutionConfig,
   type CodeRuntimeState,
 } from "./code-exec";
-import { buildGoogleOAuthUrl, createOAuthStateToken, getGoogleOAuthConfig } from "./google-oauth";
+import {
+  buildGoogleOAuthUrl,
+  createOAuthStateToken,
+  getGoogleOAuthConfig,
+  refreshGoogleAccessToken,
+} from "./google-oauth";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
 import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
@@ -499,8 +505,33 @@ export class SessionRuntime implements DurableObject {
           this.stateData.codeRuntime = normalizeCodeRuntimeState(next);
           await this.save();
         },
+        googleAuth: {
+          getAccessToken: async () => this.getGoogleAccessToken(),
+          allowedServices: ["gmail", "drive", "sheets"],
+        },
       },
     );
+  }
+
+  private async getGoogleAccessToken(): Promise<{ accessToken: string; scope: string }> {
+    const token = await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL);
+    if (!token) {
+      throw new Error("Google account not linked. Run /google connect");
+    }
+    const key = decodeEncryptionKey(String(this.env.GOOGLE_OAUTH_ENCRYPTION_KEY ?? ""));
+    const refreshToken = await decryptSecret(
+      {
+        ciphertext: token.refreshTokenCiphertext,
+        nonce: token.nonce,
+      },
+      key,
+    );
+    const oauthConfig = getGoogleOAuthConfig(this.env);
+    const refreshed = await refreshGoogleAccessToken(oauthConfig, refreshToken);
+    return {
+      accessToken: refreshed.accessToken,
+      scope: refreshed.scope,
+    };
   }
 }
 
