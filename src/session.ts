@@ -11,7 +11,14 @@ import {
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
 import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
-import { DEFAULT_BASE_URL, type Env, type ProgressMode, type SessionRequest, type SessionResponse } from "./types";
+import {
+  OPENCODE_GO_BASE_URL,
+  OPENCODE_ZEN_BASE_URL,
+  type Env,
+  type ProgressMode,
+  type SessionRequest,
+  type SessionResponse,
+} from "./types";
 
 type SessionHistoryEntry = { role: "user" | "assistant" | "tool"; content: string };
 
@@ -36,7 +43,7 @@ interface SessionState {
 }
 
 interface RuntimeConfig {
-  provider: "zen" | "workers";
+  provider: "opencode" | "opencode-go" | "workers";
   model: string;
   baseUrl?: string;
   apiKey?: string;
@@ -347,10 +354,11 @@ export class SessionRuntime implements DurableObject {
   }
 
   private async workerAuthReady(): Promise<boolean> {
-    if (this.getProvider() === "workers") {
+    const provider = this.getProvider();
+    if (provider === "workers") {
       return Boolean(this.env.AI);
     }
-    return Boolean(this.env.OPENCODE_ZEN_API_KEY?.trim());
+    return Boolean(this.getApiKey());
   }
 
   private getRuntimeConfig(): RuntimeConfig {
@@ -362,25 +370,37 @@ export class SessionRuntime implements DurableObject {
       return { provider, model, aiBinding: this.env.AI };
     }
 
-    const apiKey = this.env.OPENCODE_ZEN_API_KEY?.trim();
-    if (!apiKey) throw new Error("Missing OPENCODE_ZEN_API_KEY");
+    const apiKey = this.getApiKey();
+    if (!apiKey) throw new Error("Missing OPENCODE_API_KEY");
 
-    const baseUrl = this.env.BASE_URL?.trim() || DEFAULT_BASE_URL;
+    const baseUrl = this.getBaseUrl(provider);
     return { provider, model, apiKey, baseUrl };
   }
 
-  private getProvider(): "zen" | "workers" {
+  private getProvider(): "opencode" | "opencode-go" | "workers" {
     const provider = this.env.AI_PROVIDER?.trim().toLowerCase();
     if (provider === "workers") return "workers";
-    return "zen";
+    if (provider === "opencode-go" || provider === "go") return "opencode-go";
+    return "opencode";
   }
 
-  private getModelName(provider: "zen" | "workers"): string {
+  private getModelName(provider: "opencode" | "opencode-go" | "workers"): string {
     const model = this.env.MODEL?.trim();
     if (model) return model;
     if (provider === "workers") return "@cf/zai-org/glm-4.7-flash";
     throw new Error("Missing MODEL");
     return model;
+  }
+
+  private getApiKey(): string | undefined {
+    return this.env.OPENCODE_API_KEY?.trim();
+  }
+
+  private getBaseUrl(provider: "opencode" | "opencode-go" | "workers"): string {
+    const configured = this.env.BASE_URL?.trim();
+    if (configured) return configured;
+    if (provider === "opencode-go") return OPENCODE_GO_BASE_URL;
+    return OPENCODE_ZEN_BASE_URL;
   }
 
   private createModel(runtime: RuntimeConfig) {

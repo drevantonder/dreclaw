@@ -8,7 +8,7 @@
 - Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/show-thinking`
 - Core tools: `search`, `execute`, `custom_context_get`, `custom_context_set`, `custom_context_delete`
 - Versioned `custom_context` persisted in Durable Object session state
-- AI SDK provider switch: `zen` (OpenCode Zen) or `workers` (Workers AI)
+- AI SDK provider switch: `opencode`, `opencode-go`, or `workers` (Workers AI)
 
 ## Architecture (High-level)
 
@@ -29,6 +29,7 @@ flowchart TD
   - `<custom_context id="...">...</custom_context>` entries (sorted by id)
   - `</custom_context_manifest>`
 - Agent loop runs on AI SDK `ToolLoopAgent` and can inspect/replace custom context with versioned tools.
+- OpenCode uses `AI_PROVIDER=opencode` (Zen default URL) or `AI_PROVIDER=opencode-go` (Go default URL).
 - Workers AI runs via `workers-ai-provider` binding (`env.AI`) when `AI_PROVIDER=workers`.
 - Agent can run sandboxed JS with `execute`; `search` lists runtime limits/capabilities and installed packages.
 
@@ -60,7 +61,7 @@ set -a; source .env; set +a
 pnpm secrets:sync
 ```
 
-This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPENCODE_ZEN_API_KEY`, `MODEL`, `BASE_URL`).
+This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPENCODE_API_KEY`, `MODEL`, `BASE_URL`).
 
 ### Deploy
 
@@ -88,7 +89,7 @@ pnpm deploy
 
 - Run full tests: `pnpm test`
 - Type-check: `pnpm check`
-- Run live model smoke test (real Zen + tool loop): `set -a; source .env; set +a && pnpm smoke:live -- --prompt "hey"`
+- Run live model smoke test (real OpenCode Go + tool loop): `set -a; source .env; set +a && pnpm smoke:live -- --prompt "hey"`
 - Run pre-deploy gate: `pnpm verify:predeploy`
 
 ## Persistence model
@@ -102,7 +103,7 @@ pnpm deploy
 
 ## Auth model
 
-- `OPENCODE_ZEN_API_KEY` is stored as Worker secret.
+- `OPENCODE_API_KEY` is stored as Worker secret.
 - `/status` reports readiness only (no secrets).
 
 ## Security

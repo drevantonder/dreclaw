@@ -65,9 +65,10 @@ export function createEnv() {
     TELEGRAM_BOT_TOKEN: "test-bot-token",
     TELEGRAM_WEBHOOK_SECRET: "secret-1",
     TELEGRAM_ALLOWED_USER_ID: "42",
-    MODEL: "kimi-k2.5-free",
-    BASE_URL: "https://opencode.ai/zen/v1",
-    OPENCODE_ZEN_API_KEY: "test-zen-key",
+    AI_PROVIDER: "opencode-go",
+    MODEL: "kimi-k2.5",
+    BASE_URL: "https://opencode.ai/zen/go/v1",
+    OPENCODE_API_KEY: "test-opencode-key",
     CODE_EXEC_ENABLED: "false",
     DRECLAW_DB: db as unknown as D1Database,
   };

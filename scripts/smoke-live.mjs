@@ -15,10 +15,10 @@ const DEFAULT_CUSTOM_CONTEXT = [
 function parseArgs(argv) {
   const args = {
     prompt: "Reply with one short sentence proving smoke test works.",
-    model: "kimi-k2.5-free",
+    model: "kimi-k2.5",
     maxTurns: 6,
-    baseUrl: "https://opencode.ai/zen/v1",
-    apiKey: process.env.OPENCODE_ZEN_API_KEY ?? "",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    apiKey: process.env.OPENCODE_API_KEY ?? "",
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -30,7 +30,7 @@ function parseArgs(argv) {
     else if (part === "--api-key") args.apiKey = argv[++i] ?? args.apiKey;
     else if (part === "--help" || part === "-h") {
       process.stdout.write(
-        "Usage: pnpm smoke:live -- --prompt \"hey\" [--model kimi-k2.5-free] [--base-url https://opencode.ai/zen/v1] [--api-key <zen-key>]\n",
+        "Usage: pnpm smoke:live -- --prompt \"hey\" [--model kimi-k2.5] [--base-url https://opencode.ai/zen/go/v1] [--api-key <opencode-key>]\n",
       );
       process.exit(0);
     }
@@ -47,7 +47,7 @@ function fail(message) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.apiKey.trim()) fail("Missing API key. Pass --api-key or set OPENCODE_ZEN_API_KEY");
+  if (!args.apiKey.trim()) fail("Missing API key. Pass --api-key or set OPENCODE_API_KEY");
 
   const provider = createOpenAICompatible({
     name: "opencode",
