@@ -292,6 +292,7 @@ export class SessionRuntime implements DurableObject {
       interstitialAssistantTexts.push(stepText);
       try {
         await sendTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, chatId, stepText);
+        draftReporter.reset();
       } catch (error) {
         console.warn("telegram-interstitial-send-failed", {
           chatId,
@@ -1086,6 +1087,12 @@ class TelegramDraftReporter {
   async flush(): Promise<void> {
     if (!this.enabled) return;
     await this.maybeSend(true);
+  }
+
+  reset(): void {
+    this.assembledText = "";
+    this.lastSentText = "";
+    this.lastSentAt = 0;
   }
 
   private async maybeSend(force: boolean): Promise<void> {
