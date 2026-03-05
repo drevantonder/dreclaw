@@ -38,8 +38,14 @@ vi.mock("ai", () => {
     private async run(options: {
       messages?: Array<Record<string, unknown>>;
       onStepFinish?: (event: { text: string; toolCalls: Array<Record<string, unknown>> }) => Promise<void> | void;
+      experimental_onToolCallStart?: (event: {
+        stepNumber: number;
+        messages: Array<Record<string, unknown>>;
+        toolCall: Record<string, unknown>;
+      }) => Promise<void> | void;
     }) {
       const messages = [...(options.messages ?? [])];
+      const fullStreamParts: Array<Record<string, unknown>> = [];
 
       while (true) {
         const systemPrompt =
@@ -72,10 +78,25 @@ vi.mock("ai", () => {
           .map((block) => String(block.text ?? ""))
           .join("\n")
           .trim();
+        fullStreamParts.push({ type: "start-step" });
+        if (stepText) fullStreamParts.push({ type: "text-delta", text: stepText });
+        for (const toolCall of toolCalls) {
+          fullStreamParts.push({
+            type: "tool-call",
+            id: String(toolCall.id ?? ""),
+            toolName: String(toolCall.name ?? ""),
+            input: (toolCall.arguments ?? {}) as Record<string, unknown>,
+          });
+        }
         for (const toolCall of toolCalls) {
           const toolCallId = String(toolCall.id ?? "");
           const toolName = String(toolCall.name ?? "");
           const toolArgs = (toolCall.arguments ?? {}) as Record<string, unknown>;
+          await options.experimental_onToolCallStart?.({
+            stepNumber: fullStreamParts.filter((part) => part.type === "start-step").length - 1,
+            messages,
+            toolCall: toolCall as Record<string, unknown>,
+          });
           const tool = context.tools.find((entry) => entry.name === toolName);
           const output = tool ? await tool.execute(toolCallId, toolArgs) : { ok: false, error: `Missing tool: ${toolName}` };
           messages.push({
@@ -87,6 +108,7 @@ vi.mock("ai", () => {
         }
 
         await options.onStepFinish?.({ text: stepText, toolCalls });
+        fullStreamParts.push({ type: "finish-step" });
 
         if (resolved.stopReason === "toolUse") continue;
         if (resolved.stopReason === "endTurn") {
@@ -95,7 +117,7 @@ vi.mock("ai", () => {
             .map((block) => String(block.text ?? ""))
             .join("\n")
             .trim();
-          return { text, response: { messages } };
+          return { text, response: { messages }, fullStreamParts };
         }
         throw new Error(resolved.errorMessage || "Agent failed");
       }
@@ -104,6 +126,11 @@ vi.mock("ai", () => {
     async stream(options: {
       messages?: Array<Record<string, unknown>>;
       onStepFinish?: (event: { text: string; toolCalls: Array<Record<string, unknown>> }) => Promise<void> | void;
+      experimental_onToolCallStart?: (event: {
+        stepNumber: number;
+        messages: Array<Record<string, unknown>>;
+        toolCall: Record<string, unknown>;
+      }) => Promise<void> | void;
     }) {
       const runPromise = this.run(options);
       const textPromise = runPromise.then((result) => result.text);
@@ -114,8 +141,15 @@ vi.mock("ai", () => {
         const result = await runPromise;
         if (result.text) yield result.text;
       })();
+      const fullStream = (async function* () {
+        const result = await runPromise;
+        for (const part of result.fullStreamParts) {
+          yield part;
+        }
+      })();
       return {
         textStream,
+        fullStream,
         text: textPromise,
         response: responsePromise,
       };
@@ -359,6 +393,35 @@ describe("conversation e2e", () => {
     expect(sends.some((message) => message.text.includes("Searching"))).toBe(true);
     expect(sends.some((message) => message.text.includes("Step:</b> tools=[search] ok=1 error=0"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Loaded.");
+  });
+
+  it("keeps assistant text before tool preview in debug mode", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    await callWebhook(env, 4090, "/debug on");
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "INTERSTITIAL_ORDER_CHECK" },
+          { type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Done." }],
+      },
+    );
+
+    await callWebhook(env, 4091, "check order");
+
+    const interstitialIndex = sends.findIndex((message) => message.text.includes("INTERSTITIAL_ORDER_CHECK"));
+    const searchingIndex = sends.findIndex((message) => message.text.includes("Step:</b> tools=[search] ok=1 error=0"));
+    expect(interstitialIndex).toBeGreaterThan(-1);
+    expect(searchingIndex).toBeGreaterThan(-1);
+    expect(interstitialIndex).toBeLessThan(searchingIndex);
   });
 
   it("disables debug mode via /debug off", async () => {

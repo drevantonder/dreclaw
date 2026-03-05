@@ -283,25 +283,61 @@ export class SessionRuntime implements DurableObject {
       stopWhen: stepCountIs(8),
     });
 
+    const sentInterstitialStepNumbers = new Set<number>();
+    const sendInterstitial = async (stepNumber: number, rawText: string): Promise<void> => {
+      const stepText = rawText.trim();
+      if (!stepText) return;
+      if (stepNumber >= 0 && sentInterstitialStepNumbers.has(stepNumber)) return;
+      if (stepNumber >= 0) sentInterstitialStepNumbers.add(stepNumber);
+      interstitialAssistantTexts.push(stepText);
+      try {
+        await sendTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, chatId, stepText);
+      } catch (error) {
+        console.warn("telegram-interstitial-send-failed", {
+          chatId,
+          error: error instanceof Error ? error.message : String(error ?? "unknown"),
+        });
+      }
+    };
+
     const stream = await agent.stream({
       messages: buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks),
-      onStepFinish: async (event) => {
-        const stepText = typeof event.text === "string" ? event.text.trim() : "";
-        if (!stepText) return;
-        if (!event.toolCalls?.length) return;
-        interstitialAssistantTexts.push(stepText);
-        try {
-          await sendTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, chatId, stepText);
-        } catch (error) {
-          console.warn("telegram-interstitial-send-failed", {
-            chatId,
-            error: error instanceof Error ? error.message : String(error ?? "unknown"),
-          });
-        }
+      experimental_onToolCallStart: async (event) => {
+        const stepNumber = typeof event.stepNumber === "number" ? event.stepNumber : -1;
+        const stepText = extractAssistantTextForToolCall(event.messages);
+        await sendInterstitial(stepNumber, stepText);
       },
     });
-    for await (const delta of stream.textStream) {
-      await draftReporter.onTextDelta(delta);
+
+    let currentStepNumber = -1;
+    let currentStepText = "";
+    let currentStepHasToolCall = false;
+
+    for await (const part of stream.fullStream) {
+      const type = (part as { type?: unknown }).type;
+      if (type === "start-step") {
+        currentStepNumber += 1;
+        currentStepText = "";
+        currentStepHasToolCall = false;
+        continue;
+      }
+      if (type === "text-delta") {
+        const delta = (part as { text?: unknown }).text;
+        if (typeof delta === "string" && delta) {
+          currentStepText += delta;
+          await draftReporter.onTextDelta(delta);
+        }
+        continue;
+      }
+      if (type === "tool-call") {
+        currentStepHasToolCall = true;
+        continue;
+      }
+      if (type === "finish-step") {
+        if (currentStepHasToolCall) {
+          await sendInterstitial(currentStepNumber, currentStepText);
+        }
+      }
     }
     await draftReporter.flush();
 
@@ -1149,6 +1185,29 @@ function extractThinkingBlocks(messages: unknown[]): string[] {
     }
   }
   return blocks;
+}
+
+function extractAssistantTextForToolCall(messages: unknown[]): string {
+  if (!Array.isArray(messages)) return "";
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as { role?: unknown; content?: unknown };
+    if (message.role !== "assistant") continue;
+    const content = message.content;
+    if (typeof content === "string") return content.trim();
+    if (!Array.isArray(content)) return "";
+    const text = content
+      .map((item) => {
+        if (!item || typeof item !== "object") return "";
+        const type = (item as { type?: unknown }).type;
+        if (type !== "text") return "";
+        const value = (item as { text?: unknown }).text;
+        return typeof value === "string" ? value : "";
+      })
+      .join("\n")
+      .trim();
+    return text;
+  }
+  return "";
 }
 
 function normalizeSessionVfsPath(rawPath: string): string {
