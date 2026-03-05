@@ -300,18 +300,24 @@ export class SessionRuntime implements DurableObject {
       }
     };
 
+    let currentStepNumber = -1;
+    let currentStepText = "";
+    let currentStepHasToolCall = false;
+
     const stream = await agent.stream({
       messages: buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks),
       experimental_onToolCallStart: async (event) => {
         const stepNumber = typeof event.stepNumber === "number" ? event.stepNumber : -1;
         const stepText = extractAssistantTextForToolCall(event.messages);
-        await sendInterstitial(stepNumber, stepText);
+        if (stepText) {
+          await sendInterstitial(stepNumber, stepText);
+          return;
+        }
+        if (stepNumber >= 0 && stepNumber === currentStepNumber) {
+          await sendInterstitial(stepNumber, currentStepText);
+        }
       },
     });
-
-    let currentStepNumber = -1;
-    let currentStepText = "";
-    let currentStepHasToolCall = false;
 
     for await (const part of stream.fullStream) {
       const type = (part as { type?: unknown }).type;
@@ -326,11 +332,15 @@ export class SessionRuntime implements DurableObject {
         if (typeof delta === "string" && delta) {
           currentStepText += delta;
           await draftReporter.onTextDelta(delta);
+          if (currentStepHasToolCall) {
+            await sendInterstitial(currentStepNumber, currentStepText);
+          }
         }
         continue;
       }
       if (type === "tool-call") {
         currentStepHasToolCall = true;
+        await sendInterstitial(currentStepNumber, currentStepText);
         continue;
       }
       if (type === "finish-step") {
