@@ -1,5 +1,6 @@
 import { ToolLoopAgent, stepCountIs, tool, type ModelMessage } from "ai";
 import { z } from "zod";
+import { createGoogleOAuthState, deleteGoogleOAuthToken, getGoogleOAuthToken } from "./db";
 import {
   executeCode,
   getCodeExecutionConfig,
@@ -8,6 +9,7 @@ import {
   type CodeExecutionConfig,
   type CodeRuntimeState,
 } from "./code-exec";
+import { buildGoogleOAuthUrl, createOAuthStateToken, getGoogleOAuthConfig } from "./google-oauth";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
 import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
@@ -50,6 +52,7 @@ interface AgentRunResult {
 
 const SYSTEM_PROMPT =
   "custom_context is persistent editable startup context. Keep it current using provided tools. execute supports async/await and network requests via fetch in the QuickJS runtime. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
+const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MAX_CUSTOM_CONTEXT_ITEMS = 48;
 const MAX_CUSTOM_CONTEXT_TEXT_CHARS = 10_000;
 const CUSTOM_CONTEXT_ID_RE = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
@@ -192,6 +195,10 @@ export class SessionRuntime implements DurableObject {
       return { ok: true, text: `show-thinking ${nextThinking ? "enabled" : "disabled"}.` };
     }
 
+    if (text.startsWith("/google")) {
+      return this.handleGoogleCommand(text, payload.message.chat.id, payload.message.from?.id ?? 0);
+    }
+
     const runtime = this.getRuntimeConfig();
     const progress = new TelegramProgressReporter({
       token: this.env.TELEGRAM_BOT_TOKEN,
@@ -323,6 +330,70 @@ export class SessionRuntime implements DurableObject {
     };
     await this.save();
     return { version: this.stateData.customContext.version };
+  }
+
+  private async handleGoogleCommand(text: string, chatId: number, telegramUserId: number): Promise<SessionResponse> {
+    const parts = text.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+    const action = parts[1]?.toLowerCase() ?? "";
+    if (!action || action === "help") {
+      return {
+        ok: true,
+        text: [
+          "Google OAuth commands:",
+          "/google connect - link your Google account",
+          "/google status - show link status and scopes",
+          "/google disconnect - remove saved token",
+        ].join("\n"),
+      };
+    }
+
+    if (action === "connect") {
+      const config = getGoogleOAuthConfig(this.env);
+      const state = createOAuthStateToken();
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+      await createGoogleOAuthState(this.env.DRECLAW_DB, {
+        state,
+        chatId,
+        telegramUserId,
+        expiresAt,
+        createdAt: now.toISOString(),
+      });
+      const url = buildGoogleOAuthUrl(config, state);
+      return {
+        ok: true,
+        text: [
+          "Open this URL to connect Google:",
+          url,
+          "This link expires in 10 minutes.",
+        ].join("\n"),
+      };
+    }
+
+    if (action === "status") {
+      const token = await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL);
+      if (!token) {
+        return { ok: true, text: "google_oauth: not linked\nrun: /google connect" };
+      }
+      return {
+        ok: true,
+        text: [
+          "google_oauth: linked",
+          `scopes: ${token.scopes || "unknown"}`,
+          `updated_at: ${token.updatedAt}`,
+        ].join("\n"),
+      };
+    }
+
+    if (action === "disconnect") {
+      const deleted = await deleteGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL);
+      return {
+        ok: true,
+        text: deleted ? "Google account disconnected." : "No linked Google account found.",
+      };
+    }
+
+    return { ok: true, text: "Unknown /google command. Use /google help" };
   }
 
   private pushHistory(entry: SessionHistoryEntry): void {

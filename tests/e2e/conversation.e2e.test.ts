@@ -580,6 +580,41 @@ describe("conversation e2e", () => {
     expect(sends.at(-1)?.text).toContain("Defaults restored.");
   });
 
+  it("handles /google connect command", async () => {
+    const { env, db } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    await callWebhook(env, 4023, "/google connect");
+
+    expect(db.oauthStates.size).toBe(1);
+    const response = sends.at(-1)?.text ?? "";
+    expect(response).toContain("Open this URL to connect Google:");
+    expect(response).toContain("accounts.google.com");
+  });
+
+  it("handles /google status and /google disconnect commands", async () => {
+    const { env, db } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    db.oauthTokens.set("default", {
+      principal: "default",
+      telegram_user_id: 42,
+      refresh_token_ciphertext: "cipher",
+      nonce: "nonce",
+      scopes: "scopeA scopeB",
+      updated_at: "2026-03-05T00:00:00.000Z",
+    });
+
+    await callWebhook(env, 4024, "/google status");
+    expect(sends.at(-1)?.text).toContain("google_oauth:");
+    expect(sends.at(-1)?.text).toContain("linked");
+    expect(sends.at(-1)?.text).toContain("scopeA scopeB");
+
+    await callWebhook(env, 4025, "/google disconnect");
+    expect(sends.at(-1)?.text).toContain("disconnected");
+    expect(db.oauthTokens.size).toBe(0);
+  });
+
   it("persists runtime failures in history for future turns", async () => {
     const { env } = createEnv();
     const { sends } = setupTelegramFetch();
