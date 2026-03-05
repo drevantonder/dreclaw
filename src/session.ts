@@ -83,6 +83,7 @@ interface AgentRunCheckpoint {
   imageBlocks: string[];
   interstitialAssistantTexts: string[];
   openAssistantText?: string;
+  openReasoningText?: string;
   emittedAssistantKeys?: string[];
   seenToolPreviewKeys?: string[];
   emittedProgressKeys?: string[];
@@ -181,6 +182,7 @@ export class SessionRuntime implements DurableObject {
       pendingUserMessages: pendingTexts,
       interstitialAssistantTexts: checkpoint?.interstitialAssistantTexts ?? [],
       openAssistantText: checkpoint?.openAssistantText ?? "",
+      openReasoningText: checkpoint?.openReasoningText ?? "",
       emittedAssistantKeys: checkpoint?.emittedAssistantKeys ?? [],
       seenToolPreviewKeys: checkpoint?.seenToolPreviewKeys ?? [],
       emittedProgressKeys: checkpoint?.emittedProgressKeys ?? [],
@@ -197,6 +199,7 @@ export class SessionRuntime implements DurableObject {
           imageBlocks,
           interstitialAssistantTexts: run.interstitialAssistantTexts,
           openAssistantText: run.openAssistantText,
+          openReasoningText: run.openReasoningText,
           emittedAssistantKeys: run.emittedAssistantKeys,
           seenToolPreviewKeys: run.seenToolPreviewKeys,
           emittedProgressKeys: run.emittedProgressKeys,
@@ -383,6 +386,7 @@ export class SessionRuntime implements DurableObject {
       sliceSteps: 8,
       interstitialAssistantTexts: [],
       openAssistantText: "",
+      openReasoningText: "",
       emittedAssistantKeys: [],
       seenToolPreviewKeys: [],
       emittedProgressKeys: [],
@@ -408,6 +412,7 @@ export class SessionRuntime implements DurableObject {
       pendingUserMessages?: string[];
       interstitialAssistantTexts: string[];
       openAssistantText: string;
+      openReasoningText: string;
       emittedAssistantKeys: string[];
       seenToolPreviewKeys: string[];
       emittedProgressKeys: string[];
@@ -420,6 +425,7 @@ export class SessionRuntime implements DurableObject {
     toolTranscripts: string[];
     interstitialAssistantTexts: string[];
     openAssistantText: string;
+    openReasoningText: string;
     emittedAssistantKeys: string[];
     seenToolPreviewKeys: string[];
     emittedProgressKeys: string[];
@@ -441,6 +447,7 @@ export class SessionRuntime implements DurableObject {
     const toolTranscripts = [...params.toolTranscripts];
     const interstitialAssistantTexts = [...params.interstitialAssistantTexts];
     const emittedAssistantKeys = new Set(params.emittedAssistantKeys);
+    let currentReasoningText = params.openReasoningText;
     const progress = params.progress ?? new SilentProgressReporter();
     const draftReporter = params.draftReporter ?? new SilentDraftReporter();
     progress.seed(params.seenToolPreviewKeys, params.emittedProgressKeys);
@@ -530,6 +537,21 @@ export class SessionRuntime implements DurableObject {
           type,
           textLength: thinkingText.length,
         });
+        if (type === "reasoning-start") {
+          currentReasoningText = "";
+          continue;
+        }
+        if (type === "reasoning-delta") {
+          currentReasoningText += thinkingText;
+          continue;
+        }
+        if (type === "reasoning-end") {
+          if (currentReasoningText.trim()) {
+            await progress.sendThinkingChunk(currentReasoningText);
+          }
+          currentReasoningText = "";
+          continue;
+        }
         if (thinkingText) {
           await progress.sendThinkingChunk(thinkingText);
         }
@@ -569,6 +591,10 @@ export class SessionRuntime implements DurableObject {
       }
     }
     await draftReporter.flush();
+    if (currentReasoningText.trim()) {
+      await progress.sendThinkingChunk(currentReasoningText);
+      currentReasoningText = "";
+    }
 
     const response = await stream.response;
     const generatedText = await stream.text;
@@ -581,6 +607,7 @@ export class SessionRuntime implements DurableObject {
       toolTranscripts,
       interstitialAssistantTexts,
       openAssistantText: currentStepText,
+      openReasoningText: currentReasoningText,
       emittedAssistantKeys: [...emittedAssistantKeys],
       seenToolPreviewKeys: progress.getSeenToolPreviewKeys(),
       emittedProgressKeys: progress.getEmittedProgressKeys(),
