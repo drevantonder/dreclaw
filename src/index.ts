@@ -23,7 +23,6 @@ export { SessionRuntime };
 
 const WEBHOOK_MAX_BODY_BYTES = 256_000;
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
-const RUN_ACK_TEXT = "Got it - working on this now. I will reply when it is done.";
 const RUN_MAX_ATTEMPTS = 5;
 const RUN_QUEUE_KIND = "run.execute";
 
@@ -151,7 +150,8 @@ async function handleTelegramWebhook(request: Request, env: Env, _ctx: Execution
           }
           return {
             ok: true,
-            text: created ? RUN_ACK_TEXT : "Already processing this update.",
+            text: "",
+            deferReply: true,
           };
         }
 

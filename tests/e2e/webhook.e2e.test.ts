@@ -242,7 +242,7 @@ describe("telegram webhook e2e", () => {
     expect(text).toContain("Invalid or expired state");
   });
 
-  it("enqueues long-form prompts and sends ack immediately", async () => {
+  it("enqueues long-form prompts without immediate reply", async () => {
     const { env, queueMessages, fakeQueue } = createEnv();
     env.AGENT_RUN_QUEUE = fakeQueue;
     const sends: Array<{ body: unknown }> = [];
@@ -273,8 +273,7 @@ describe("telegram webhook e2e", () => {
     const res = await app.fetch(req, env, {} as ExecutionContext);
     expect(res.status).toBe(200);
     expect(queueMessages.length).toBe(1);
-    const sent = sends[0].body as { text: string };
-    expect(sent.text).toContain("working on this now");
+    expect(sends.length).toBe(0);
   });
 
   it("processes queued run and sends final response once", async () => {
@@ -346,8 +345,8 @@ describe("telegram webhook e2e", () => {
     );
 
     expect(doFetch).toHaveBeenCalledTimes(1);
-    expect(sends.length).toBe(2);
-    const finalSent = sends[1].body as { text: string };
+    expect(sends.length).toBe(1);
+    const finalSent = sends[0].body as { text: string };
     expect(finalSent.text).toContain("Long run complete.");
 
     const run = db.agentRuns.get(queuePayload.runId);
@@ -435,7 +434,7 @@ describe("telegram webhook e2e", () => {
     );
 
     expect(queueMessages.length).toBe(2);
-    expect(sends.length).toBe(1);
+    expect(sends.length).toBe(0);
 
     const secondPayload = queueMessages[1] as { runId: string; type: string };
     await queueHandler.queue(
@@ -459,8 +458,8 @@ describe("telegram webhook e2e", () => {
     );
 
     expect(doFetch).toHaveBeenCalledTimes(2);
-    expect(sends.length).toBe(2);
-    const finalSent = sends[1].body as { text: string };
+    expect(sends.length).toBe(1);
+    const finalSent = sends[0].body as { text: string };
     expect(finalSent.text).toContain("Completed after continuation.");
     const run = db.agentRuns.get(firstPayload.runId);
     expect(run?.status).toBe("completed");

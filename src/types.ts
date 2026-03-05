@@ -77,4 +77,5 @@ export type ProgressMode = "compact" | "debug";
 export interface SessionResponse {
   ok: boolean;
   text: string;
+  deferReply?: boolean;
 }

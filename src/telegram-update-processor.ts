@@ -42,6 +42,10 @@ export async function processTelegramUpdate(
       }),
   });
 
+  if (response.deferReply) {
+    return { status: "ignored", reason: "deferred_reply" };
+  }
+
   return {
     status: "reply",
     reply: {
