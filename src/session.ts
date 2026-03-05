@@ -83,6 +83,7 @@ export class SessionRuntime implements DurableObject {
   private readonly env: Env;
   private loaded = false;
   private stateData: SessionState = { history: [] };
+  private activeChatId: number | null = null;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -122,6 +123,7 @@ export class SessionRuntime implements DurableObject {
   }
 
   private async handleMessage(payload: SessionRequest): Promise<SessionResponse> {
+    this.activeChatId = payload.message.chat.id;
     await this.migrateLegacyCustomContext(payload.message.chat.id);
     const userText = payload.message.text ?? payload.message.caption ?? "";
     const imageBlocks = await this.loadImages(payload.message);
@@ -548,6 +550,9 @@ export class SessionRuntime implements DurableObject {
   }
 
   private getSessionChatId(): number {
+    if (typeof this.activeChatId === "number" && Number.isFinite(this.activeChatId)) {
+      return Math.trunc(this.activeChatId);
+    }
     const raw = Number(this.state.id.toString());
     if (!Number.isFinite(raw)) {
       throw new Error("Unable to resolve session chat id");
