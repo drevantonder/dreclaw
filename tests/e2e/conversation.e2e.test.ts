@@ -41,7 +41,7 @@ vi.mock("ai", () => {
       this.tools = options?.tools ?? {};
     }
 
-    async generate(options: { messages?: Array<Record<string, unknown>> }) {
+    private async run(options: { messages?: Array<Record<string, unknown>> }) {
       const messages = [...(options.messages ?? [])];
 
       while (true) {
@@ -97,6 +97,29 @@ vi.mock("ai", () => {
         throw new Error(resolved.errorMessage || "Agent failed");
       }
     }
+
+    async generate(options: { messages?: Array<Record<string, unknown>> }) {
+      return this.run(options);
+    }
+
+    async stream(options: { messages?: Array<Record<string, unknown>> }) {
+      const runPromise = this.run(options);
+      const textPromise = runPromise.then((result) => result.text);
+      const responsePromise = runPromise.then((result) => result.response);
+      void textPromise.catch(() => undefined);
+      void responsePromise.catch(() => undefined);
+      const textStream = (async function* () {
+        const result = await runPromise;
+        if (result.text) {
+          yield result.text;
+        }
+      })();
+      return {
+        textStream,
+        text: textPromise,
+        response: responsePromise,
+      };
+    }
   }
 
   return {
@@ -123,10 +146,12 @@ function makeUpdate(updateId: number, text: string, userId = 42) {
   };
 }
 
-function setupTelegramFetch() {
+function setupTelegramFetch(options: { draftFailures?: number } = {}) {
   const sends: Array<{ text: string; messageId: number; parseMode?: string }> = [];
+  const drafts: Array<{ text: string; draftId: number; parseMode?: string }> = [];
   const actions: string[] = [];
   let nextMessageId = 100;
+  let remainingDraftFailures = options.draftFailures ?? 0;
 
   vi.stubGlobal(
     "fetch",
@@ -135,6 +160,17 @@ function setupTelegramFetch() {
       if (url.includes("/sendChatAction")) {
         actions.push("typing");
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url.includes("/sendMessageDraft")) {
+        if (remainingDraftFailures > 0) {
+          remainingDraftFailures -= 1;
+          return new Response(JSON.stringify({ ok: false }), { status: 500 });
+        }
+        const body = init?.body
+          ? (JSON.parse(String(init.body)) as { text?: string; parse_mode?: string; draft_id?: number })
+          : {};
+        drafts.push({ text: body.text ?? "", draftId: body.draft_id ?? 0, parseMode: body.parse_mode });
+        return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
       }
       if (url.includes("/sendMessage")) {
         const body = init?.body ? (JSON.parse(String(init.body)) as { text?: string; parse_mode?: string }) : {};
@@ -147,7 +183,7 @@ function setupTelegramFetch() {
     }),
   );
 
-  return { sends, actions };
+  return { sends, drafts, actions };
 }
 
 async function callWebhook(env: ReturnType<typeof createEnv>["env"], updateId: number, text: string) {
@@ -195,6 +231,40 @@ describe("conversation e2e", () => {
     expect(systemPrompt).toContain('<custom_context id="soul">');
     expect(systemPrompt.indexOf('id="identity"')).toBeLessThan(systemPrompt.indexOf('id="memory"'));
     expect(systemPrompt.indexOf('id="memory"')).toBeLessThan(systemPrompt.indexOf('id="soul"'));
+  });
+
+  it("streams draft updates before sending final message", async () => {
+    const { env } = createEnv();
+    const { sends, drafts } = setupTelegramFetch();
+    const longReply = "Draft stream " + "x".repeat(180);
+
+    modelQueue.push({
+      stopReason: "endTurn",
+      content: [{ type: "text", text: longReply }],
+    });
+
+    await callWebhook(env, 4015, "stream please");
+
+    expect(drafts.length).toBeGreaterThan(0);
+    expect(drafts.at(-1)?.draftId).toBe(4015);
+    expect(drafts.at(-1)?.text).toContain("Draft stream");
+    expect(sends.at(-1)?.text).toContain("Draft stream");
+  });
+
+  it("falls back to final message when draft send fails", async () => {
+    const { env } = createEnv();
+    const { sends, drafts } = setupTelegramFetch({ draftFailures: 2 });
+    const longReply = "Fallback stream " + "y".repeat(180);
+
+    modelQueue.push({
+      stopReason: "endTurn",
+      content: [{ type: "text", text: longReply }],
+    });
+
+    await callWebhook(env, 4016, "stream fallback please");
+
+    expect(drafts).toEqual([]);
+    expect(sends.at(-1)?.text).toContain("Fallback stream");
   });
 
   it("supports debug mode via /debug and shows tool previews + step summary", async () => {

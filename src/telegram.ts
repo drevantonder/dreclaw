@@ -62,6 +62,38 @@ export async function sendTelegramMessage(
   }, 200);
 }
 
+export async function sendTelegramMessageDraft(
+  token: string,
+  chatId: number,
+  draftId: number,
+  text: string,
+  options: TelegramSendOptions = {},
+): Promise<void> {
+  const url = `${TELEGRAM_API}/bot${token}/sendMessageDraft`;
+  const parseMode = options.parseMode ?? "HTML";
+  const safeText = clampTelegramText(
+    parseMode === "HTML" ? (options.rawHtml ? String(text ?? "") : formatTelegramHtml(text)) : text,
+  );
+  const body = {
+    chat_id: chatId,
+    draft_id: draftId,
+    text: safeText,
+    parse_mode: parseMode,
+  };
+
+  await retryOnce(async () => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const payload = await response.text();
+      throw new Error(`Telegram draft send failed (${response.status}): ${payload}`);
+    }
+  }, 200);
+}
+
 export async function sendTelegramChatAction(token: string, chatId: number, action = "typing"): Promise<void> {
   const url = `${TELEGRAM_API}/bot${token}/sendChatAction`;
   const body = {

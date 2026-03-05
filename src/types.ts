@@ -1,4 +1,6 @@
-export const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1";
+export const OPENCODE_ZEN_BASE_URL = "https://opencode.ai/zen/v1";
+export const OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
+export const DEFAULT_BASE_URL = OPENCODE_ZEN_BASE_URL;
 
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
@@ -7,7 +9,7 @@ export interface Env {
   AI_PROVIDER?: string;
   MODEL: string;
   BASE_URL?: string;
-  OPENCODE_ZEN_API_KEY?: string;
+  OPENCODE_API_KEY?: string;
   GOOGLE_OAUTH_CLIENT_ID?: string;
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
   GOOGLE_OAUTH_REDIRECT_URI?: string;
