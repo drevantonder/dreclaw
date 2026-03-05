@@ -6,6 +6,7 @@ const {
   upsertFactVector,
   deleteFactVectors,
   upsertSimilarMemoryFact,
+  listActiveMemoryFacts,
   getActiveMemoryFactByTarget,
   deleteMemoryFactById,
 } = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ const {
   upsertFactVector: vi.fn(),
   deleteFactVectors: vi.fn(),
   upsertSimilarMemoryFact: vi.fn(),
+  listActiveMemoryFacts: vi.fn(),
   getActiveMemoryFactByTarget: vi.fn(),
   deleteMemoryFactById: vi.fn(),
 }));
@@ -23,6 +25,7 @@ vi.mock("../../src/memory/embeddings", () => ({ embedText }));
 vi.mock("../../src/memory/vectorize", () => ({ upsertFactVector, deleteFactVectors }));
 vi.mock("../../src/db", () => ({
   upsertSimilarMemoryFact,
+  listActiveMemoryFacts,
   getActiveMemoryFactByTarget,
   deleteMemoryFactById,
 }));
@@ -52,8 +55,45 @@ describe("memory execute api", () => {
       expect.objectContaining({ chatId: 777, query: "concise", factTopK: 3 }),
     );
     expect(result).toEqual({
+      query: "concise",
+      count: 1,
+      truncated: false,
       facts: [{ id: "fact_1", kind: "fact", text: "User likes concise replies", confidence: 0.9 }],
     });
+  });
+
+  it("find supports empty query by listing top facts", async () => {
+    listActiveMemoryFacts.mockResolvedValue([
+      { id: "fact_1", kind: "identity", text: "You are dréclaw", confidence: 0.95 },
+    ]);
+
+    const result = await executeMemoryFind({
+      env: {} as never,
+      db: {} as never,
+      chatId: 777,
+      embeddingModel: "model",
+      payload: { query: "", topK: 3 },
+    });
+
+    expect(listActiveMemoryFacts).toHaveBeenCalledWith(expect.anything(), 777, 3);
+    expect(result).toEqual({
+      query: "",
+      count: 1,
+      truncated: false,
+      facts: [{ id: "fact_1", kind: "identity", text: "You are dréclaw", confidence: 0.95 }],
+    });
+  });
+
+  it("rejects unsupported memory.find args", async () => {
+    await expect(
+      executeMemoryFind({
+        env: {} as never,
+        db: {} as never,
+        chatId: 777,
+        embeddingModel: "model",
+        payload: { query: "x", table: "episodes" },
+      }),
+    ).rejects.toThrow("memory.find unsupported args: table");
   });
 
   it("save upserts fact and vector", async () => {

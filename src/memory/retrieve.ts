@@ -60,10 +60,12 @@ export async function retrieveMemoryContext(params: {
 
 function buildKeywordQuery(input: string): string {
   const tokens = String(input ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((token) => token.length >= 3)
+    .filter((token) => token.length >= 2)
     .slice(0, 6);
   if (!tokens.length) return "";
   return tokens.join(" OR ");
