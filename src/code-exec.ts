@@ -697,6 +697,7 @@ globalThis.fs = {
   list: async (prefix = "/") => JSON.parse(await globalThis.__host_fs_list(JSON.stringify({ prefix: String(prefix) }))),
   remove: async (path) => JSON.parse(await globalThis.__host_fs_remove(String(path))),
 };
+var fs = globalThis.fs;
 
 const __googleRuntime = globalThis.__google_runtime || { accessToken: "", allowedServices: [] };
 const __googleAllowed = Array.isArray(__googleRuntime.allowedServices) ? new Set(__googleRuntime.allowedServices) : new Set();
