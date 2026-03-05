@@ -32,14 +32,12 @@ export async function queryFactVectors(
       options: {
         topK: number;
         filter?: Record<string, unknown>;
-        returnMetadata?: boolean;
       },
     ) => Promise<{ matches?: Array<{ id?: string; score?: number }> }>;
   };
   const result = await index.query(values, {
     topK,
     filter: { chat_id: { $eq: chatId } },
-    returnMetadata: false,
   });
   const matches = result.matches ?? [];
   return matches

@@ -41,11 +41,10 @@ CREATE TABLE IF NOT EXISTS memory_fact_sources (
   FOREIGN KEY (episode_id) REFERENCES memory_episodes(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS memory_facts_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(
   fact_id UNINDEXED,
   chat_id UNINDEXED,
-  text,
-  content=''
+  text
 );
 
 CREATE TRIGGER IF NOT EXISTS trg_memory_facts_fts_insert

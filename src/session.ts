@@ -113,7 +113,6 @@ export class SessionRuntime implements DurableObject {
     this.stateData.memoryTurns = Number.isFinite(this.stateData.memoryTurns) ? Math.max(0, Math.trunc(this.stateData.memoryTurns ?? 0)) : 0;
     this.stateData.prefs = normalizePrefs(this.stateData.prefs);
     this.stateData.codeRuntime = normalizeCodeRuntimeState(this.stateData.codeRuntime);
-    await this.migrateLegacyCustomContext();
     this.loaded = true;
   }
 
@@ -122,6 +121,7 @@ export class SessionRuntime implements DurableObject {
   }
 
   private async handleMessage(payload: SessionRequest): Promise<SessionResponse> {
+    await this.migrateLegacyCustomContext(payload.message.chat.id);
     const userText = payload.message.text ?? payload.message.caption ?? "";
     const imageBlocks = await this.loadImages(payload.message);
     const text = userText.trim();
@@ -491,7 +491,7 @@ export class SessionRuntime implements DurableObject {
     };
   }
 
-  private async migrateLegacyCustomContext(): Promise<void> {
+  private async migrateLegacyCustomContext(chatId: number): Promise<void> {
     const carrier = this.stateData as unknown as Record<string, unknown>;
     if (!("customContext" in carrier)) return;
 
@@ -507,7 +507,7 @@ export class SessionRuntime implements DurableObject {
       const content = `${item.id}: ${item.text}`;
       await insertMemoryEpisode(this.env.DRECLAW_DB, {
         id: episodeId,
-        chatId: Number(this.state.id.toString()),
+        chatId,
         role: "tool",
         content,
         salience: 1,
@@ -517,7 +517,7 @@ export class SessionRuntime implements DurableObject {
       const kind = item.id === "identity" || item.id === "soul" ? "identity" : "fact";
       const saved = await upsertSimilarMemoryFact(this.env.DRECLAW_DB, {
         id: buildMemoryId("fact"),
-        chatId: Number(this.state.id.toString()),
+        chatId,
         kind,
         text: item.text,
         confidence: 0.95,
@@ -526,7 +526,7 @@ export class SessionRuntime implements DurableObject {
       await attachMemoryFactSource(this.env.DRECLAW_DB, saved.fact.id, episodeId, nowIso);
       if (saved.created) {
         const vector = await embedText(this.env, memory.embeddingModel, saved.fact.text);
-        await upsertFactVector(this.env, saved.fact.id, Number(this.state.id.toString()), vector);
+        await upsertFactVector(this.env, saved.fact.id, chatId, vector);
       }
     }
     await this.save();
