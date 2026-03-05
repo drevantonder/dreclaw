@@ -10,7 +10,7 @@ import {
 } from "./code-exec";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
-import { fetchImageAsDataUrl, sendTelegramMessage } from "./telegram";
+import { fetchImageAsDataUrl, sendTelegramMessage, sendTelegramMessageDraft } from "./telegram";
 import {
   OPENCODE_GO_BASE_URL,
   OPENCODE_ZEN_BASE_URL,
@@ -60,6 +60,8 @@ const SYSTEM_PROMPT =
 const MAX_CUSTOM_CONTEXT_ITEMS = 48;
 const MAX_CUSTOM_CONTEXT_TEXT_CHARS = 10_000;
 const CUSTOM_CONTEXT_ID_RE = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
+const TELEGRAM_DRAFT_MIN_INTERVAL_MS = 600;
+const TELEGRAM_DRAFT_MIN_DELTA_CHARS = 80;
 
 const DEFAULT_CUSTOM_CONTEXT_ITEMS: CustomContextItem[] = [
   {
@@ -207,7 +209,12 @@ export class SessionRuntime implements DurableObject {
       showThinking: this.shouldShowThinking(),
     });
 
-    const run = await this.runAgentLoop(runtime, text, imageBlocks, progress);
+    const draftReporter = new TelegramDraftReporter({
+      token: this.env.TELEGRAM_BOT_TOKEN,
+      chatId: payload.message.chat.id,
+      draftId: buildTelegramDraftId(payload.updateId),
+    });
+    const run = await this.runAgentLoop(runtime, text, imageBlocks, progress, draftReporter);
     const responseText = run.finalText.trim() || "(empty response)";
     this.pushHistory({ role: "user", content: text || "[image]" });
     for (const transcript of run.toolTranscripts) {
@@ -224,6 +231,7 @@ export class SessionRuntime implements DurableObject {
     userText: string,
     imageBlocks: string[],
     progress: TelegramProgressReporter,
+    draftReporter: TelegramDraftReporter,
   ): Promise<AgentRunResult> {
     const model = this.createModel(runtime);
     const historyContext = renderHistoryContext(this.stateData.history);
@@ -244,12 +252,18 @@ export class SessionRuntime implements DurableObject {
       stopWhen: stepCountIs(8),
     });
 
-    const result = await agent.generate({
+    const stream = await agent.stream({
       messages: buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks),
     });
+    for await (const delta of stream.textStream) {
+      await draftReporter.onTextDelta(delta);
+    }
+    await draftReporter.flush();
 
-    await progress.sendThinkingBlocks(extractThinkingBlocks(result.response.messages));
-    const finalText = typeof result.text === "string" ? result.text.trim() : "";
+    const response = await stream.response;
+    await progress.sendThinkingBlocks(extractThinkingBlocks(response.messages));
+    const generatedText = await stream.text;
+    const finalText = typeof generatedText === "string" ? generatedText.trim() : "";
     return { finalText: finalText || "(empty response)", toolTranscripts };
   }
 
@@ -766,6 +780,66 @@ class TelegramProgressReporter {
       });
     }
   }
+}
+
+class TelegramDraftReporter {
+  private readonly token: string;
+  private readonly chatId: number;
+  private readonly draftId: number;
+  private enabled = true;
+  private assembledText = "";
+  private lastSentText = "";
+  private lastSentAt = 0;
+
+  constructor(params: { token: string; chatId: number; draftId: number }) {
+    this.token = params.token;
+    this.chatId = params.chatId;
+    this.draftId = params.draftId;
+  }
+
+  async onTextDelta(delta: string): Promise<void> {
+    if (!this.enabled) return;
+    const next = String(delta ?? "");
+    if (!next) return;
+    this.assembledText += next;
+    await this.maybeSend(false);
+  }
+
+  async flush(): Promise<void> {
+    if (!this.enabled) return;
+    await this.maybeSend(true);
+  }
+
+  private async maybeSend(force: boolean): Promise<void> {
+    const trimmed = this.assembledText.trim();
+    if (!trimmed) return;
+    if (trimmed === this.lastSentText) return;
+
+    const now = Date.now();
+    const deltaChars = trimmed.length - this.lastSentText.length;
+    const elapsed = now - this.lastSentAt;
+    const shouldSend = force || deltaChars >= TELEGRAM_DRAFT_MIN_DELTA_CHARS || elapsed >= TELEGRAM_DRAFT_MIN_INTERVAL_MS;
+    if (!shouldSend) return;
+
+    try {
+      await sendTelegramMessageDraft(this.token, this.chatId, this.draftId, trimmed);
+      this.lastSentText = trimmed;
+      this.lastSentAt = now;
+    } catch (error) {
+      this.enabled = false;
+      console.warn("telegram-draft-send-failed", {
+        chatId: this.chatId,
+        draftId: this.draftId,
+        error: error instanceof Error ? error.message : String(error ?? "unknown"),
+      });
+    }
+  }
+}
+
+function buildTelegramDraftId(updateId: number): number {
+  const numericUpdateId = Number.isFinite(updateId) ? Math.trunc(updateId) : 0;
+  const normalized = Math.abs(numericUpdateId) % 2_000_000_000;
+  return normalized === 0 ? 1 : normalized;
 }
 
 function buildToolPreview(name: string, args: Record<string, unknown>): { key: string; text: string; rawHtml?: boolean } | null {
