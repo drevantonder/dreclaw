@@ -6,8 +6,9 @@
 
 - Telegram private chat-only, single-user (me)
 - Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/show-thinking`
-- Core tools: `search`, `execute`, `custom_context_get`, `custom_context_set`, `custom_context_delete`
-- Versioned `custom_context` persisted in Durable Object session state
+- Core tools: `search`, `execute`
+- Persistent memory: D1 episodic/fact memory + Vectorize semantic recall
+- Hybrid memory pipeline: D1 episodic/fact memory + Vectorize semantic recall (Workers AI embeddings)
 - AI SDK provider switch: `opencode`, `opencode-go`, or `workers` (Workers AI)
 
 ## Architecture (High-level)
@@ -17,18 +18,15 @@ flowchart TD
   U[Telegram Chat] --> W[Worker Gateway]
   W --> DO[Durable Object Session]
   DO --> M[Model Loop]
-  M --> CC[Custom Context]
-  M --> T[Tools: search/execute + custom_context_get/set/delete]
+  M --> MM[Memory: episodes/facts]
+  M --> T[Tools: search/execute]
   DO --> W --> U
 ```
 
 - Worker verifies Telegram requests and routes updates.
 - Durable Object serializes turns and stores session state.
-- Runtime compiles `custom_context` into XML in the system prompt:
-  - `<custom_context_manifest version="<n>" count="<m>">`
-  - `<custom_context id="...">...</custom_context>` entries (sorted by id)
-  - `</custom_context_manifest>`
-- Agent loop runs on AI SDK `ToolLoopAgent` and can inspect/replace custom context with versioned tools.
+- Runtime retrieves memory context (hybrid semantic + lexical + recency) and injects it into the system prompt.
+- Agent loop runs on AI SDK `ToolLoopAgent` with runtime-managed memory persistence.
 - OpenCode uses `AI_PROVIDER=opencode` (Zen default URL) or `AI_PROVIDER=opencode-go` (Go default URL).
 - Workers AI runs via `workers-ai-provider` binding (`env.AI`) when `AI_PROVIDER=workers`.
 - Agent can run sandboxed JS with `execute`; `search` lists runtime limits/capabilities and installed packages.
@@ -74,9 +72,9 @@ pnpm deploy
 ## Usage
 
 - Message the bot in a private Telegram chat.
-- `/status` shows runtime/session/auth + custom context metadata.
-- `/reset` clears conversation context only (keeps `custom_context`).
-- `/factory-reset` clears conversation context and restores default `custom_context`.
+- `/status` shows runtime/session/auth + memory metadata.
+- `/reset` clears conversation context only (keeps memory).
+- `/factory-reset` clears conversation context and wipes persisted memory.
 - `/debug on|off` toggles debug previews and per-step tool summaries.
 - `/show-thinking on|off` toggles thinking block visibility.
 - `/google connect` starts Google OAuth linking flow.
@@ -98,9 +96,8 @@ pnpm deploy
 ## Persistence model
 
 - Durable conversation history lives in session state.
-- `custom_context` lives in session state with optimistic versioning.
-- `custom_context_set` upserts one context entry by `id` with `expected_version` checks.
-- `custom_context_delete` removes one context entry by `id` with `expected_version` checks.
+- Long-term memory facts/episodes live in D1 + Vectorize (`VECTORIZE_MEMORY`) with Workers AI embeddings (`env.AI`).
+- Memory writes are salience-gated and consolidated through reflection.
 - `search` returns QuickJS runtime capabilities/limits and package inventory.
 - `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, and `fetch` inside the runtime.
 - `execute` also exposes `google.api(service, version)`, `google.schema(service, version, method)`, and `google.execute({...})`.

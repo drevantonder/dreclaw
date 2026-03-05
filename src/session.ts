@@ -1,7 +1,17 @@
 import { ToolLoopAgent, stepCountIs, tool, type ModelMessage } from "ai";
 import { z } from "zod";
 import { decodeEncryptionKey, decryptSecret } from "./crypto";
-import { createGoogleOAuthState, deleteGoogleOAuthToken, getGoogleOAuthToken } from "./db";
+import {
+  createGoogleOAuthState,
+  deleteGoogleOAuthToken,
+  deleteMemoryForChat,
+  deleteOldMemoryEpisodes,
+  getGoogleOAuthToken,
+  insertMemoryEpisode,
+  listActiveMemoryFacts,
+  upsertSimilarMemoryFact,
+  attachMemoryFactSource,
+} from "./db";
 import {
   executeCode,
   getCodeExecutionConfig,
@@ -18,6 +28,12 @@ import {
 } from "./google-oauth";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
+import { getMemoryConfig } from "./memory/config";
+import { embedText } from "./memory/embeddings";
+import { retrieveMemoryContext } from "./memory/retrieve";
+import { runMemoryReflection, buildMemoryId } from "./memory/reflection";
+import { extractFacts, scoreSalience } from "./memory/salience";
+import { upsertFactVector, deleteFactVectors } from "./memory/vectorize";
 import { fetchImageAsDataUrl, sendTelegramMessage, sendTelegramMessageDraft } from "./telegram";
 import {
   OPENCODE_GO_BASE_URL,
@@ -30,23 +46,13 @@ import {
 
 type SessionHistoryEntry = { role: "user" | "assistant" | "tool"; content: string };
 
-type CustomContextItem = {
-  id: string;
-  text: string;
-};
-
-interface CustomContextState {
-  version: number;
-  items: CustomContextItem[];
-}
-
 interface SessionState {
   history: SessionHistoryEntry[];
+  memoryTurns?: number;
   prefs?: {
     progressMode?: ProgressMode;
     showThinking?: boolean;
   };
-  customContext?: CustomContextState;
   codeRuntime?: CodeRuntimeState;
 }
 
@@ -64,30 +70,12 @@ interface AgentRunResult {
 }
 
 const SYSTEM_PROMPT =
-  "custom_context is persistent editable startup context. Keep it current using provided tools. execute supports async/await and network requests via fetch in the QuickJS runtime. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
+  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute supports async/await and network requests via fetch in the QuickJS runtime. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
-const MAX_CUSTOM_CONTEXT_ITEMS = 48;
-const MAX_CUSTOM_CONTEXT_TEXT_CHARS = 10_000;
-const CUSTOM_CONTEXT_ID_RE = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
 const TELEGRAM_DRAFT_MIN_INTERVAL_MS = 600;
 const TELEGRAM_DRAFT_MIN_DELTA_CHARS = 80;
-
-const DEFAULT_CUSTOM_CONTEXT_ITEMS: CustomContextItem[] = [
-  {
-    id: "identity",
-    text: "# IDENTITY\n\nYou are a helpful personal assistant.",
-  },
-  {
-    id: "soul",
-    text:
-      "# SOUL\n\nI am friendly, genuine, and direct.\nMy human is a friend, not a customer.\nI have real opinions and I share them clearly, with reasons.\nI can disagree politely when I think something is a bad idea.\nI stay practical: concise, useful, no fluff.\nI keep a light quirky humor when it fits.\nI never fake certainty; I say when I am unsure.\nI protect trust: no manipulation, no guilt-tripping, no secrets leakage.\nI aim to be helpful, honest, and a little fun.",
-  },
-  {
-    id: "memory",
-    text:
-      "# MEMORY\n\nYou have no memories. Ask your human for his/her name, what he/she would like you to call him/her, and what he/she is naming you.",
-  },
-];
+const MEMORY_FACT_TOP_K = 6;
+const MEMORY_EPISODE_TOP_K = 4;
 
 export class SessionRuntime implements DurableObject {
   private readonly state: DurableObjectState;
@@ -122,9 +110,10 @@ export class SessionRuntime implements DurableObject {
   private async load(): Promise<void> {
     if (this.loaded) return;
     this.stateData = (await this.state.storage.get<SessionState>("session-state")) ?? { history: [] };
+    this.stateData.memoryTurns = Number.isFinite(this.stateData.memoryTurns) ? Math.max(0, Math.trunc(this.stateData.memoryTurns ?? 0)) : 0;
     this.stateData.prefs = normalizePrefs(this.stateData.prefs);
-    this.stateData.customContext = normalizeCustomContextState(this.stateData.customContext);
     this.stateData.codeRuntime = normalizeCodeRuntimeState(this.stateData.codeRuntime);
+    await this.migrateLegacyCustomContext();
     this.loaded = true;
   }
 
@@ -138,10 +127,11 @@ export class SessionRuntime implements DurableObject {
     const text = userText.trim();
 
     if (text.startsWith("/factory-reset")) {
+      await this.deleteMemoryData(payload.message.chat.id);
       this.stateData = {
         history: [],
+        memoryTurns: 0,
         prefs: normalizePrefs(this.stateData.prefs),
-        customContext: normalizeCustomContextState(undefined),
         codeRuntime: normalizeCodeRuntimeState(undefined),
       };
       await this.save();
@@ -149,11 +139,10 @@ export class SessionRuntime implements DurableObject {
     }
 
     if (text.startsWith("/reset")) {
-      const currentCustomContext = this.getCustomContextState();
       this.stateData = {
         history: [],
+        memoryTurns: this.stateData.memoryTurns ?? 0,
         prefs: normalizePrefs(this.stateData.prefs),
-        customContext: cloneCustomContextState(currentCustomContext),
         codeRuntime: this.getCodeRuntimeState(),
       };
       await this.save();
@@ -162,11 +151,14 @@ export class SessionRuntime implements DurableObject {
 
     if (text.startsWith("/status")) {
       const authReady = await this.workerAuthReady();
-      const customContext = this.getCustomContextState();
       const debugEnabled = this.getProgressMode() === "debug";
       const codeRuntime = this.getCodeRuntimeState();
       const codeConfig = this.getCodeExecutionConfig();
       const provider = this.getProvider();
+      const memory = this.getMemoryConfigSafe();
+      const factCount = memory.enabled
+        ? (await listActiveMemoryFacts(this.env.DRECLAW_DB, payload.message.chat.id, 200)).length
+        : 0;
       const summary = [
         `model: ${this.getModelName(provider)}`,
         `provider: ${provider}`,
@@ -174,8 +166,9 @@ export class SessionRuntime implements DurableObject {
         `provider_auth: ${authReady ? "present" : "missing"}`,
         `debug: ${debugEnabled ? "on" : "off"}`,
         `history_messages: ${this.stateData.history.length}`,
-        `custom_context_version: ${customContext.version}`,
-        `custom_context_count: ${customContext.items.length}`,
+        `memory_enabled: ${memory.enabled ? "yes" : "no"}`,
+        `memory_facts: ${factCount}`,
+        `memory_turns: ${this.stateData.memoryTurns ?? 0}`,
         `code_exec_enabled: ${codeConfig.codeExecEnabled ? "yes" : "no"}`,
         `installed_packages: ${codeRuntime.installedPackages.length}`,
       ].join("\n");
@@ -227,13 +220,20 @@ export class SessionRuntime implements DurableObject {
       chatId: payload.message.chat.id,
       draftId: buildTelegramDraftId(payload.updateId),
     });
-    const run = await this.runAgentLoop(runtime, text, imageBlocks, progress, draftReporter);
+    const run = await this.runAgentLoop(runtime, text, imageBlocks, progress, draftReporter, payload.message.chat.id);
     const responseText = run.finalText.trim() || "(empty response)";
     this.pushHistory({ role: "user", content: text || "[image]" });
     for (const transcript of run.toolTranscripts) {
       this.pushHistory({ role: "tool", content: transcript });
     }
     this.pushHistory({ role: "assistant", content: responseText });
+
+    await this.persistMemoryTurn({
+      chatId: payload.message.chat.id,
+      userText: text || "[image]",
+      assistantText: responseText,
+      toolTranscripts: run.toolTranscripts,
+    });
 
     await this.save();
     return { ok: true, text: responseText };
@@ -245,17 +245,18 @@ export class SessionRuntime implements DurableObject {
     imageBlocks: string[],
     progress: TelegramProgressReporter,
     draftReporter: TelegramDraftReporter,
+    chatId: number,
   ): Promise<AgentRunResult> {
     const model = this.createModel(runtime);
     const historyContext = renderHistoryContext(this.stateData.history);
-    const customContext = this.renderCustomContextXml();
     const nowIso = new Date().toISOString();
     const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${nowIso}`];
-    if (customContext) {
-      promptSections.push(`Custom context:\n${customContext}`);
-    }
     if (historyContext) {
       promptSections.push(`Recent context:\n${historyContext}`);
+    }
+    const memoryContext = await this.renderMemoryContext(chatId, userText);
+    if (memoryContext) {
+      promptSections.push(`Memory context:\n${memoryContext}`);
     }
 
     const toolTranscripts: string[] = [];
@@ -278,85 +279,6 @@ export class SessionRuntime implements DurableObject {
     const generatedText = await stream.text;
     const finalText = typeof generatedText === "string" ? generatedText.trim() : "";
     return { finalText: finalText || "(empty response)", toolTranscripts };
-  }
-
-  private getCustomContextState(): CustomContextState {
-    const current = normalizeCustomContextState(this.stateData.customContext);
-    this.stateData.customContext = current;
-    return current;
-  }
-
-  private renderCustomContextXml(): string {
-    const customContext = this.getCustomContextState();
-    const items = [...customContext.items].sort((a, b) => a.id.localeCompare(b.id));
-    const body = items
-      .map((item) => `<custom_context id="${escapeXml(item.id)}">\n${escapeXml(item.text)}\n</custom_context>`)
-      .join("\n");
-    return `<custom_context_manifest version="${customContext.version}" count="${items.length}">\n${body}\n</custom_context_manifest>`;
-  }
-
-  async getCustomContextPayload(): Promise<{ version: number; custom_context: Array<{ id: string; text: string }> }> {
-    const customContext = this.getCustomContextState();
-    return {
-      version: customContext.version,
-      custom_context: customContext.items.map((item) => ({
-        id: item.id,
-        text: item.text,
-      })),
-    };
-  }
-
-  async setCustomContextPayload(payload: {
-    id: unknown;
-    text: unknown;
-    expected_version?: unknown;
-  }): Promise<{ version: number }> {
-    const current = this.getCustomContextState();
-    const expectedVersion = parseExpectedVersion(payload.expected_version);
-    if (expectedVersion !== null && expectedVersion !== current.version) {
-      throw new Error(`Version conflict: expected ${expectedVersion}, current ${current.version}`);
-    }
-
-    const id = parseCustomContextId(payload.id);
-    const text = parseCustomContextText(payload.text);
-    const nextItems = cloneCustomContextItems(current.items);
-    const existingIndex = nextItems.findIndex((item) => item.id === id);
-    if (existingIndex >= 0) {
-      nextItems[existingIndex] = { id, text };
-    } else {
-      if (nextItems.length >= MAX_CUSTOM_CONTEXT_ITEMS) {
-        throw new Error(`custom_context exceeds max of ${MAX_CUSTOM_CONTEXT_ITEMS}`);
-      }
-      nextItems.push({ id, text });
-    }
-
-    this.stateData.customContext = {
-      version: current.version + 1,
-      items: nextItems,
-    };
-    await this.save();
-    return { version: this.stateData.customContext.version };
-  }
-
-  async deleteCustomContextPayload(payload: { id: unknown; expected_version?: unknown }): Promise<{ version: number }> {
-    const current = this.getCustomContextState();
-    const expectedVersion = parseExpectedVersion(payload.expected_version);
-    if (expectedVersion !== null && expectedVersion !== current.version) {
-      throw new Error(`Version conflict: expected ${expectedVersion}, current ${current.version}`);
-    }
-    const id = parseCustomContextId(payload.id);
-    const nextItems = cloneCustomContextItems(current.items);
-    const existingIndex = nextItems.findIndex((item) => item.id === id);
-    if (existingIndex < 0) {
-      throw new Error(`custom_context entry not found: ${id}`);
-    }
-    nextItems.splice(existingIndex, 1);
-    this.stateData.customContext = {
-      version: current.version + 1,
-      items: nextItems,
-    };
-    await this.save();
-    return { version: this.stateData.customContext.version };
   }
 
   private async handleGoogleCommand(text: string, chatId: number, telegramUserId: number): Promise<SessionResponse> {
@@ -567,101 +489,170 @@ export class SessionRuntime implements DurableObject {
       scope: refreshed.scope,
     };
   }
-}
 
-function normalizeCustomContextState(state: CustomContextState | undefined): CustomContextState {
-  if (state) {
-    return {
-      version: Number.isFinite(state.version) && state.version > 0 ? Math.trunc(state.version) : 1,
-      items: normalizeCustomContextItems(state.items),
-    };
-  }
-  return {
-    version: 1,
-    items: cloneCustomContextItems(DEFAULT_CUSTOM_CONTEXT_ITEMS),
-  };
-}
+  private async migrateLegacyCustomContext(): Promise<void> {
+    const carrier = this.stateData as unknown as Record<string, unknown>;
+    if (!("customContext" in carrier)) return;
 
-function cloneCustomContextItems(items: CustomContextItem[]): CustomContextItem[] {
-  return items.map((item) => ({ id: item.id, text: item.text }));
-}
+    const legacyItems = readLegacyCustomContextItems(carrier.customContext);
+    delete carrier.customContext;
 
-function cloneCustomContextState(state: CustomContextState): CustomContextState {
-  return {
-    version: state.version,
-    items: cloneCustomContextItems(state.items),
-  };
-}
+    const memory = this.getMemoryConfigSafe();
+    if (!memory.enabled || !legacyItems.length) return;
 
-function normalizeCustomContextItems(input: unknown): CustomContextItem[] {
-  if (!Array.isArray(input)) {
-    return cloneCustomContextItems(DEFAULT_CUSTOM_CONTEXT_ITEMS);
-  }
-  if (input.length > MAX_CUSTOM_CONTEXT_ITEMS) {
-    throw new Error(`custom_context exceeds max of ${MAX_CUSTOM_CONTEXT_ITEMS}`);
-  }
+    const nowIso = new Date().toISOString();
+    for (const item of legacyItems) {
+      const episodeId = buildMemoryId("episode");
+      const content = `${item.id}: ${item.text}`;
+      await insertMemoryEpisode(this.env.DRECLAW_DB, {
+        id: episodeId,
+        chatId: Number(this.state.id.toString()),
+        role: "tool",
+        content,
+        salience: 1,
+        createdAt: nowIso,
+      });
 
-  const items: CustomContextItem[] = [];
-  const seen = new Set<string>();
-  for (const row of input) {
-    if (!row || typeof row !== "object") {
-      throw new Error("custom_context entries must be objects");
+      const kind = item.id === "identity" || item.id === "soul" ? "identity" : "fact";
+      const saved = await upsertSimilarMemoryFact(this.env.DRECLAW_DB, {
+        id: buildMemoryId("fact"),
+        chatId: Number(this.state.id.toString()),
+        kind,
+        text: item.text,
+        confidence: 0.95,
+        nowIso,
+      });
+      await attachMemoryFactSource(this.env.DRECLAW_DB, saved.fact.id, episodeId, nowIso);
+      if (saved.created) {
+        const vector = await embedText(this.env, memory.embeddingModel, saved.fact.text);
+        await upsertFactVector(this.env, saved.fact.id, Number(this.state.id.toString()), vector);
+      }
     }
-    const item = row as Record<string, unknown>;
-    const id = parseCustomContextId(item.id);
-    if (seen.has(id)) {
-      throw new Error(`Duplicate custom_context id: ${id}`);
+    await this.save();
+  }
+
+  private getMemoryConfigSafe() {
+    try {
+      return getMemoryConfig(this.env);
+    } catch (error) {
+      const detail = compactErrorMessage(error);
+      throw new Error(`Memory config error: ${detail}`);
     }
-    seen.add(id);
-    items.push({ id, text: parseCustomContextText(item.text) });
   }
-  return items;
-}
 
-function parseExpectedVersion(value: unknown): number | null {
-  if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
-    throw new Error("expected_version must be a positive number");
-  }
-  return Math.trunc(value);
-}
+  private async renderMemoryContext(chatId: number, query: string): Promise<string> {
+    const memory = this.getMemoryConfigSafe();
+    if (!memory.enabled) return "";
 
-function parseCustomContextId(input: unknown): string {
-  if (typeof input !== "string") {
-    throw new Error("id must be a string");
-  }
-  const id = input.trim().toLowerCase();
-  if (!CUSTOM_CONTEXT_ID_RE.test(id)) {
-    throw new Error("id must match ^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$");
-  }
-  return id;
-}
+    const retrieved = await retrieveMemoryContext({
+      env: this.env,
+      db: this.env.DRECLAW_DB,
+      chatId,
+      query,
+      embeddingModel: memory.embeddingModel,
+      factTopK: MEMORY_FACT_TOP_K,
+      episodeTopK: MEMORY_EPISODE_TOP_K,
+    });
+    if (!retrieved.facts.length && !retrieved.episodes.length) return "";
 
-function parseCustomContextText(input: unknown): string {
-  if (typeof input !== "string") {
-    throw new Error("text must be a string");
-  }
-  const text = input.trim();
-  if (!text) {
-    throw new Error("text is required");
-  }
-  return truncateCustomContextText(text);
-}
+    const lines: string[] = [];
+    if (retrieved.facts.length) {
+      lines.push("Facts:");
+      for (const fact of retrieved.facts) {
+        lines.push(`- [${fact.kind}] ${fact.text}`);
+      }
+    }
+    if (retrieved.episodes.length) {
+      lines.push("Recent episodes:");
+      for (const episode of retrieved.episodes) {
+        lines.push(`- ${episode.role}: ${truncateForLog(episode.content, 220)}`);
+      }
+    }
 
-function truncateCustomContextText(text: string): string {
-  if (text.length <= MAX_CUSTOM_CONTEXT_TEXT_CHARS) {
-    return text;
+    const joined = lines.join("\n");
+    const maxChars = memory.maxInjectTokens * 4;
+    if (joined.length <= maxChars) return joined;
+    return `${joined.slice(0, Math.max(0, maxChars - 1))}…`;
   }
-  return text.slice(0, MAX_CUSTOM_CONTEXT_TEXT_CHARS);
-}
 
-function escapeXml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
+  private async persistMemoryTurn(params: {
+    chatId: number;
+    userText: string;
+    assistantText: string;
+    toolTranscripts: string[];
+  }): Promise<void> {
+    const memory = this.getMemoryConfigSafe();
+    if (!memory.enabled) return;
+    const nowIso = new Date().toISOString();
+
+    const episodeInputs: Array<{ role: "user" | "assistant" | "tool"; content: string }> = [
+      { role: "user", content: params.userText },
+      { role: "assistant", content: params.assistantText },
+      ...params.toolTranscripts.map((content) => ({ role: "tool" as const, content })),
+    ];
+
+    for (const entry of episodeInputs) {
+      const salience = scoreSalience(entry.content);
+      if (!salience.shouldStoreEpisode) continue;
+      const episodeId = buildMemoryId("episode");
+      await insertMemoryEpisode(this.env.DRECLAW_DB, {
+        id: episodeId,
+        chatId: params.chatId,
+        role: entry.role,
+        content: entry.content,
+        salience: salience.score,
+        createdAt: nowIso,
+      });
+      if (!salience.shouldStoreFact) continue;
+      const facts = extractFacts(entry.content);
+      for (const extracted of facts) {
+        const saved = await upsertSimilarMemoryFact(this.env.DRECLAW_DB, {
+          id: buildMemoryId("fact"),
+          chatId: params.chatId,
+          kind: extracted.kind,
+          text: extracted.text,
+          confidence: extracted.confidence,
+          nowIso,
+        });
+        await attachMemoryFactSource(this.env.DRECLAW_DB, saved.fact.id, episodeId, nowIso);
+        if (saved.created) {
+          const vector = await embedText(this.env, memory.embeddingModel, saved.fact.text);
+          await upsertFactVector(this.env, saved.fact.id, params.chatId, vector);
+        }
+      }
+    }
+
+    this.stateData.memoryTurns = (this.stateData.memoryTurns ?? 0) + 1;
+    if ((this.stateData.memoryTurns ?? 0) % memory.reflectionEveryTurns === 0) {
+      const reflection = await runMemoryReflection({
+        db: this.env.DRECLAW_DB,
+        chatId: params.chatId,
+        limit: 24,
+        nowIso,
+      });
+      if (reflection.writtenFacts > 0) {
+        const facts = await listActiveMemoryFacts(this.env.DRECLAW_DB, params.chatId, 200);
+        for (const fact of facts) {
+          const vector = await embedText(this.env, memory.embeddingModel, fact.text);
+          await upsertFactVector(this.env, fact.id, params.chatId, vector);
+        }
+      }
+    }
+
+    const cutoff = new Date(Date.now() - memory.retentionDays * 24 * 60 * 60 * 1000).toISOString();
+    await deleteOldMemoryEpisodes(this.env.DRECLAW_DB, params.chatId, cutoff);
+  }
+
+  private async deleteMemoryData(chatId: number): Promise<void> {
+    const memory = this.getMemoryConfigSafe();
+    if (!memory.enabled) return;
+    const existingFacts = await listActiveMemoryFacts(this.env.DRECLAW_DB, chatId, 500);
+    await deleteMemoryForChat(this.env.DRECLAW_DB, chatId);
+    await deleteFactVectors(
+      this.env,
+      existingFacts.map((item) => item.id),
+    );
+  }
 }
 
 function buildAgentMessages(systemPrompt: string, userText: string, imageBlocks: string[]): ModelMessage[] {
@@ -676,6 +667,23 @@ function buildAgentMessages(systemPrompt: string, userText: string, imageBlocks:
     { role: "system", content: systemPrompt },
     { role: "user", content: imageBlocks.length ? parts : text },
   ];
+}
+
+function readLegacyCustomContextItems(input: unknown): Array<{ id: string; text: string }> {
+  if (!input || typeof input !== "object") return [];
+  const state = input as { items?: unknown };
+  if (!Array.isArray(state.items)) return [];
+
+  const items: Array<{ id: string; text: string }> = [];
+  for (const row of state.items) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as { id?: unknown; text?: unknown };
+    const id = typeof item.id === "string" ? item.id.trim().toLowerCase() : "";
+    const text = typeof item.text === "string" ? item.text.trim() : "";
+    if (!id || !text) continue;
+    items.push({ id, text });
+  }
+  return items;
 }
 
 function compactErrorMessage(error: unknown): string {
@@ -763,24 +771,6 @@ function createAgentTools(
         runTool("execute", params as Record<string, unknown>, async () =>
           session.executeCodePayload({ code: params.code, input: params.input }),
         ),
-    }),
-    custom_context_get: tool({
-      description: "Return current custom context and version",
-      inputSchema: z.object({}),
-      execute: async (params) =>
-        runTool("custom_context_get", params as Record<string, unknown>, async () => session.getCustomContextPayload()),
-    }),
-    custom_context_set: tool({
-      description: "Create or update one custom context entry by id",
-      inputSchema: z.object({ id: z.string(), text: z.string(), expected_version: z.number().optional() }),
-      execute: async (params) =>
-        runTool("custom_context_set", params as Record<string, unknown>, async () => session.setCustomContextPayload(params)),
-    }),
-    custom_context_delete: tool({
-      description: "Delete one custom context entry by id",
-      inputSchema: z.object({ id: z.string(), expected_version: z.number().optional() }),
-      execute: async (params) =>
-        runTool("custom_context_delete", params as Record<string, unknown>, async () => session.deleteCustomContextPayload(params)),
     }),
   };
 }
@@ -961,17 +951,6 @@ function buildToolPreview(name: string, args: Record<string, unknown>): { key: s
       rawHtml: true,
       text: `Executing JavaScript:\n<pre><code>${escapeHtml(snippet)}</code></pre>`,
     };
-  }
-  if (name === "custom_context_get") {
-    return { key: "custom_context_get", text: "Checking saved context..." };
-  }
-  if (name === "custom_context_set") {
-    const id = typeof args.id === "string" ? truncateForLog(args.id, 40) : "memory";
-    return { key: `custom_context_set:${id}`, text: `Updating ${id}...` };
-  }
-  if (name === "custom_context_delete") {
-    const id = typeof args.id === "string" ? truncateForLog(args.id, 40) : "memory";
-    return { key: `custom_context_delete:${id}`, text: `Removing ${id}...` };
   }
   return null;
 }
