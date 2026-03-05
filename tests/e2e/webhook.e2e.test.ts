@@ -243,8 +243,23 @@ describe("telegram webhook e2e", () => {
   });
 
   it("enqueues long-form prompts without immediate reply", async () => {
-    const { env, queueMessages, fakeQueue } = createEnv();
+    const { env, db, queueMessages, fakeQueue } = createEnv();
     env.AGENT_RUN_QUEUE = fakeQueue;
+    env.INLINE_BURST_MS = "1";
+    env.SESSION_RUNTIME = {
+      idFromName(name: string) {
+        return { toString: () => name } as unknown as DurableObjectId;
+      },
+      get() {
+        return {
+          fetch: async () =>
+            new Response(JSON.stringify({ done: false, checkpoint: { messages: [], toolTranscripts: [], imageBlocks: [] } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+        } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
     const sends: Array<{ body: unknown }> = [];
     vi.stubGlobal(
       "fetch",
@@ -272,16 +287,16 @@ describe("telegram webhook e2e", () => {
 
     const res = await app.fetch(req, env, {} as ExecutionContext);
     expect(res.status).toBe(200);
-    expect(queueMessages.length).toBe(1);
+    expect(db.agentRuns.size).toBe(1);
     expect(sends.length).toBe(0);
   });
 
   it("processes queued run and sends final response once", async () => {
     const { env, queueMessages, fakeQueue, db } = createEnv();
     env.AGENT_RUN_QUEUE = fakeQueue;
-
+    env.INLINE_BURST_MS = "1";
     const doFetch = vi.fn(async () =>
-      new Response(JSON.stringify({ done: true, text: "Long run complete." }), {
+      new Response(JSON.stringify({ done: false, checkpoint: { messages: [], toolTranscripts: [], imageBlocks: [] } }), {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
@@ -321,9 +336,25 @@ describe("telegram webhook e2e", () => {
     });
     const webhookRes = await app.fetch(webhookReq, env, {} as ExecutionContext);
     expect(webhookRes.status).toBe(200);
-    expect(queueMessages.length).toBe(1);
+    const runId = queueMessages[0] && typeof queueMessages[0] === "object" ? (queueMessages[0] as { runId?: string }).runId : undefined;
+    expect(runId || [...db.agentRuns.keys()][0]).toBeTruthy();
+    expect(sends.length).toBe(0);
 
-    const queuePayload = queueMessages[0] as { runId: string; type: string };
+    const queuePayload = { type: "run.execute", runId: runId ?? [...db.agentRuns.keys()][0] } as { runId: string; type: string };
+    env.SESSION_RUNTIME = {
+      idFromName(name: string) {
+        return { toString: () => name } as unknown as DurableObjectId;
+      },
+      get() {
+        return {
+          fetch: async () =>
+            new Response(JSON.stringify({ done: true, text: "Long run complete." }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+        } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
     await (worker as unknown as { queue: (batch: MessageBatch<unknown>, env: unknown, ctx: ExecutionContext) => Promise<void> }).queue(
       {
         queue: "dreclaw-agent-runs",
@@ -357,21 +388,15 @@ describe("telegram webhook e2e", () => {
   it("continues queued run across multiple slices", async () => {
     const { env, queueMessages, fakeQueue, db } = createEnv();
     env.AGENT_RUN_QUEUE = fakeQueue;
+    env.INLINE_BURST_MS = "1";
+    env.QUEUE_BURST_MS = "1";
 
-    const doFetch = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ done: false, checkpoint: { messages: [{ role: "assistant", content: "..." }], toolTranscripts: [], imageBlocks: [] } }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ done: true, text: "Completed after continuation." }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-      );
+    const doFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ done: false, checkpoint: { messages: [{ role: "assistant", content: "..." }], toolTranscripts: [], imageBlocks: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
 
     env.SESSION_RUNTIME = {
       idFromName(name: string) {
@@ -409,6 +434,32 @@ describe("telegram webhook e2e", () => {
     await app.fetch(webhookReq, env, {} as ExecutionContext);
 
     const firstPayload = queueMessages[0] as { runId: string; type: string };
+    let queueStepCalls = 0;
+    env.SESSION_RUNTIME = {
+      idFromName(name: string) {
+        return { toString: () => name } as unknown as DurableObjectId;
+      },
+      get() {
+        return {
+          fetch: async () => {
+            queueStepCalls += 1;
+            if (queueStepCalls < 2) {
+              return new Response(
+                JSON.stringify({ done: false, checkpoint: { messages: [{ role: "assistant", content: "..." }], toolTranscripts: [], imageBlocks: [] } }),
+                {
+                  status: 200,
+                  headers: { "content-type": "application/json" },
+                },
+              );
+            }
+            return new Response(JSON.stringify({ done: true, text: "Completed after continuation." }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          },
+        } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
     const queueHandler = worker as unknown as {
       queue: (batch: MessageBatch<unknown>, env: unknown, ctx: ExecutionContext) => Promise<void>;
     };
@@ -433,18 +484,92 @@ describe("telegram webhook e2e", () => {
       {} as ExecutionContext,
     );
 
-    expect(queueMessages.length).toBe(2);
-    expect(sends.length).toBe(0);
+    expect([...db.agentRuns.keys()].length).toBe(1);
+    expect(sends.length).toBe(1);
 
-    const secondPayload = queueMessages[1] as { runId: string; type: string };
+    expect(doFetch).toHaveBeenCalledTimes(1);
+    expect(sends.length).toBe(1);
+    const finalSent = sends[0].body as { text: string };
+    expect(finalSent.text).toContain("Completed after continuation.");
+    const run = db.agentRuns.get(firstPayload.runId);
+    expect(run?.status).toBe("completed");
+  });
+
+  it("coalesces follow-up user message into active run", async () => {
+    const { env, db, queueMessages, fakeQueue } = createEnv();
+    env.AGENT_RUN_QUEUE = fakeQueue;
+    env.INLINE_BURST_MS = "1";
+    const runStepBodies: unknown[] = [];
+    const doFetch = vi
+      .fn()
+      .mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        runStepBodies.push(body);
+        if (runStepBodies.length < 2) {
+          return new Response(JSON.stringify({ done: false, checkpoint: { messages: [], toolTranscripts: [], imageBlocks: [] } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ done: true, text: "combined" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+    env.SESSION_RUNTIME = {
+      idFromName(name: string) {
+        return { toString: () => name } as unknown as DurableObjectId;
+      },
+      get() {
+        return { fetch: doFetch } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })),
+    );
+
+    const headers = {
+      "content-type": "application/json",
+      "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+    };
+    await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(makeUpdate(1501, "first long message")),
+      }),
+      env,
+      {} as ExecutionContext,
+    );
+
+    await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(makeUpdate(1502, "follow up detail")),
+      }),
+      env,
+      {} as ExecutionContext,
+    );
+
+    const activeRunId = [...queueMessages]
+      .map((item) => (item && typeof item === "object" ? (item as { runId?: string }).runId : undefined))
+      .find((item): item is string => Boolean(item)) ?? [...db.agentRuns.keys()][0];
+    expect(activeRunId).toBeTruthy();
+    const queueHandler = worker as unknown as {
+      queue: (batch: MessageBatch<unknown>, env: unknown, ctx: ExecutionContext) => Promise<void>;
+    };
     await queueHandler.queue(
       {
         queue: "dreclaw-agent-runs",
         messages: [
           {
-            id: "msg-2",
+            id: "msg-coalesce",
             timestamp: new Date(),
-            body: secondPayload,
+            body: { type: "run.execute", runId: activeRunId },
             attempts: 1,
             ack: () => undefined,
             retry: () => undefined,
@@ -457,11 +582,10 @@ describe("telegram webhook e2e", () => {
       {} as ExecutionContext,
     );
 
-    expect(doFetch).toHaveBeenCalledTimes(2);
-    expect(sends.length).toBe(1);
-    const finalSent = sends[0].body as { text: string };
-    expect(finalSent.text).toContain("Completed after continuation.");
-    const run = db.agentRuns.get(firstPayload.runId);
-    expect(run?.status).toBe("completed");
+    const hasPending = runStepBodies.some((body) => {
+      const pending = (body as { pendingUserMessages?: unknown[] }).pendingUserMessages;
+      return Array.isArray(pending) && pending.some((item) => String((item as { text?: unknown }).text ?? "").includes("follow up detail"));
+    });
+    expect(hasPending).toBe(true);
   });
 });

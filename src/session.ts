@@ -87,6 +87,7 @@ interface QueueRunStepRequest {
   sessionRequest: SessionRequest;
   checkpoint?: AgentRunCheckpoint;
   sliceSteps?: number;
+  pendingUserMessages?: Array<{ updateId: number; text: string }>;
 }
 
 interface QueueRunStepResponse {
@@ -148,6 +149,9 @@ export class SessionRuntime implements DurableObject {
 
     const userText = sessionRequest.message.text ?? sessionRequest.message.caption ?? "";
     const text = userText.trim();
+    const pendingTexts = (payload.pendingUserMessages ?? [])
+      .map((item) => String(item?.text ?? "").trim())
+      .filter(Boolean);
     const checkpoint = payload.checkpoint;
     const imageBlocks = checkpoint?.imageBlocks ?? (await this.loadImages(sessionRequest.message));
     const runtime = this.getRuntimeConfig();
@@ -158,6 +162,7 @@ export class SessionRuntime implements DurableObject {
       messages: checkpoint?.messages,
       toolTranscripts: checkpoint?.toolTranscripts ?? [],
       sliceSteps: normalizeSliceSteps(payload.sliceSteps),
+      pendingUserMessages: pendingTexts,
     });
 
     if (!run.done) {
@@ -172,7 +177,8 @@ export class SessionRuntime implements DurableObject {
     }
 
     const responseText = run.finalText.trim() || "(empty response)";
-    this.pushHistory({ role: "user", content: text || "[image]" });
+    const combinedUserText = [text, ...pendingTexts].filter(Boolean).join("\n\n") || "[image]";
+    this.pushHistory({ role: "user", content: combinedUserText });
     for (const transcript of run.toolTranscripts) {
       this.pushHistory({ role: "tool", content: transcript });
     }
@@ -180,7 +186,7 @@ export class SessionRuntime implements DurableObject {
 
     await this.persistMemoryTurn({
       chatId: sessionRequest.message.chat.id,
-      userText: text || "[image]",
+      userText: combinedUserText,
       assistantText: responseText,
       interstitialAssistantTexts: run.interstitialAssistantTexts,
       toolTranscripts: run.toolTranscripts,
@@ -363,6 +369,7 @@ export class SessionRuntime implements DurableObject {
       messages?: ModelMessage[];
       toolTranscripts: string[];
       sliceSteps: number;
+      pendingUserMessages?: string[];
       progress?: TelegramProgressReporter;
       draftReporter?: TelegramDraftReporter;
     },
@@ -378,6 +385,13 @@ export class SessionRuntime implements DurableObject {
       params.messages && params.messages.length
         ? params.messages
         : await this.buildPromptMessages(params.chatId, params.userText, params.imageBlocks);
+    const mergedMessages =
+      params.pendingUserMessages && params.pendingUserMessages.length
+        ? [
+            ...messages,
+            ...params.pendingUserMessages.map((text) => ({ role: "user" as const, content: text } satisfies ModelMessage)),
+          ]
+        : messages;
 
     const toolTranscripts = [...params.toolTranscripts];
     const interstitialAssistantTexts: string[] = [];
@@ -427,7 +441,7 @@ export class SessionRuntime implements DurableObject {
     let currentStepHasToolCall = false;
 
     const stream = await agent.stream({
-      messages,
+      messages: mergedMessages,
       experimental_onToolCallStart: async (event) => {
         const stepNumber = typeof event.stepNumber === "number" ? event.stepNumber : -1;
         const toolCallId =
@@ -502,7 +516,7 @@ export class SessionRuntime implements DurableObject {
     await progress.sendThinkingBlocks(extractThinkingBlocks(response.messages));
     const generatedText = await stream.text;
     const finalText = typeof generatedText === "string" ? generatedText.trim() : "";
-    const nextMessages = (response.messages as unknown as ModelMessage[]) ?? messages;
+    const nextMessages = (response.messages as unknown as ModelMessage[]) ?? mergedMessages;
     const done = Boolean(finalText || hasAssistantText(nextMessages));
     return {
       done,

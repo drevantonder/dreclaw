@@ -9,6 +9,7 @@ export class FakeD1 {
   readonly oauthTokens = new Map<string, Record<string, unknown>>();
   readonly vfsEntries = new Map<string, Record<string, unknown>>();
   readonly agentRuns = new Map<string, Record<string, unknown>>();
+  readonly chatInbox = new Map<string, Record<string, unknown>>();
   vfsRevision = 0;
 
   prepare(sql: string) {
@@ -32,6 +33,12 @@ export class FakeD1 {
     }
     if (sql.includes("FROM agent_runs")) {
       return { results: [...this.agentRuns.values()] };
+    }
+    if (sql.includes("FROM chat_inbox")) {
+      const rows = [...this.chatInbox.values()]
+        .filter((row) => row.consumed_at === null || row.consumed_at === undefined)
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      return { results: rows };
     }
     return { results: [] };
   }
@@ -201,6 +208,44 @@ export class FakeD1 {
       }
       return { meta: { changes } };
     }
+    if (sql.includes("INSERT OR IGNORE INTO chat_inbox")) {
+      const id = String(args[0]);
+      const updateId = Number(args[2]);
+      if ([...this.chatInbox.values()].some((row) => Number(row.update_id) === updateId)) {
+        return { meta: { changes: 0 } };
+      }
+      this.chatInbox.set(id, {
+        id,
+        chat_id: Number(args[1]),
+        update_id: updateId,
+        text_json: String(args[3]),
+        created_at: String(args[4]),
+        consumed_at: null,
+        consumed_by_run_id: null,
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = ? WHERE id")) {
+      const id = String(args[2]);
+      const row = this.chatInbox.get(id);
+      if (!row || row.consumed_at) return { meta: { changes: 0 } };
+      row.consumed_at = String(args[0]);
+      row.consumed_by_run_id = String(args[1]);
+      this.chatInbox.set(id, row);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = 'cancelled'")) {
+      const chatId = Number(args[1]);
+      let changes = 0;
+      for (const row of this.chatInbox.values()) {
+        if (Number(row.chat_id) === chatId && !row.consumed_at) {
+          row.consumed_at = String(args[0]);
+          row.consumed_by_run_id = "cancelled";
+          changes += 1;
+        }
+      }
+      return { meta: { changes } };
+    }
     return { meta: { changes: 0 } };
   }
 
@@ -225,6 +270,13 @@ export class FakeD1 {
     if (sql.includes("SELECT COUNT(*) AS count FROM vfs_entries")) {
       const count = [...this.vfsEntries.values()].filter((row) => row.deleted_at === null || row.deleted_at === undefined).length;
       return { count };
+    }
+    if (sql.includes("SELECT id, update_id, chat_id, payload_json, status, attempts, result_text, error_message, created_at, updated_at, delivered_at FROM agent_runs WHERE chat_id")) {
+      const chatId = Number(args[0]);
+      const row = [...this.agentRuns.values()]
+        .filter((item) => Number(item.chat_id) === chatId && ["queued", "running"].includes(String(item.status)))
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))[0];
+      return row ?? null;
     }
     if (sql.includes("SELECT id, update_id, chat_id, payload_json, status, attempts, result_text, error_message, created_at, updated_at, delivered_at FROM agent_runs")) {
       const id = String(args[0]);

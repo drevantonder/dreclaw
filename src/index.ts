@@ -1,7 +1,11 @@
 import {
   cancelActiveRunsForChat,
+  clearPendingChatInbox,
+  claimChatInboxMessages,
   claimAgentRunDelivery,
   createAgentRun,
+  enqueueChatInboxMessage,
+  getActiveAgentRunForChat,
   getAgentRun,
   getGoogleOAuthState,
   markAgentRunCompleted,
@@ -25,6 +29,10 @@ const WEBHOOK_MAX_BODY_BYTES = 256_000;
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const RUN_MAX_ATTEMPTS = 5;
 const RUN_QUEUE_KIND = "run.execute";
+const DEFAULT_INLINE_BURST_MS = 3000;
+const DEFAULT_QUEUE_BURST_MS = 9000;
+const DEFAULT_TYPING_PULSE_MS = 3000;
+const INBOX_CLAIM_LIMIT = 8;
 
 interface QueueRunEnvelope {
   sessionRequest: SessionRequest;
@@ -33,6 +41,12 @@ interface QueueRunEnvelope {
     toolTranscripts: string[];
     imageBlocks: string[];
   };
+}
+
+interface QueueRunStepResult {
+  done: boolean;
+  text?: string;
+  checkpoint?: QueueRunEnvelope["checkpoint"];
 }
 
 export default {
@@ -124,11 +138,13 @@ async function handleTelegramWebhook(request: Request, env: Env, _ctx: Execution
       runSession: async (sessionRequest) => {
         const commandText = (sessionRequest.message.text ?? sessionRequest.message.caption ?? "").trim().toLowerCase();
         if (commandText.startsWith("/cancel")) {
+          const nowIso = new Date().toISOString();
           const count = await cancelActiveRunsForChat(
             env.DRECLAW_DB,
             sessionRequest.message.chat.id,
-            new Date().toISOString(),
+            nowIso,
           );
+          await clearPendingChatInbox(env.DRECLAW_DB, sessionRequest.message.chat.id, nowIso);
           return {
             ok: true,
             text: count > 0 ? `Cancelled ${count} active run(s).` : "No active runs to cancel.",
@@ -136,23 +152,7 @@ async function handleTelegramWebhook(request: Request, env: Env, _ctx: Execution
         }
 
         if (shouldEnqueueSessionRun(sessionRequest, env)) {
-          const nowIso = new Date().toISOString();
-          const runId = crypto.randomUUID();
-          const created = await createAgentRun(env.DRECLAW_DB, {
-            id: runId,
-            updateId: sessionRequest.updateId,
-            chatId: sessionRequest.message.chat.id,
-            payloadJson: JSON.stringify({ sessionRequest } satisfies QueueRunEnvelope),
-            nowIso,
-          });
-          if (created) {
-            await env.AGENT_RUN_QUEUE?.send({ type: RUN_QUEUE_KIND, runId });
-          }
-          return {
-            ok: true,
-            text: "",
-            deferReply: true,
-          };
+          return processQueuedPrompt(env, sessionRequest);
         }
 
         return runSessionViaDurableObject(env, sessionRequest);
@@ -174,37 +174,119 @@ function shouldEnqueueSessionRun(sessionRequest: SessionRequest, env: Env): bool
   return !text.startsWith("/");
 }
 
-async function executeQueuedRun(env: Env, runId: string): Promise<void> {
-  const run = await getAgentRun(env.DRECLAW_DB, runId);
-  if (!run) return;
-  if (run.status === "completed" || run.status === "cancelled") return;
-
+async function processQueuedPrompt(env: Env, sessionRequest: SessionRequest): Promise<{ ok: boolean; text: string; deferReply: boolean }> {
   const nowIso = new Date().toISOString();
-  const marked = await markAgentRunRunning(env.DRECLAW_DB, runId, nowIso);
-  if (!marked) return;
+  const chatId = sessionRequest.message.chat.id;
+  const text = (sessionRequest.message.text ?? sessionRequest.message.caption ?? "").trim();
 
-  const envelope = parseQueueEnvelope(run.payloadJson);
-  const sliceSteps = parsePositiveInt(env.RUN_SLICE_STEPS, 2);
-  const step = await runSessionStepViaDurableObject(env, envelope, sliceSteps);
-
-  if (!step.done) {
-    const now = new Date().toISOString();
-    const nextPayload = JSON.stringify({
-      sessionRequest: envelope.sessionRequest,
-      checkpoint: step.checkpoint,
-    } satisfies QueueRunEnvelope);
-    await updateAgentRunPayload(env.DRECLAW_DB, runId, nextPayload, now);
-    await env.AGENT_RUN_QUEUE?.send({ type: RUN_QUEUE_KIND, runId });
-    return;
+  const active = await getActiveAgentRunForChat(env.DRECLAW_DB, chatId);
+  if (active) {
+    await enqueueChatInboxMessage(env.DRECLAW_DB, {
+      id: crypto.randomUUID(),
+      chatId,
+      updateId: sessionRequest.updateId,
+      textJson: JSON.stringify({ text }),
+      nowIso,
+    });
+    await env.AGENT_RUN_QUEUE?.send({ type: RUN_QUEUE_KIND, runId: active.id });
+    return { ok: true, text: "", deferReply: true };
   }
 
-  const completedAt = new Date().toISOString();
-  const text = step.text || "Done.";
-  await markAgentRunCompleted(env.DRECLAW_DB, runId, text, completedAt);
+  const runId = crypto.randomUUID();
+  const created = await createAgentRun(env.DRECLAW_DB, {
+    id: runId,
+    updateId: sessionRequest.updateId,
+    chatId,
+    payloadJson: JSON.stringify({ sessionRequest } satisfies QueueRunEnvelope),
+    nowIso,
+  });
+  if (!created) {
+    return { ok: true, text: "", deferReply: true };
+  }
 
-  const claimed = await claimAgentRunDelivery(env.DRECLAW_DB, runId, completedAt);
-  if (!claimed) return;
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, run.chatId, text);
+  const inlineResult = await continueRunBurst(env, runId, {
+    budgetMs: parsePositiveInt(env.INLINE_BURST_MS, DEFAULT_INLINE_BURST_MS),
+    typingPulseMs: parsePositiveInt(env.TYPING_PULSE_MS, DEFAULT_TYPING_PULSE_MS),
+    maxSlices: 1,
+  });
+
+  if (inlineResult.done) {
+    return { ok: true, text: "", deferReply: true };
+  }
+
+  await env.AGENT_RUN_QUEUE?.send({ type: RUN_QUEUE_KIND, runId });
+  return { ok: true, text: "", deferReply: true };
+}
+
+async function executeQueuedRun(env: Env, runId: string): Promise<void> {
+  const result = await continueRunBurst(env, runId, {
+    budgetMs: parsePositiveInt(env.QUEUE_BURST_MS, DEFAULT_QUEUE_BURST_MS),
+    typingPulseMs: parsePositiveInt(env.TYPING_PULSE_MS, DEFAULT_TYPING_PULSE_MS),
+    maxSlices: 4,
+  });
+  if (!result.done) {
+    await env.AGENT_RUN_QUEUE?.send({ type: RUN_QUEUE_KIND, runId });
+  }
+}
+
+async function continueRunBurst(
+  env: Env,
+  runId: string,
+  options: { budgetMs: number; typingPulseMs: number; maxSlices: number },
+): Promise<{ done: boolean }> {
+  const start = Date.now();
+  let lastTypingAt = 0;
+  let slices = 0;
+  while (Date.now() - start < options.budgetMs && slices < options.maxSlices) {
+    slices += 1;
+    const run = await getAgentRun(env.DRECLAW_DB, runId);
+    if (!run) return { done: true };
+    if (run.status === "completed" || run.status === "cancelled") return { done: true };
+
+    const nowIso = new Date().toISOString();
+    const marked = await markAgentRunRunning(env.DRECLAW_DB, runId, nowIso);
+    if (!marked) return { done: false };
+
+    if (Date.now() - lastTypingAt >= options.typingPulseMs) {
+      await sendTelegramChatAction(env.TELEGRAM_BOT_TOKEN, run.chatId);
+      lastTypingAt = Date.now();
+    }
+
+    const envelope = parseQueueEnvelope(run.payloadJson);
+    const claimed = await claimChatInboxMessages(env.DRECLAW_DB, {
+      chatId: run.chatId,
+      runId,
+      limit: INBOX_CLAIM_LIMIT,
+      nowIso,
+    });
+    const pendingUserMessages = claimed
+      .map((item: { textJson: string }) => safeJsonParse(item.textJson))
+      .map((obj: Record<string, unknown>) => ({ updateId: Number(obj.updateId ?? 0), text: String(obj.text ?? "") }))
+      .filter((item: { text: string }) => item.text.trim().length > 0);
+
+    const sliceSteps = parsePositiveInt(env.RUN_SLICE_STEPS, 4);
+    const step = await runSessionStepViaDurableObject(env, envelope, sliceSteps, pendingUserMessages);
+
+    if (!step.done) {
+      await updateAgentRunPayload(
+        env.DRECLAW_DB,
+        runId,
+        JSON.stringify({ sessionRequest: envelope.sessionRequest, checkpoint: step.checkpoint } satisfies QueueRunEnvelope),
+        new Date().toISOString(),
+      );
+      continue;
+    }
+
+    const completedAt = new Date().toISOString();
+    const text = step.text || "Done.";
+    await markAgentRunCompleted(env.DRECLAW_DB, runId, text, completedAt);
+    const deliver = await claimAgentRunDelivery(env.DRECLAW_DB, runId, completedAt);
+    if (deliver) {
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, run.chatId, text);
+    }
+    return { done: true };
+  }
+  return { done: false };
 }
 
 async function runSessionViaDurableObject(env: Env, sessionRequest: SessionRequest): Promise<{ ok: boolean; text: string }> {
@@ -222,7 +304,8 @@ async function runSessionStepViaDurableObject(
   env: Env,
   envelope: QueueRunEnvelope,
   sliceSteps: number,
-): Promise<{ done: boolean; text?: string; checkpoint?: QueueRunEnvelope["checkpoint"] }> {
+  pendingUserMessages: Array<{ updateId: number; text: string }>,
+): Promise<QueueRunStepResult> {
   const id = env.SESSION_RUNTIME.idFromName(String(envelope.sessionRequest.message.chat.id));
   const stub = env.SESSION_RUNTIME.get(id);
   const response = await stub.fetch("https://session.local/run-step", {
@@ -232,9 +315,10 @@ async function runSessionStepViaDurableObject(
       sessionRequest: envelope.sessionRequest,
       checkpoint: envelope.checkpoint,
       sliceSteps,
+      pendingUserMessages,
     }),
   });
-  return (await response.json()) as { done: boolean; text?: string; checkpoint?: QueueRunEnvelope["checkpoint"] };
+  return (await response.json()) as QueueRunStepResult;
 }
 
 function parseQueueEnvelope(payloadJson: string): QueueRunEnvelope {
@@ -252,6 +336,15 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return fallback;
   return Math.trunc(value);
+}
+
+function safeJsonParse(input: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 async function handleGoogleOAuthCallback(request: Request, env: Env): Promise<Response> {

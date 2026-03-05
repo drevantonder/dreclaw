@@ -47,6 +47,9 @@ export interface Env {
   MEMORY_REFLECTION_EVERY_TURNS?: string;
   MEMORY_EMBEDDING_MODEL?: string;
   RUN_SLICE_STEPS?: string;
+  INLINE_BURST_MS?: string;
+  QUEUE_BURST_MS?: string;
+  TYPING_PULSE_MS?: string;
   DRECLAW_DB: D1Database;
   SESSION_RUNTIME: DurableObjectNamespace;
   AGENT_RUN_QUEUE?: Queue;

@@ -46,7 +46,10 @@ MEMORY_RETENTION_DAYS = "90"
 MEMORY_MAX_INJECT_TOKENS = "1500"
 MEMORY_REFLECTION_EVERY_TURNS = "8"
 MEMORY_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
-RUN_SLICE_STEPS = "2"
+RUN_SLICE_STEPS = "4"
+INLINE_BURST_MS = "3000"
+QUEUE_BURST_MS = "9000"
+TYPING_PULSE_MS = "3000"
 
 [observability]
 enabled = true
@@ -66,8 +69,8 @@ queue = "dreclaw-agent-runs"
 
 [[queues.consumers]]
 queue = "dreclaw-agent-runs"
-max_batch_size = 5
-max_batch_timeout = 2
+max_batch_size = 1
+max_batch_timeout = 1
 
 [[migrations]]
 tag = "v1"

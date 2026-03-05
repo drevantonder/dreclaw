@@ -51,6 +51,16 @@ export interface AgentRunRecord {
   deliveredAt: string | null;
 }
 
+export interface ChatInboxRecord {
+  id: string;
+  chatId: number;
+  updateId: number;
+  textJson: string;
+  createdAt: string;
+  consumedAt: string | null;
+  consumedByRunId: string | null;
+}
+
 export interface MemoryEpisodeRecord {
   id: string;
   chatId: number;
@@ -278,6 +288,78 @@ export async function createAgentRun(
   }, 150);
 }
 
+export async function getActiveAgentRunForChat(db: D1Database, chatId: number): Promise<AgentRunRecord | null> {
+  return retryOnce(async () => {
+    const row = await db
+      .prepare(
+        "SELECT id, update_id, chat_id, payload_json, status, attempts, result_text, error_message, created_at, updated_at, delivered_at FROM agent_runs WHERE chat_id = ? AND status IN ('queued', 'running') ORDER BY created_at ASC LIMIT 1",
+      )
+      .bind(chatId)
+      .first<Record<string, unknown>>();
+    return row ? mapAgentRunRecord(row) : null;
+  }, 150);
+}
+
+export async function enqueueChatInboxMessage(
+  db: D1Database,
+  input: {
+    id: string;
+    chatId: number;
+    updateId: number;
+    textJson: string;
+    nowIso: string;
+  },
+): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare(
+        "INSERT OR IGNORE INTO chat_inbox (id, chat_id, update_id, text_json, created_at, consumed_at, consumed_by_run_id) VALUES (?, ?, ?, ?, ?, NULL, NULL)",
+      )
+      .bind(input.id, input.chatId, input.updateId, input.textJson, input.nowIso)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
+export async function claimChatInboxMessages(
+  db: D1Database,
+  input: {
+    chatId: number;
+    runId: string;
+    limit: number;
+    nowIso: string;
+  },
+): Promise<ChatInboxRecord[]> {
+  return retryOnce(async () => {
+    const rows = await db
+      .prepare(
+        "SELECT id, chat_id, update_id, text_json, created_at, consumed_at, consumed_by_run_id FROM chat_inbox WHERE chat_id = ? AND consumed_at IS NULL ORDER BY created_at ASC LIMIT ?",
+      )
+      .bind(input.chatId, input.limit)
+      .all<Record<string, unknown>>();
+    const records = (rows.results ?? []).map(mapChatInboxRecord);
+    for (const record of records) {
+      await db
+        .prepare(
+          "UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = ? WHERE id = ? AND consumed_at IS NULL",
+        )
+        .bind(input.nowIso, input.runId, record.id)
+        .run();
+    }
+    return records;
+  }, 150);
+}
+
+export async function clearPendingChatInbox(db: D1Database, chatId: number, nowIso: string): Promise<number> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare("UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = 'cancelled' WHERE chat_id = ? AND consumed_at IS NULL")
+      .bind(nowIso, chatId)
+      .run();
+    return Number(result.meta.changes ?? 0);
+  }, 150);
+}
+
 export async function getAgentRun(db: D1Database, id: string): Promise<AgentRunRecord | null> {
   return retryOnce(async () => {
     const row = await db
@@ -418,6 +500,21 @@ function mapAgentRunRecord(row: Record<string, unknown>): AgentRunRecord {
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
     deliveredAt: row.delivered_at === null || row.delivered_at === undefined ? null : String(row.delivered_at),
+  };
+}
+
+function mapChatInboxRecord(row: Record<string, unknown>): ChatInboxRecord {
+  return {
+    id: String(row.id ?? ""),
+    chatId: Number(row.chat_id ?? 0),
+    updateId: Number(row.update_id ?? 0),
+    textJson: String(row.text_json ?? "{}"),
+    createdAt: String(row.created_at ?? ""),
+    consumedAt: row.consumed_at === null || row.consumed_at === undefined ? null : String(row.consumed_at),
+    consumedByRunId:
+      row.consumed_by_run_id === null || row.consumed_by_run_id === undefined
+        ? null
+        : String(row.consumed_by_run_id),
   };
 }
 
