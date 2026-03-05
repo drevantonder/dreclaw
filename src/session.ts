@@ -383,6 +383,15 @@ export class SessionRuntime implements DurableObject {
     const interstitialAssistantTexts: string[] = [];
     const progress = params.progress ?? new SilentProgressReporter();
     const draftReporter = params.draftReporter ?? new SilentDraftReporter();
+    const traceEnabled = this.getProgressMode() === "debug";
+    const logStreamTrace = (event: string, details: Record<string, unknown> = {}): void => {
+      if (!traceEnabled) return;
+      console.info("agent-stream-trace", {
+        chatId: params.chatId,
+        event,
+        ...details,
+      });
+    };
     const agent = new ToolLoopAgent({
       model,
       tools: createAgentTools(this, progress, toolTranscripts),
@@ -390,12 +399,18 @@ export class SessionRuntime implements DurableObject {
     });
 
     const sentInterstitialStepNumbers = new Set<number>();
-    const sendInterstitial = async (stepNumber: number, rawText: string): Promise<void> => {
+    const sendInterstitial = async (stepNumber: number, rawText: string, source: string): Promise<void> => {
       const stepText = rawText.trim();
       if (!stepText) return;
       if (stepNumber >= 0 && sentInterstitialStepNumbers.has(stepNumber)) return;
       if (stepNumber >= 0) sentInterstitialStepNumbers.add(stepNumber);
       interstitialAssistantTexts.push(stepText);
+      logStreamTrace("interstitial-send", {
+        stepNumber,
+        source,
+        textLength: stepText.length,
+        preview: truncateForLog(stepText, 180),
+      });
       try {
         await sendTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, params.chatId, stepText);
         draftReporter.reset();
@@ -415,13 +430,23 @@ export class SessionRuntime implements DurableObject {
       messages,
       experimental_onToolCallStart: async (event) => {
         const stepNumber = typeof event.stepNumber === "number" ? event.stepNumber : -1;
-        const stepText = extractAssistantTextForToolCall(event.messages);
+        const toolCallId =
+          typeof (event.toolCall as { toolCallId?: unknown })?.toolCallId === "string"
+            ? (event.toolCall as { toolCallId: string }).toolCallId
+            : undefined;
+        const stepText = extractAssistantTextForToolCall(event.messages, toolCallId);
+        logStreamTrace("tool-call-start", {
+          stepNumber,
+          toolCallId,
+          extractedTextLength: stepText.length,
+          currentStepTextLength: currentStepText.length,
+        });
         if (stepText) {
-          await sendInterstitial(stepNumber, stepText);
+          await sendInterstitial(stepNumber, stepText, "tool-call-start/messages");
           return;
         }
         if (stepNumber >= 0 && stepNumber === currentStepNumber) {
-          await sendInterstitial(stepNumber, currentStepText);
+          await sendInterstitial(stepNumber, currentStepText, "tool-call-start/current-step");
         }
       },
     });
@@ -432,27 +457,42 @@ export class SessionRuntime implements DurableObject {
         currentStepNumber += 1;
         currentStepText = "";
         currentStepHasToolCall = false;
+        logStreamTrace("start-step", { stepNumber: currentStepNumber });
         continue;
       }
       if (type === "text-delta") {
         const delta = (part as { text?: unknown }).text;
         if (typeof delta === "string" && delta) {
           currentStepText += delta;
+          logStreamTrace("text-delta", {
+            stepNumber: currentStepNumber,
+            deltaLength: delta.length,
+            stepTextLength: currentStepText.length,
+          });
           await draftReporter.onTextDelta(delta);
           if (currentStepHasToolCall) {
-            await sendInterstitial(currentStepNumber, currentStepText);
+            await sendInterstitial(currentStepNumber, currentStepText, "text-delta-after-tool-call");
           }
         }
         continue;
       }
       if (type === "tool-call") {
         currentStepHasToolCall = true;
-        await sendInterstitial(currentStepNumber, currentStepText);
+        logStreamTrace("tool-call-part", {
+          stepNumber: currentStepNumber,
+          stepTextLength: currentStepText.length,
+        });
+        await sendInterstitial(currentStepNumber, currentStepText, "tool-call-part");
         continue;
       }
       if (type === "finish-step") {
+        logStreamTrace("finish-step", {
+          stepNumber: currentStepNumber,
+          hasToolCall: currentStepHasToolCall,
+          stepTextLength: currentStepText.length,
+        });
         if (currentStepHasToolCall) {
-          await sendInterstitial(currentStepNumber, currentStepText);
+          await sendInterstitial(currentStepNumber, currentStepText, "finish-step");
         }
       }
     }
@@ -1375,7 +1415,7 @@ function extractThinkingBlocks(messages: unknown[]): string[] {
   return blocks;
 }
 
-function extractAssistantTextForToolCall(messages: unknown[]): string {
+function extractAssistantTextForToolCall(messages: unknown[], targetToolCallId?: string): string {
   if (!Array.isArray(messages)) return "";
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index] as { role?: unknown; content?: unknown };
@@ -1383,7 +1423,32 @@ function extractAssistantTextForToolCall(messages: unknown[]): string {
     const content = message.content;
     if (typeof content === "string") return content.trim();
     if (!Array.isArray(content)) return "";
-    const text = content
+
+    const chunks: string[] = [];
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const type = (item as { type?: unknown }).type;
+      if (type === "text") {
+        const value = (item as { text?: unknown }).text;
+        if (typeof value === "string") chunks.push(value);
+        continue;
+      }
+      const isToolCall = type === "tool-call" || type === "toolCall";
+      if (!isToolCall) continue;
+      const toolCallId =
+        typeof (item as { toolCallId?: unknown }).toolCallId === "string"
+          ? (item as { toolCallId: string }).toolCallId
+          : typeof (item as { id?: unknown }).id === "string"
+            ? (item as { id: string }).id
+            : "";
+      if (!targetToolCallId || toolCallId === targetToolCallId) {
+        break;
+      }
+    }
+    const text = chunks.join("\n").trim();
+    if (text) return text;
+
+    return content
       .map((item) => {
         if (!item || typeof item !== "object") return "";
         const type = (item as { type?: unknown }).type;
@@ -1393,7 +1458,6 @@ function extractAssistantTextForToolCall(messages: unknown[]): string {
       })
       .join("\n")
       .trim();
-    return text;
   }
   return "";
 }
