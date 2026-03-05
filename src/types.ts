@@ -50,6 +50,7 @@ export interface Env {
   INLINE_BURST_MS?: string;
   QUEUE_BURST_MS?: string;
   TYPING_PULSE_MS?: string;
+  REASONING_EFFORT?: string;
   DRECLAW_DB: D1Database;
   SESSION_RUNTIME: DurableObjectNamespace;
   AGENT_RUN_QUEUE?: Queue;

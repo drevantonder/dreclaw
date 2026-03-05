@@ -81,7 +81,10 @@ vi.mock("ai", () => {
             continue;
           }
           if (block.type === "reasoning") {
-            fullStreamParts.push({ type: "reasoning", reasoning: String((block as { reasoning?: unknown }).reasoning ?? "") });
+            const value = String((block as { reasoning?: unknown }).reasoning ?? "");
+            fullStreamParts.push({ type: "reasoning-start" });
+            if (value) fullStreamParts.push({ type: "reasoning-delta", textDelta: value });
+            fullStreamParts.push({ type: "reasoning-end" });
             continue;
           }
           if (block.type === "text") {
@@ -574,6 +577,27 @@ describe("conversation e2e", () => {
     expect(beforeToolIndex).toBeGreaterThan(firstThinkingIndex);
     expect(secondThinkingIndex).toBeGreaterThan(beforeToolIndex);
     expect(afterToolIndex).toBeGreaterThan(secondThinkingIndex);
+  });
+
+  it("shows reasoning-delta chunks from provider stream", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    await callWebhook(env, 4014, "/show-thinking on");
+
+    modelQueue.push({
+      stopReason: "endTurn",
+      content: [
+        { type: "reasoning", reasoning: "provider delta thought" },
+        { type: "text", text: "Done." },
+      ],
+    });
+
+    await callWebhook(env, 4015, "reasoning delta test");
+
+    const thinkingMessages = sends.filter((message) => message.text.startsWith("<b>Thinking:</b>"));
+    expect(thinkingMessages.length).toBe(1);
+    expect(thinkingMessages[0]?.text).toContain("provider delta thought");
   });
 
   it("supports search and execute tools for code mode", async () => {

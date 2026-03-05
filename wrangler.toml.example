@@ -50,6 +50,7 @@ RUN_SLICE_STEPS = "4"
 INLINE_BURST_MS = "3000"
 QUEUE_BURST_MS = "9000"
 TYPING_PULSE_MS = "3000"
+REASONING_EFFORT = "medium"
 
 [observability]
 enabled = true

@@ -467,6 +467,7 @@ export class SessionRuntime implements DurableObject {
       model,
       tools: createAgentTools(this, progress, toolTranscripts, flushAssistantBeforeToolPreview),
       stopWhen: stepCountIs(params.sliceSteps),
+      providerOptions: this.getAgentProviderOptions(runtime),
     });
 
     const sendInterstitial = async (stepNumber: number, rawText: string, source: string): Promise<void> => {
@@ -516,10 +517,17 @@ export class SessionRuntime implements DurableObject {
         logStreamTrace("start-step", { stepNumber: currentStepNumber });
         continue;
       }
-      if (type === "thinking" || type === "reasoning") {
+      if (
+        type === "thinking" ||
+        type === "reasoning" ||
+        type === "reasoning-delta" ||
+        type === "reasoning-start" ||
+        type === "reasoning-end"
+      ) {
         const thinkingText = extractThinkingText(part);
         logStreamTrace("thinking", {
           stepNumber: currentStepNumber,
+          type,
           textLength: thinkingText.length,
         });
         if (thinkingText) {
@@ -736,6 +744,17 @@ export class SessionRuntime implements DurableObject {
     }
     if (!runtime.apiKey || !runtime.baseUrl) throw new Error("Missing Zen runtime config");
     return createZenModel({ model: runtime.model, apiKey: runtime.apiKey, baseUrl: runtime.baseUrl });
+  }
+
+  private getAgentProviderOptions(runtime: RuntimeConfig): Record<string, Record<string, string>> | undefined {
+    if (!this.shouldShowThinking()) return undefined;
+    const reasoningEffort = this.env.REASONING_EFFORT?.trim() || "medium";
+    if (runtime.provider === "workers") return undefined;
+    return {
+      [runtime.provider]: {
+        reasoningEffort,
+      },
+    };
   }
 
   private getCodeRuntimeState(): CodeRuntimeState {
@@ -1525,7 +1544,9 @@ function extractThinkingText(input: unknown): string {
   const textValue =
     (input as { thinking?: unknown }).thinking ??
     (input as { text?: unknown }).text ??
-    (input as { reasoning?: unknown }).reasoning;
+    (input as { reasoning?: unknown }).reasoning ??
+    (input as { textDelta?: unknown }).textDelta ??
+    (input as { delta?: unknown }).delta;
   return typeof textValue === "string" ? textValue.trim() : "";
 }
 
