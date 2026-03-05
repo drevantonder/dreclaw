@@ -66,6 +66,7 @@ describe("telegram webhook e2e", () => {
     expect(sent.text).toContain("model:");
     expect(sent.text).toContain("provider_auth:");
     expect(sent.text).toContain("memory_enabled:");
+    expect(sent.text).toContain("vfs_files:");
   });
 
   it("ignores duplicate update id", async () => {

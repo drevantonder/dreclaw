@@ -71,6 +71,10 @@ export interface CodeExecutionLimits {
   pkgMaxModuleBytes: number;
   pkgMaxTotalInstallBytesPerRun: number;
   pkgMaxInstallsPerRun: number;
+  vfsMaxFileBytes: number;
+  vfsMaxFiles: number;
+  vfsMaxPathLength: number;
+  vfsListLimit: number;
 }
 
 export interface CodeExecutionConfig {
@@ -84,6 +88,13 @@ type HostContext = {
   config: CodeExecutionConfig;
   state: CodeRuntimeState;
   saveState: (state: CodeRuntimeState) => Promise<void>;
+  vfs?: {
+    readFile: (path: string) => Promise<string | null>;
+    writeFile: (path: string, content: string, overwrite: boolean) => Promise<{ ok: true } | { ok: false; code: string }>;
+    listFiles: (prefix: string, limit: number) => Promise<string[]>;
+    removeFile: (path: string) => Promise<boolean>;
+    revision: () => Promise<number>;
+  };
   memory?: {
     find: (payload: unknown) => Promise<unknown>;
     save: (payload: unknown) => Promise<unknown>;
@@ -132,6 +143,7 @@ type GoogleDiscoveryDoc = {
 
 const DISCOVERY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const discoveryCache = new Map<string, { expiresAt: number; doc: GoogleDiscoveryDoc }>();
+const vfsModuleCache = new Map<string, string>();
 
 type QuickJsModule = Awaited<ReturnType<typeof newQuickJSAsyncWASMModuleFromVariant>>;
 type QuickJsContext = ReturnType<QuickJsModule["newContext"]>;
@@ -154,6 +166,10 @@ const DEFAULT_LIMITS: CodeExecutionLimits = {
   pkgMaxModuleBytes: 3_145_728,
   pkgMaxTotalInstallBytesPerRun: 15_728_640,
   pkgMaxInstallsPerRun: 5,
+  vfsMaxFileBytes: 524_288,
+  vfsMaxFiles: 2000,
+  vfsMaxPathLength: 240,
+  vfsListLimit: 500,
 };
 
 export function normalizeCodeRuntimeState(state: CodeRuntimeState | undefined): CodeRuntimeState {
@@ -206,6 +222,10 @@ export function getCodeExecutionConfig(env: Record<string, string | undefined>):
         DEFAULT_LIMITS.pkgMaxTotalInstallBytesPerRun,
       ),
       pkgMaxInstallsPerRun: parsePositiveInt(env.PKG_MAX_INSTALLS_PER_RUN, DEFAULT_LIMITS.pkgMaxInstallsPerRun),
+      vfsMaxFileBytes: parsePositiveInt(env.VFS_MAX_FILE_BYTES, DEFAULT_LIMITS.vfsMaxFileBytes),
+      vfsMaxFiles: parsePositiveInt(env.VFS_MAX_FILES, DEFAULT_LIMITS.vfsMaxFiles),
+      vfsMaxPathLength: parsePositiveInt(env.VFS_MAX_PATH_LENGTH, DEFAULT_LIMITS.vfsMaxPathLength),
+      vfsListLimit: parsePositiveInt(env.VFS_LIST_LIMIT, DEFAULT_LIMITS.vfsListLimit),
     },
   };
 }
@@ -225,6 +245,11 @@ export function searchCodeRuntime(payload: SearchInput, ctx: HostContext): Searc
         "memory.find",
         "memory.save",
         "memory.remove",
+        "fs.read",
+        "fs.write",
+        "fs.list",
+        "fs.remove",
+        "import:vfs:/path/module.js",
         "console.log",
         "console.warn",
         "console.error",
@@ -284,7 +309,8 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   runtime.setInterruptHandler(() => Date.now() > deadline);
   runtime.setModuleLoader(
     async (moduleName: string) => loadModuleSource(moduleName, ctx, stats),
-    async (baseModuleName: string, requestedName: string) => normalizeModuleName(baseModuleName, requestedName),
+    async (baseModuleName: string, requestedName: string) =>
+      normalizeModuleName(baseModuleName, requestedName, limits.vfsMaxPathLength),
   );
 
   try {
@@ -350,6 +376,10 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
 }
 
 async function evalUserCodeWithAwaitFallback(vm: QuickJsContext, code: string) {
+  if (hasStaticModuleSyntax(code)) {
+    const runResult = await vm.evalCodeAsync(code, "execute.mjs", { type: "module" });
+    return vm.unwrapResult(runResult);
+  }
   try {
     const runResult = await vm.evalCodeAsync(code, "execute.js");
     return vm.unwrapResult(runResult);
@@ -361,6 +391,12 @@ async function evalUserCodeWithAwaitFallback(vm: QuickJsContext, code: string) {
     const runResult = await vm.evalCodeAsync(wrapped, "execute.js");
     return vm.unwrapResult(runResult);
   }
+}
+
+function hasStaticModuleSyntax(code: string): boolean {
+  const trimmed = code.trim();
+  if (!trimmed) return false;
+  return /(^|\n)\s*import\s|(^|\n)\s*export\s/m.test(trimmed);
 }
 
 function shouldRetryTopLevelAwait(error: unknown, code: string): boolean {
@@ -460,6 +496,73 @@ function registerHostApi(
   });
   vm.setProp(vm.global, "__host_fetch", fetchFn);
   fetchFn.dispose();
+
+  const fsReadFn = vm.newAsyncifiedFunction("__host_fs_read", async (pathHandle) => {
+    bumpHostCall(stats, limits.execMaxHostCalls);
+    if (!ctx.vfs) {
+      throw new Error("VFS_NOT_CONFIGURED");
+    }
+    const path = normalizeVfsPath(vm.getString(pathHandle), limits.vfsMaxPathLength);
+    const content = await ctx.vfs.readFile(path);
+    if (content === null) {
+      throw new Error(`ENOENT: ${path}`);
+    }
+    return vm.newString(content);
+  });
+  vm.setProp(vm.global, "__host_fs_read", fsReadFn);
+  fsReadFn.dispose();
+
+  const fsWriteFn = vm.newAsyncifiedFunction("__host_fs_write", async (argsHandle) => {
+    bumpHostCall(stats, limits.execMaxHostCalls);
+    if (!ctx.vfs) {
+      throw new Error("VFS_NOT_CONFIGURED");
+    }
+    const args = safeJsonParse(vm.getString(argsHandle));
+    if (!args || typeof args !== "object") {
+      throw new Error("fs.write requires payload object");
+    }
+    const payload = args as Record<string, unknown>;
+    const path = normalizeVfsPath(String(payload.path ?? ""), limits.vfsMaxPathLength);
+    const content = String(payload.content ?? "");
+    const bytes = new TextEncoder().encode(content).byteLength;
+    if (bytes > limits.vfsMaxFileBytes) {
+      throw new Error(`VFS_LIMIT_EXCEEDED: file too large (${bytes})`);
+    }
+    const overwrite = Boolean(payload.overwrite);
+    const result = await ctx.vfs.writeFile(path, content, overwrite);
+    return vm.newString(JSON.stringify(result));
+  });
+  vm.setProp(vm.global, "__host_fs_write", fsWriteFn);
+  fsWriteFn.dispose();
+
+  const fsListFn = vm.newAsyncifiedFunction("__host_fs_list", async (argsHandle) => {
+    bumpHostCall(stats, limits.execMaxHostCalls);
+    if (!ctx.vfs) {
+      throw new Error("VFS_NOT_CONFIGURED");
+    }
+    const args = safeJsonParse(vm.getString(argsHandle));
+    const payload = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+    const prefix = normalizeVfsPath(String(payload.prefix ?? "/"), limits.vfsMaxPathLength);
+    const list = await ctx.vfs.listFiles(prefix, limits.vfsListLimit);
+    if (list.length > limits.vfsMaxFiles) {
+      throw new Error("VFS_LIMIT_EXCEEDED: too many files");
+    }
+    return vm.newString(JSON.stringify(list));
+  });
+  vm.setProp(vm.global, "__host_fs_list", fsListFn);
+  fsListFn.dispose();
+
+  const fsRemoveFn = vm.newAsyncifiedFunction("__host_fs_remove", async (pathHandle) => {
+    bumpHostCall(stats, limits.execMaxHostCalls);
+    if (!ctx.vfs) {
+      throw new Error("VFS_NOT_CONFIGURED");
+    }
+    const path = normalizeVfsPath(vm.getString(pathHandle), limits.vfsMaxPathLength);
+    const removed = await ctx.vfs.removeFile(path);
+    return vm.newString(JSON.stringify({ ok: removed }));
+  });
+  vm.setProp(vm.global, "__host_fs_remove", fsRemoveFn);
+  fsRemoveFn.dispose();
 
   const googleSchemaFn = vm.newAsyncifiedFunction("__host_google_schema", async (argsHandle) => {
     bumpHostCall(stats, limits.execMaxHostCalls);
@@ -570,6 +673,29 @@ globalThis.fetch = async (url, init = {}) => {
     text: async () => String(payload.bodyText || ""),
     json: async () => JSON.parse(String(payload.bodyText || "null")),
   };
+};
+
+globalThis.fs = {
+  read: async (path) => {
+    const value = await globalThis.__host_fs_read(String(path));
+    return String(value);
+  },
+  write: async (path, content, options = {}) => {
+    const payload = {
+      path: String(path),
+      content: String(content ?? ""),
+      overwrite: Boolean(options && options.overwrite),
+    };
+    const raw = await globalThis.__host_fs_write(JSON.stringify(payload));
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.ok !== true) {
+      const code = parsed && parsed.code ? String(parsed.code) : "EWRITE";
+      throw new Error(code);
+    }
+    return { ok: true };
+  },
+  list: async (prefix = "/") => JSON.parse(await globalThis.__host_fs_list(JSON.stringify({ prefix: String(prefix) }))),
+  remove: async (path) => JSON.parse(await globalThis.__host_fs_remove(String(path))),
 };
 
 const __googleRuntime = globalThis.__google_runtime || { accessToken: "", allowedServices: [] };
@@ -768,6 +894,25 @@ async function ensurePackageInstalled(spec: string, ctx: HostContext, stats: Hos
 }
 
 async function loadModuleSource(moduleName: string, ctx: HostContext, stats: HostStats): Promise<string> {
+  if (moduleName.startsWith("vfs:/")) {
+    if (!ctx.vfs) {
+      throw new Error("VFS_NOT_CONFIGURED");
+    }
+    const path = normalizeVfsPath(moduleName.slice(4), ctx.config.limits.vfsMaxPathLength);
+    const revision = await ctx.vfs.revision();
+    const cacheKey = `${revision}:${path}`;
+    const cached = vfsModuleCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const source = await ctx.vfs.readFile(path);
+    if (source === null) {
+      throw new Error(`ENOENT: ${path}`);
+    }
+    vfsModuleCache.set(cacheKey, source);
+    return source;
+  }
+
   if (moduleName.startsWith("npm:")) {
     const spec = moduleName.slice(4);
     const installed = await ensurePackageInstalled(spec, ctx, stats);
@@ -798,10 +943,22 @@ async function loadModuleSource(moduleName: string, ctx: HostContext, stats: Hos
   throw new Error(`Unsupported module: ${moduleName}`);
 }
 
-function normalizeModuleName(baseModuleName: string, requestedName: string): string {
+function normalizeModuleName(baseModuleName: string, requestedName: string, maxVfsPathLength: number): string {
+  if (requestedName.startsWith("vfs:/")) {
+    return `vfs:${normalizeVfsPath(requestedName.slice(4), maxVfsPathLength)}`;
+  }
   if (requestedName.startsWith("npm:")) return requestedName;
   if (requestedName.startsWith("https://")) return requestedName;
+  if (requestedName.startsWith("/") && baseModuleName.startsWith("vfs:/")) {
+    return `vfs:${normalizeVfsPath(requestedName, maxVfsPathLength)}`;
+  }
   if (requestedName.startsWith("/")) return `https://esm.sh${requestedName}`;
+  if (baseModuleName.startsWith("vfs:/") && requestedName.startsWith(".")) {
+    const basePath = normalizeVfsPath(baseModuleName.slice(4), maxVfsPathLength);
+    const baseDir = basePath.includes("/") ? basePath.slice(0, basePath.lastIndexOf("/")) || "/" : "/";
+    const merged = `${baseDir}/${requestedName}`;
+    return `vfs:${normalizeVfsPath(merged, maxVfsPathLength)}`;
+  }
   if (baseModuleName.startsWith("https://")) {
     return new URL(requestedName, baseModuleName).toString();
   }
@@ -1180,6 +1337,37 @@ function normalizePackageSpec(spec: string, maxLength: number): string {
   return normalized;
 }
 
+function normalizeVfsPath(rawPath: string, maxLength: number): string {
+  let input = String(rawPath ?? "").trim();
+  if (input.startsWith("vfs:/")) {
+    input = input.slice(4);
+  }
+  if (!input.startsWith("/")) {
+    throw new Error("VFS_INVALID_PATH: path must be absolute");
+  }
+  const parts = input.split("/");
+  const normalized: string[] = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (!normalized.length) {
+        throw new Error("VFS_INVALID_PATH: path traversal is not allowed");
+      }
+      normalized.pop();
+      continue;
+    }
+    if (part.includes("\\")) {
+      throw new Error("VFS_INVALID_PATH: invalid separator");
+    }
+    normalized.push(part);
+  }
+  const path = `/${normalized.join("/")}`;
+  if (path.length > maxLength) {
+    throw new Error(`VFS_LIMIT_EXCEEDED: path too long (${path.length})`);
+  }
+  return path;
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const bytes = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -1191,6 +1379,11 @@ function classifyExecutionError(error: unknown): { code: string; message: string
   if (text.includes("interrupt")) return { code: "TIMEOUT", message: "Execution timed out" };
   if (text.includes("PKG_INSTALL_DISABLED")) return { code: "PKG_INSTALL_DISABLED", message: "Package install is disabled" };
   if (text.includes("NET_FETCH_DISABLED")) return { code: "NET_FETCH_DISABLED", message: "Network fetch is disabled" };
+  if (text.includes("VFS_NOT_CONFIGURED")) return { code: "VFS_NOT_CONFIGURED", message: "Filesystem is not configured" };
+  if (text.includes("VFS_INVALID_PATH")) return { code: "VFS_INVALID_PATH", message: truncate(text, 500) };
+  if (text.includes("VFS_LIMIT_EXCEEDED")) return { code: "VFS_LIMIT_EXCEEDED", message: truncate(text, 500) };
+  if (text.includes("ENOENT:")) return { code: "VFS_NOT_FOUND", message: truncate(text, 500) };
+  if (text.includes("EEXIST")) return { code: "VFS_CONFLICT", message: truncate(text, 500) };
   if (text.includes("Maximum pending job iterations exceeded")) {
     return { code: "MAX_PENDING_JOBS", message: "Too many pending jobs" };
   }

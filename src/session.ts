@@ -2,13 +2,19 @@ import { ToolLoopAgent, stepCountIs, tool, type ModelMessage } from "ai";
 import { z } from "zod";
 import { decodeEncryptionKey, decryptSecret } from "./crypto";
 import {
+  countVfsEntries,
   createGoogleOAuthState,
+  deleteVfsEntry,
   deleteGoogleOAuthToken,
   deleteMemoryForChat,
   deleteOldMemoryEpisodes,
+  getVfsEntry,
+  getVfsRevision,
   getGoogleOAuthToken,
   insertMemoryEpisode,
+  listVfsEntries,
   listActiveMemoryFacts,
+  putVfsEntry,
   upsertSimilarMemoryFact,
   attachMemoryFactSource,
 } from "./db";
@@ -159,6 +165,7 @@ export class SessionRuntime implements DurableObject {
       const codeConfig = this.getCodeExecutionConfig();
       const provider = this.getProvider();
       const memory = this.getMemoryConfigSafe();
+      const vfsCount = await countVfsEntries(this.env.DRECLAW_DB);
       const factCount = memory.enabled
         ? (await listActiveMemoryFacts(this.env.DRECLAW_DB, payload.message.chat.id, 200)).length
         : 0;
@@ -174,6 +181,7 @@ export class SessionRuntime implements DurableObject {
         `memory_turns: ${this.stateData.memoryTurns ?? 0}`,
         `code_exec_enabled: ${codeConfig.codeExecEnabled ? "yes" : "no"}`,
         `installed_packages: ${codeRuntime.installedPackages.length}`,
+        `vfs_files: ${vfsCount}`,
       ].join("\n");
       return { ok: true, text: summary };
     }
@@ -463,6 +471,53 @@ export class SessionRuntime implements DurableObject {
         saveState: async (next) => {
           this.stateData.codeRuntime = normalizeCodeRuntimeState(next);
           await this.save();
+        },
+        vfs: {
+          readFile: async (path) => {
+            const normalized = normalizeSessionVfsPath(path);
+            const row = await getVfsEntry(this.env.DRECLAW_DB, normalized);
+            return row ? row.content : null;
+          },
+          writeFile: async (path, content, overwrite) => {
+            const normalized = normalizeSessionVfsPath(path);
+            const config = this.getCodeExecutionConfig();
+            const sizeBytes = new TextEncoder().encode(content).byteLength;
+            if (sizeBytes > config.limits.vfsMaxFileBytes) {
+              return { ok: false, code: "VFS_LIMIT_EXCEEDED" };
+            }
+
+            const existing = await getVfsEntry(this.env.DRECLAW_DB, normalized);
+            if (!existing) {
+              const count = await countVfsEntries(this.env.DRECLAW_DB);
+              if (count >= config.limits.vfsMaxFiles) {
+                return { ok: false, code: "VFS_LIMIT_EXCEEDED" };
+              }
+            }
+
+            const nowIso = new Date().toISOString();
+            const result = await putVfsEntry(this.env.DRECLAW_DB, {
+              path: normalized,
+              content,
+              sizeBytes,
+              sha256: await sha256Hex(content),
+              nowIso,
+              overwrite,
+            });
+            if (!result.ok) {
+              return { ok: false, code: result.code };
+            }
+            return { ok: true };
+          },
+          listFiles: async (prefix, limit) => {
+            const normalizedPrefix = normalizeSessionVfsPath(prefix || "/");
+            const rows = await listVfsEntries(this.env.DRECLAW_DB, normalizedPrefix, Math.max(1, limit));
+            return rows.map((item) => item.path);
+          },
+          removeFile: async (path) => {
+            const normalized = normalizeSessionVfsPath(path);
+            return deleteVfsEntry(this.env.DRECLAW_DB, normalized, new Date().toISOString());
+          },
+          revision: async () => getVfsRevision(this.env.DRECLAW_DB),
         },
         memory: {
           find: async (input) => this.executeMemoryFindPayload(input),
@@ -1040,6 +1095,34 @@ function extractThinkingBlocks(messages: unknown[]): string[] {
     }
   }
   return blocks;
+}
+
+function normalizeSessionVfsPath(rawPath: string): string {
+  const input = String(rawPath ?? "").trim();
+  if (!input) throw new Error("VFS_INVALID_PATH: path is required");
+  const path = input.startsWith("vfs:/") ? input.slice(4) : input;
+  if (!path.startsWith("/")) {
+    throw new Error("VFS_INVALID_PATH: path must be absolute");
+  }
+  const parts = path.split("/");
+  const normalized: string[] = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (!normalized.length) throw new Error("VFS_INVALID_PATH: path traversal is not allowed");
+      normalized.pop();
+      continue;
+    }
+    if (part.includes("\\")) throw new Error("VFS_INVALID_PATH: invalid separator");
+    normalized.push(part);
+  }
+  return `/${normalized.join("/")}`;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 function truncateForLog(input: string, max: number): string {

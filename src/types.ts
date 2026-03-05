@@ -37,6 +37,10 @@ export interface Env {
   PKG_MAX_MODULE_BYTES?: string;
   PKG_MAX_TOTAL_INSTALL_BYTES_PER_RUN?: string;
   PKG_MAX_INSTALLS_PER_RUN?: string;
+  VFS_MAX_FILE_BYTES?: string;
+  VFS_MAX_FILES?: string;
+  VFS_MAX_PATH_LENGTH?: string;
+  VFS_LIST_LIMIT?: string;
   MEMORY_ENABLED?: string;
   MEMORY_RETENTION_DAYS?: string;
   MEMORY_MAX_INJECT_TOKENS?: string;
