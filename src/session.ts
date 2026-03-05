@@ -83,6 +83,7 @@ interface AgentRunCheckpoint {
   imageBlocks: string[];
   interstitialAssistantTexts: string[];
   openAssistantText?: string;
+  emittedAssistantKeys?: string[];
   seenToolPreviewKeys?: string[];
   emittedProgressKeys?: string[];
 }
@@ -180,6 +181,7 @@ export class SessionRuntime implements DurableObject {
       pendingUserMessages: pendingTexts,
       interstitialAssistantTexts: checkpoint?.interstitialAssistantTexts ?? [],
       openAssistantText: checkpoint?.openAssistantText ?? "",
+      emittedAssistantKeys: checkpoint?.emittedAssistantKeys ?? [],
       seenToolPreviewKeys: checkpoint?.seenToolPreviewKeys ?? [],
       emittedProgressKeys: checkpoint?.emittedProgressKeys ?? [],
       progress,
@@ -195,6 +197,7 @@ export class SessionRuntime implements DurableObject {
           imageBlocks,
           interstitialAssistantTexts: run.interstitialAssistantTexts,
           openAssistantText: run.openAssistantText,
+          emittedAssistantKeys: run.emittedAssistantKeys,
           seenToolPreviewKeys: run.seenToolPreviewKeys,
           emittedProgressKeys: run.emittedProgressKeys,
         },
@@ -380,6 +383,7 @@ export class SessionRuntime implements DurableObject {
       sliceSteps: 8,
       interstitialAssistantTexts: [],
       openAssistantText: "",
+      emittedAssistantKeys: [],
       seenToolPreviewKeys: [],
       emittedProgressKeys: [],
       progress,
@@ -404,6 +408,7 @@ export class SessionRuntime implements DurableObject {
       pendingUserMessages?: string[];
       interstitialAssistantTexts: string[];
       openAssistantText: string;
+      emittedAssistantKeys: string[];
       seenToolPreviewKeys: string[];
       emittedProgressKeys: string[];
       progress?: TelegramProgressReporter;
@@ -415,6 +420,7 @@ export class SessionRuntime implements DurableObject {
     toolTranscripts: string[];
     interstitialAssistantTexts: string[];
     openAssistantText: string;
+    emittedAssistantKeys: string[];
     seenToolPreviewKeys: string[];
     emittedProgressKeys: string[];
     messages: ModelMessage[];
@@ -434,6 +440,7 @@ export class SessionRuntime implements DurableObject {
 
     const toolTranscripts = [...params.toolTranscripts];
     const interstitialAssistantTexts = [...params.interstitialAssistantTexts];
+    const emittedAssistantKeys = new Set(params.emittedAssistantKeys);
     const progress = params.progress ?? new SilentProgressReporter();
     const draftReporter = params.draftReporter ?? new SilentDraftReporter();
     progress.seed(params.seenToolPreviewKeys, params.emittedProgressKeys);
@@ -465,6 +472,9 @@ export class SessionRuntime implements DurableObject {
     const sendInterstitial = async (stepNumber: number, rawText: string, source: string): Promise<void> => {
       const stepText = rawText.trim();
       if (!stepText) return;
+      const key = `assistant:${hashProgressText(stepText)}`;
+      if (emittedAssistantKeys.has(key)) return;
+      emittedAssistantKeys.add(key);
       interstitialAssistantTexts.push(stepText);
       logStreamTrace("interstitial-send", {
         stepNumber,
@@ -553,6 +563,7 @@ export class SessionRuntime implements DurableObject {
       toolTranscripts,
       interstitialAssistantTexts,
       openAssistantText: currentStepText,
+      emittedAssistantKeys: [...emittedAssistantKeys],
       seenToolPreviewKeys: progress.getSeenToolPreviewKeys(),
       emittedProgressKeys: progress.getEmittedProgressKeys(),
       messages: nextMessages,
