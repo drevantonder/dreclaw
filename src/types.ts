@@ -8,6 +8,11 @@ export interface Env {
   MODEL: string;
   BASE_URL?: string;
   OPENCODE_ZEN_API_KEY?: string;
+  GOOGLE_OAUTH_CLIENT_ID?: string;
+  GOOGLE_OAUTH_CLIENT_SECRET?: string;
+  GOOGLE_OAUTH_REDIRECT_URI?: string;
+  GOOGLE_OAUTH_SCOPES?: string;
+  GOOGLE_OAUTH_ENCRYPTION_KEY?: string;
   AI?: Ai;
   CODE_EXEC_ENABLED?: string;
   NET_FETCH_ENABLED?: string;

@@ -60,7 +60,7 @@ set -a; source .env; set +a
 pnpm secrets:sync
 ```
 
-This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPENCODE_ZEN_API_KEY`, `MODEL`, `BASE_URL`).
+This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPENCODE_ZEN_API_KEY`, `GOOGLE_OAUTH_*`, `MODEL`, `BASE_URL`).
 
 ### Deploy
 
