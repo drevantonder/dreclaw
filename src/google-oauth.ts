@@ -85,6 +85,7 @@ export function createOAuthStateToken(): string {
 export async function exchangeGoogleOAuthCode(
   config: GoogleOAuthConfig,
   code: string,
+  timeoutMs = 10_000,
 ): Promise<GoogleTokenExchangeResult> {
   const params = new URLSearchParams({
     code,
@@ -94,11 +95,15 @@ export async function exchangeGoogleOAuthCode(
     grant_type: "authorization_code",
   });
 
-  const response = await fetch(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-  });
+  const response = await fetchWithTimeout(
+    GOOGLE_TOKEN_URL,
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    },
+    timeoutMs,
+  );
 
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
@@ -123,6 +128,7 @@ export async function exchangeGoogleOAuthCode(
 export async function refreshGoogleAccessToken(
   config: GoogleOAuthConfig,
   refreshToken: string,
+  timeoutMs = 10_000,
 ): Promise<GoogleTokenRefreshResult> {
   const params = new URLSearchParams({
     client_id: config.clientId,
@@ -130,11 +136,15 @@ export async function refreshGoogleAccessToken(
     refresh_token: refreshToken,
     grant_type: "refresh_token",
   });
-  const response = await fetch(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-  });
+  const response = await fetchWithTimeout(
+    GOOGLE_TOKEN_URL,
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    },
+    timeoutMs,
+  );
 
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
@@ -153,4 +163,26 @@ export async function refreshGoogleAccessToken(
     expiresIn: Number(payload.expires_in ?? 0),
     tokenType: String(payload.token_type ?? "Bearer"),
   };
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const fetchPromise = fetch(url, { ...init, signal: controller.signal });
+    const timeoutPromise = new Promise<Response>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("Google OAuth request timed out"));
+      }, timeoutMs);
+    });
+    return await Promise.race([fetchPromise, timeoutPromise]);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Google OAuth request timed out");
+    }
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

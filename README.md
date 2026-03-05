@@ -103,7 +103,7 @@ pnpm deploy
 - `custom_context_delete` removes one context entry by `id` with `expected_version` checks.
 - `search` returns QuickJS runtime capabilities/limits and package inventory.
 - `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, and `fetch` inside the runtime.
-- `execute` also exposes `google.api(service, version)`, `google.schema(service, version, method)`, and `google.execute({...})`.
+- `execute` exposes `google.execute({...})` for Google API calls.
 
 ### Google OAuth setup
 
@@ -116,16 +116,20 @@ pnpm deploy
 ### Google execute examples
 
 ```js
-const gmail = await google.api("gmail", "v1")
-const messages = await gmail.users.messages.list({
+const messages = await google.execute({
+  service: "gmail",
+  version: "v1",
+  method: "users.messages.list",
   params: { userId: "me", maxResults: 5, q: "is:unread" },
 })
 messages
 ```
 
 ```js
-const sheets = await google.api("sheets", "v4")
-await sheets.spreadsheets.values.update({
+await google.execute({
+  service: "sheets",
+  version: "v4",
+  method: "spreadsheets.values.update",
   params: {
     spreadsheetId: input.sheetId,
     range: "Sheet1!A1:B2",

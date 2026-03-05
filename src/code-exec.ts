@@ -90,6 +90,12 @@ type HostContext = {
   };
 };
 
+type GoogleAuthSession = {
+  accessToken: string;
+  scope: string;
+  allowedServices: string[];
+};
+
 type HostStats = {
   hostCalls: number;
   fetchRequests: number;
@@ -210,8 +216,6 @@ export function searchCodeRuntime(payload: SearchInput, ctx: HostContext): Searc
         "pkg.install",
         "pkg.list",
         "fetch",
-        "google.api",
-        "google.schema",
         "google.execute",
         "console.log",
         "console.warn",
@@ -264,8 +268,10 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   const runtime = vm.runtime;
   const limits = ctx.config.limits;
   const deadline = Date.now() + limits.execTimeoutMs;
+  const googleAuthSession = await resolveGoogleAuthSession(ctx, limits.netRequestTimeoutMs);
+  const effectiveMemoryMb = googleAuthSession ? Math.max(limits.execMemoryMb, 128) : limits.execMemoryMb;
 
-  runtime.setMemoryLimit(limits.execMemoryMb * 1024 * 1024);
+  runtime.setMemoryLimit(effectiveMemoryMb * 1024 * 1024);
   runtime.setMaxStackSize(limits.execStackKb * 1024);
   runtime.setInterruptHandler(() => Date.now() > deadline);
   runtime.setModuleLoader(
@@ -274,8 +280,12 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   );
 
   try {
-    registerHostApi(vm, ctx, logs, stats);
+    registerHostApi(vm, ctx, logs, stats, googleAuthSession);
     await setGlobalJson(vm, "__host_input", payload.input ?? null);
+    await setGlobalJson(vm, "__google_runtime", {
+      accessToken: googleAuthSession?.accessToken ?? "",
+      allowedServices: googleAuthSession?.allowedServices ?? [],
+    });
     const bootstrapResult = await vm.evalCodeAsync(bootstrapRuntimeSource());
     vm.unwrapResult(bootstrapResult).dispose();
 
@@ -394,6 +404,7 @@ function registerHostApi(
   ctx: HostContext,
   logs: Array<{ level: "log" | "warn" | "error"; text: string }>,
   stats: HostStats,
+  googleAuthSession: GoogleAuthSession | null,
 ): void {
   const limits = ctx.config.limits;
 
@@ -473,7 +484,7 @@ function registerHostApi(
         ? (payload.params as Record<string, unknown>)
         : {};
     const body = Object.prototype.hasOwnProperty.call(payload, "body") ? payload.body : undefined;
-    const result = await executeGoogleMethod({ service, version, method, params, body }, ctx, stats);
+    const result = await executeGoogleMethod({ service, version, method, params, body }, ctx, stats, googleAuthSession);
     return vm.newString(JSON.stringify(result));
   });
   vm.setProp(vm.global, "__host_google_call", googleCallFn);
@@ -517,58 +528,102 @@ globalThis.fetch = async (url, init = {}) => {
   };
 };
 
-const __googlePathProxy = (service, version, segments = []) =>
-  new Proxy(() => {}, {
-    get(_target, prop) {
-      if (prop === "then") return undefined;
-      if (prop === "schema") {
-        return async () =>
-          JSON.parse(
-            await globalThis.__host_google_schema(
-              JSON.stringify({ service, version, method: segments.join(".") }),
-            ),
-          );
-      }
-      return __googlePathProxy(service, version, [...segments, String(prop)]);
-    },
-    apply(_target, _thisArg, args) {
-      const options = args[0] ?? {};
-      const params = options && typeof options === "object" && options.params ? options.params : {};
-      const body = options && typeof options === "object" && "body" in options ? options.body : undefined;
-      return globalThis
-        .__host_google_call(
-          JSON.stringify({
-            service,
-            version,
-            method: segments.join("."),
-            params,
-            body,
-          }),
-        )
-        .then((value) => JSON.parse(value));
-    },
+const __googleRuntime = globalThis.__google_runtime || { accessToken: "", allowedServices: [] };
+const __googleAllowed = Array.isArray(__googleRuntime.allowedServices) ? new Set(__googleRuntime.allowedServices) : new Set();
+
+const __assertGoogleAllowed = (service, method) => {
+  const s = String(service || "").trim();
+  const m = String(method || "").trim();
+  if (!s || !/^[a-z0-9-]+$/i.test(s)) throw new Error("Google service is required");
+  if (__googleAllowed.size && !__googleAllowed.has(s)) throw new Error("Google service '" + s + "' is not allowed");
+  if (method !== undefined && (!m || !/^[a-z0-9.]+$/i.test(m))) throw new Error("Google method path is required");
+};
+
+const __googleSchemaCache = new Map();
+
+const __getGoogleSchema = async (service, version, method = "") => {
+  const key = String(service || "") + ":" + String(version || "v1") + ":" + String(method || "");
+  if (__googleSchemaCache.has(key)) return __googleSchemaCache.get(key);
+  const raw = await globalThis.__host_google_schema(
+    JSON.stringify({ service: String(service), version: String(version || "v1"), method: String(method || "") }),
+  );
+  const parsed = JSON.parse(raw);
+  __googleSchemaCache.set(key, parsed);
+  return parsed;
+};
+
+const __expandPathTemplate = (template, params) =>
+  String(template || "").replace(/\\{(\\+?)([^}]+)\\}/g, (_match, plus, name) => {
+    const value = params[name];
+    if (value === undefined || value === null) throw new Error("Missing path parameter: " + name);
+    delete params[name];
+    const source = String(value);
+    if (plus === "+") {
+      return source.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+    }
+    return encodeURIComponent(source);
   });
 
+const __googleExecute = async ({ service, version, method, params = {}, body }) => {
+  const normalizedService = String(service || "").trim();
+  const normalizedVersion = String(version || "v1").trim();
+  const normalizedMethod = String(method || "").trim();
+  __assertGoogleAllowed(normalizedService, normalizedMethod);
+  const payload = {
+    service: normalizedService,
+    version: normalizedVersion,
+    method: normalizedMethod,
+    params: params && typeof params === "object" ? params : {},
+    body,
+  };
+  const raw = await globalThis.__host_google_call(JSON.stringify(payload));
+  return JSON.parse(raw);
+};
+
+const __googleApiCache = new Map();
+
+const __assignGoogleMethod = (root, methodPath, handler) => {
+  const segments = String(methodPath || "").split(".").filter(Boolean);
+  if (!segments.length) return;
+  let current = root;
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const segment = segments[index];
+    if (!current[segment] || typeof current[segment] !== "object") {
+      current[segment] = {};
+    }
+    current = current[segment];
+  }
+  current[segments[segments.length - 1]] = handler;
+};
+
+const __buildGoogleApi = async (service, version) => {
+  const key = String(service || "") + ":" + String(version || "v1");
+  if (__googleApiCache.has(key)) return __googleApiCache.get(key);
+  const schema = await __getGoogleSchema(service, version, "");
+  const api = {};
+  const methods = Array.isArray(schema.methods) ? schema.methods : [];
+  for (const methodPath of methods) {
+    const path = String(methodPath || "").trim();
+    if (!path) continue;
+    __assignGoogleMethod(api, path, (options = {}) => {
+      const params = options && typeof options === "object" && options.params ? options.params : {};
+      const body = options && typeof options === "object" && "body" in options ? options.body : undefined;
+      return __googleExecute({ service, version, method: path, params, body });
+    });
+  }
+  __googleApiCache.set(key, api);
+  return api;
+};
+
 globalThis.google = {
-  api: async (service, version = "v1") => __googlePathProxy(String(service), String(version)),
-  schema: async (service, version, method) =>
-    JSON.parse(
-      await globalThis.__host_google_schema(
-        JSON.stringify({ service: String(service), version: String(version), method: String(method) }),
-      ),
-    ),
-  execute: async ({ service, version, method, params = {}, body }) =>
-    JSON.parse(
-      await globalThis.__host_google_call(
-        JSON.stringify({
-          service: String(service),
-          version: String(version),
-          method: String(method),
-          params,
-          body,
-        }),
-      ),
-    ),
+  execute: async ({ service, version = "v1", method, params = {}, body }) =>
+    __googleExecute({
+      service: String(service),
+      version: String(version),
+      method: String(method),
+      params,
+      body,
+    }),
 };
 
 globalThis.input = globalThis.__host_input;
@@ -583,9 +638,24 @@ function runPendingJobs(runtime: { hasPendingJob: () => boolean; executePendingJ
     }
     const result = runtime.executePendingJobs();
     if (result && "error" in result && result.error) {
-      throw new Error("Pending jobs failed");
+      throw new Error(`Pending jobs failed: ${formatUnknownError(result.error)}`);
     }
     iterations += 1;
+  }
+}
+
+function formatUnknownError(error: unknown): string {
+  if (!error) return "unknown";
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message || error.name;
+  if (typeof error === "object" && "message" in (error as Record<string, unknown>)) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
   }
 }
 
@@ -680,13 +750,25 @@ async function getGoogleMethodSchema(
   ctx: HostContext,
   stats: HostStats,
 ): Promise<Record<string, unknown>> {
-  assertGoogleCallAllowed(service, methodPath, ctx);
-  const doc = await getGoogleDiscoveryDocument(service, version, stats);
-  const method = findGoogleDiscoveryMethod(doc, methodPath);
+  assertGoogleServiceAllowed(service, ctx);
+  const doc = await getGoogleDiscoveryDocument(service, version, stats, ctx.config.limits.netRequestTimeoutMs);
+  const normalizedMethod = String(methodPath ?? "").trim();
+  if (!normalizedMethod) {
+    const methods = Object.keys(doc.methods ?? {}).sort();
+    return {
+      service,
+      version,
+      methodCount: methods.length,
+      methods: methods.slice(0, 500),
+      truncated: methods.length > 500,
+    };
+  }
+  assertGoogleMethodPath(normalizedMethod);
+  const method = findGoogleDiscoveryMethod(doc, normalizedMethod);
   return {
     service,
     version,
-    method: methodPath,
+    method: normalizedMethod,
     httpMethod: method.httpMethod,
     path: method.path,
     parameters: method.parameters ?? {},
@@ -706,10 +788,17 @@ async function executeGoogleMethod(
   },
   ctx: HostContext,
   stats: HostStats,
+  googleAuthSession: GoogleAuthSession | null,
 ): Promise<Record<string, unknown>> {
-  assertGoogleCallAllowed(input.service, input.method, ctx);
+  assertGoogleServiceAllowed(input.service, ctx);
+  assertGoogleMethodPath(input.method);
   stats.googleCalls += 1;
-  const doc = await getGoogleDiscoveryDocument(input.service, input.version, stats);
+  const doc = await getGoogleDiscoveryDocument(
+    input.service,
+    input.version,
+    stats,
+    ctx.config.limits.netRequestTimeoutMs,
+  );
   const method = findGoogleDiscoveryMethod(doc, input.method);
 
   const params = { ...input.params };
@@ -722,15 +811,14 @@ async function executeGoogleMethod(
     baseUrl.searchParams.set(key, String(value));
   }
 
-  if (!ctx.googleAuth) {
+  if (!googleAuthSession) {
     throw new Error("Google API is not configured");
   }
-  const auth = await ctx.googleAuth.getAccessToken();
 
-  const response = await fetch(baseUrl.toString(), {
+  const response = await fetchWithTimeout(baseUrl.toString(), ctx.config.limits.netRequestTimeoutMs, {
     method: method.httpMethod,
     headers: {
-      authorization: `Bearer ${auth.accessToken}`,
+      authorization: `Bearer ${googleAuthSession.accessToken}`,
       "content-type": "application/json",
     },
     body: hasGoogleRequestBody(method.httpMethod) ? JSON.stringify(input.body ?? {}) : undefined,
@@ -749,14 +837,27 @@ async function executeGoogleMethod(
   };
 }
 
-function assertGoogleCallAllowed(service: string, methodPath: string, ctx: HostContext): void {
+async function resolveGoogleAuthSession(ctx: HostContext, timeoutMs: number): Promise<GoogleAuthSession | null> {
+  if (!ctx.googleAuth) return null;
+  const source = ctx.googleAuth;
+  const allowedServices = source.allowedServices ?? [];
+  const auth = await Promise.race([
+    source.getAccessToken(),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error(`Google auth resolution timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+  return {
+    accessToken: auth.accessToken,
+    scope: auth.scope,
+    allowedServices,
+  };
+}
+
+function assertGoogleServiceAllowed(service: string, ctx: HostContext): void {
   const normalizedService = String(service ?? "").trim();
-  const normalizedMethod = String(methodPath ?? "").trim();
   if (!normalizedService || !/^[a-z0-9-]+$/i.test(normalizedService)) {
     throw new Error("Google service is required");
-  }
-  if (!normalizedMethod || !/^[a-z0-9.]+$/i.test(normalizedMethod)) {
-    throw new Error("Google method path is required");
   }
   const allowed = ctx.googleAuth?.allowedServices;
   if (allowed && allowed.length > 0 && !allowed.includes(normalizedService)) {
@@ -764,7 +865,19 @@ function assertGoogleCallAllowed(service: string, methodPath: string, ctx: HostC
   }
 }
 
-async function getGoogleDiscoveryDocument(service: string, version: string, stats: HostStats): Promise<GoogleDiscoveryDoc> {
+function assertGoogleMethodPath(methodPath: string): void {
+  const normalizedMethod = String(methodPath ?? "").trim();
+  if (!normalizedMethod || !/^[a-z0-9.]+$/i.test(normalizedMethod)) {
+    throw new Error("Google method path is required");
+  }
+}
+
+async function getGoogleDiscoveryDocument(
+  service: string,
+  version: string,
+  stats: HostStats,
+  timeoutMs: number,
+): Promise<GoogleDiscoveryDoc> {
   const normalizedService = service.trim().toLowerCase();
   const normalizedVersion = version.trim().toLowerCase();
   if (!normalizedVersion) {
@@ -777,7 +890,7 @@ async function getGoogleDiscoveryDocument(service: string, version: string, stat
   }
 
   const discoveryUrl = `https://www.googleapis.com/discovery/v1/apis/${encodeURIComponent(normalizedService)}/${encodeURIComponent(normalizedVersion)}/rest`;
-  const response = await fetch(discoveryUrl, { method: "GET" });
+  const response = await fetchWithTimeout(discoveryUrl, timeoutMs, { method: "GET" });
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Discovery fetch failed (${response.status}): ${truncate(body, 240)}`);
@@ -959,11 +1072,18 @@ function normalizeFetchInit(init: unknown, maxRedirects: number): RequestInit {
 
 async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const fetchPromise = fetch(url, { ...init, signal: controller.signal });
+    const timeoutPromise = new Promise<Response>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    return await Promise.race([fetchPromise, timeoutPromise]);
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 

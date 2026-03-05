@@ -561,7 +561,8 @@ export class SessionRuntime implements DurableObject {
       key,
     );
     const oauthConfig = getGoogleOAuthConfig(this.env);
-    const refreshed = await refreshGoogleAccessToken(oauthConfig, refreshToken);
+    const timeoutMs = this.getCodeExecutionConfig().limits.netRequestTimeoutMs;
+    const refreshed = await refreshGoogleAccessToken(oauthConfig, refreshToken, timeoutMs);
     return {
       accessToken: refreshed.accessToken,
       scope: refreshed.scope,
