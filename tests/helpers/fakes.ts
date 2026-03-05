@@ -7,6 +7,8 @@ export class FakeD1 {
   readonly updates = new Set<number>();
   readonly oauthStates = new Map<string, Record<string, unknown>>();
   readonly oauthTokens = new Map<string, Record<string, unknown>>();
+  readonly vfsEntries = new Map<string, Record<string, unknown>>();
+  vfsRevision = 0;
 
   prepare(sql: string) {
     return {
@@ -20,7 +22,13 @@ export class FakeD1 {
     };
   }
 
-  private async all(_sql: string): Promise<{ results: Array<{ provider: string; payload: string }> }> {
+  private async all(sql: string): Promise<{ results: Array<Record<string, unknown>> }> {
+    if (sql.includes("FROM vfs_entries")) {
+      const rows = [...this.vfsEntries.values()]
+        .filter((row) => row.deleted_at === null || row.deleted_at === undefined)
+        .sort((a, b) => String(a.path).localeCompare(String(b.path)));
+      return { results: rows };
+    }
     return { results: [] };
   }
 
@@ -71,6 +79,39 @@ export class FakeD1 {
       const deleted = this.oauthTokens.delete(principal);
       return { meta: { changes: deleted ? 1 : 0 } };
     }
+    if (sql.includes("INSERT INTO vfs_entries") || sql.includes("INSERT OR REPLACE INTO vfs_entries")) {
+      const path = String(args[0]);
+      this.vfsEntries.set(path, {
+        path,
+        content: String(args[1]),
+        size_bytes: Number(args[2]),
+        sha256: String(args[3]),
+        version: Number(args[4]),
+        created_at: String(args[5]),
+        updated_at: String(args[6]),
+        deleted_at: null,
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE vfs_entries SET deleted_at")) {
+      const path = String(args[2]);
+      const current = this.vfsEntries.get(path);
+      if (!current || current.deleted_at) {
+        return { meta: { changes: 0 } };
+      }
+      current.deleted_at = String(args[0]);
+      current.updated_at = String(args[1]);
+      current.version = Number(current.version ?? 0) + 1;
+      this.vfsEntries.set(path, current);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT OR IGNORE INTO vfs_meta")) {
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE vfs_meta SET revision = revision + 1")) {
+      this.vfsRevision += 1;
+      return { meta: { changes: 1 } };
+    }
     return { meta: { changes: 0 } };
   }
 
@@ -82,6 +123,19 @@ export class FakeD1 {
     if (sql.includes("SELECT principal, telegram_user_id, refresh_token_ciphertext, nonce, scopes, updated_at FROM google_oauth_tokens")) {
       const principal = String(args[0]);
       return this.oauthTokens.get(principal) ?? null;
+    }
+    if (sql.includes("SELECT path, content, size_bytes, sha256, version, created_at, updated_at FROM vfs_entries")) {
+      const path = String(args[0]);
+      const row = this.vfsEntries.get(path);
+      if (!row || row.deleted_at) return null;
+      return row;
+    }
+    if (sql.includes("SELECT revision FROM vfs_meta")) {
+      return { revision: this.vfsRevision };
+    }
+    if (sql.includes("SELECT COUNT(*) AS count FROM vfs_entries")) {
+      const count = [...this.vfsEntries.values()].filter((row) => row.deleted_at === null || row.deleted_at === undefined).length;
+      return { count };
     }
     return null;
   }

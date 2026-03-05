@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  countVfsEntries,
   createGoogleOAuthState,
+  deleteVfsEntry,
   deleteGoogleOAuthToken,
+  getVfsEntry,
+  getVfsRevision,
   getGoogleOAuthState,
   getGoogleOAuthToken,
+  listVfsEntries,
   markGoogleOAuthStateUsed,
   markUpdateSeen,
+  putVfsEntry,
   upsertGoogleOAuthToken,
 } from "../../src/db";
 
@@ -13,11 +19,13 @@ type Statement = {
   bind: (...args: unknown[]) => Statement;
   run: () => Promise<{ meta: { changes?: number } }>;
   first: <T>() => Promise<T | null>;
+  all: <T>() => Promise<{ results: T[] }>;
 };
 
 function createMockDb(options?: {
   runChanges?: number;
   firstRow?: Record<string, unknown> | null;
+  allRows?: Record<string, unknown>[];
   captureSql?: string[];
   captureBind?: unknown[][];
 }): D1Database {
@@ -30,6 +38,7 @@ function createMockDb(options?: {
     },
     run: async () => ({ meta: { changes: options?.runChanges ?? 1 } }),
     first: async <T>() => (options?.firstRow ?? null) as T | null,
+    all: async <T>() => ({ results: ((options?.allRows ?? []) as T[]) }),
   };
 
   return {
@@ -147,5 +156,63 @@ describe("db", () => {
     const ok = await markUpdateSeen(db, 202);
     expect(ok).toBe(true);
     expect(calls).toBe(2);
+  });
+
+  it("supports vfs revision + file crud", async () => {
+    const sql: string[] = [];
+    const binds: unknown[][] = [];
+    const db = createMockDb({
+      captureSql: sql,
+      captureBind: binds,
+      firstRow: {
+        revision: 7,
+        path: "/scripts/demo.js",
+        content: "export default 1;",
+        size_bytes: 17,
+        sha256: "abc",
+        version: 2,
+        created_at: "2026-01-01T00:00:00.000Z",
+        updated_at: "2026-01-01T00:00:00.000Z",
+      },
+      allRows: [
+        {
+          path: "/scripts/demo.js",
+          content: "export default 1;",
+          size_bytes: 17,
+          sha256: "abc",
+          version: 2,
+          created_at: "2026-01-01T00:00:00.000Z",
+          updated_at: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const revision = await getVfsRevision(db);
+    expect(revision).toBe(7);
+
+    const put = await putVfsEntry(db, {
+      path: "/scripts/demo.js",
+      content: "export default 1;",
+      sizeBytes: 17,
+      sha256: "abc",
+      nowIso: "2026-01-01T00:00:00.000Z",
+      overwrite: true,
+    });
+    expect(put.ok).toBe(true);
+
+    const got = await getVfsEntry(db, "/scripts/demo.js");
+    expect(got?.path).toBe("/scripts/demo.js");
+
+    const list = await listVfsEntries(db, "/scripts", 20);
+    expect(list[0]?.path).toBe("/scripts/demo.js");
+
+    const count = await countVfsEntries(db);
+    expect(typeof count).toBe("number");
+
+    const removed = await deleteVfsEntry(db, "/scripts/demo.js", "2026-01-01T00:01:00.000Z");
+    expect(removed).toBe(true);
+
+    expect(sql.some((entry) => entry.includes("vfs_entries"))).toBe(true);
+    expect(binds.length).toBeGreaterThan(0);
   });
 });

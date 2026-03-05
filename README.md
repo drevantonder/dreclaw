@@ -99,9 +99,10 @@ pnpm deploy
 - Long-term memory facts/episodes live in D1 + Vectorize (`VECTORIZE_MEMORY`) with Workers AI embeddings (`env.AI`).
 - Memory writes are salience-gated and consolidated through reflection.
 - `search` returns QuickJS runtime capabilities/limits and package inventory.
-- `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, and `fetch` inside the runtime.
+- `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, `fetch`, and `fs.read/fs.write/fs.list/fs.remove` inside the runtime.
 - `execute` also exposes `memory.find(query, opts?)`, `memory.save(text, opts?)`, and `memory.remove(target)` for direct memory control.
 - `execute` exposes `google.execute({...})` for Google API calls.
+- `execute` can import saved modules via `vfs:/...` (for example `import { run } from "vfs:/scripts/run.js"`).
 
 ### Google OAuth setup
 

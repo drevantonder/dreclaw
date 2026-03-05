@@ -356,14 +356,14 @@ describe("conversation e2e", () => {
         stopReason: "toolUse",
         content: [
           {
-            type: "toolCall",
-            id: "call-2",
-            name: "execute",
-            arguments: {
-              code: "const value = await Promise.resolve(1 + 2);\nglobalThis.__exec_result = { sum: value, inputName: input?.name ?? null, hasPkg: !!globalThis.pkg };\nglobalThis.__exec_result;",
-              input: { name: "dre" },
+              type: "toolCall",
+              id: "call-2",
+              name: "execute",
+              arguments: {
+                code: "await fs.write('/scripts/calc.js', 'export const calc = (value) => value + 2;', { overwrite: true });\nimport { calc } from 'vfs:/scripts/calc.js';\nconst value = await Promise.resolve(calc(1));\nglobalThis.__exec_result = { sum: value, inputName: input?.name ?? null, hasPkg: !!globalThis.pkg };\nglobalThis.__exec_result;",
+                input: { name: "dre" },
+              },
             },
-          },
         ],
       },
       {
