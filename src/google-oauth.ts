@@ -3,9 +3,11 @@ import type { Env } from "./types";
 const GOOGLE_AUTH_BASE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DEFAULT_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://mail.google.com/",
   "https://www.googleapis.com/auth/spreadsheets",
-  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/documents",
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/drive",
 ];
 
 export interface GoogleOAuthConfig {

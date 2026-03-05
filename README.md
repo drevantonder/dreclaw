@@ -110,6 +110,7 @@ pnpm deploy
 - Configure Google OAuth app as **Web application** in Google Cloud Console.
 - Add redirect URI: `https://<worker-host>/google/oauth/callback`.
 - Set `GOOGLE_OAUTH_*` values in `.env` and sync secrets.
+- Recommended full-access scope set for this project: Gmail (`https://mail.google.com/`), Sheets (`https://www.googleapis.com/auth/spreadsheets`), Docs (`https://www.googleapis.com/auth/documents`), Calendar (`https://www.googleapis.com/auth/calendar`), Drive (`https://www.googleapis.com/auth/drive`).
 - In Telegram, run `/google connect`, open link, approve scopes.
 
 ### Google execute examples

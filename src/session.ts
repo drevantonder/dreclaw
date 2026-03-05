@@ -541,7 +541,7 @@ export class SessionRuntime implements DurableObject {
         },
         googleAuth: {
           getAccessToken: async () => this.getGoogleAccessToken(),
-          allowedServices: ["gmail", "drive", "sheets"],
+          allowedServices: ["gmail", "drive", "sheets", "docs", "calendar"],
         },
       },
     );
