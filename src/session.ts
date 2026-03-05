@@ -510,12 +510,23 @@ export class SessionRuntime implements DurableObject {
 
     for await (const part of stream.fullStream) {
       const type = (part as { type?: unknown }).type;
-        if (type === "start-step") {
-          currentStepNumber += 1;
-          currentStepHasToolCall = false;
-          logStreamTrace("start-step", { stepNumber: currentStepNumber });
-          continue;
+      if (type === "start-step") {
+        currentStepNumber += 1;
+        currentStepHasToolCall = false;
+        logStreamTrace("start-step", { stepNumber: currentStepNumber });
+        continue;
+      }
+      if (type === "thinking" || type === "reasoning") {
+        const thinkingText = extractThinkingText(part);
+        logStreamTrace("thinking", {
+          stepNumber: currentStepNumber,
+          textLength: thinkingText.length,
+        });
+        if (thinkingText) {
+          await progress.sendThinkingChunk(thinkingText);
         }
+        continue;
+      }
       if (type === "text-delta") {
         const delta = (part as { text?: unknown }).text;
         if (typeof delta === "string" && delta) {
@@ -552,7 +563,6 @@ export class SessionRuntime implements DurableObject {
     await draftReporter.flush();
 
     const response = await stream.response;
-    await progress.sendThinkingBlocks(extractThinkingBlocks(response.messages));
     const generatedText = await stream.text;
     const finalText = typeof generatedText === "string" ? generatedText.trim() : "";
     const nextMessages = (response.messages as unknown as ModelMessage[]) ?? mergedMessages;
@@ -1272,16 +1282,14 @@ class TelegramProgressReporter {
     return [...this.emittedProgressKeys];
   }
 
-  async sendThinkingBlocks(blocks: string[]): Promise<void> {
+  async sendThinkingChunk(block: string): Promise<void> {
     if (!this.showThinking) return;
-    for (const block of blocks) {
-      const text = truncateForLog(block, 700);
-      if (!text) continue;
-      const key = `thinking:${hashProgressText(text)}`;
-      if (this.emittedProgressKeys.has(key)) continue;
-      this.emittedProgressKeys.add(key);
-      await this.safeSendMessage(`Thinking:\n${text}`);
-    }
+    const text = truncateForLog(block, 700);
+    if (!text) return;
+    const key = `thinking:${hashProgressText(text)}`;
+    if (this.emittedProgressKeys.has(key)) return;
+    this.emittedProgressKeys.add(key);
+    await this.safeSendMessage(`Thinking:\n${text}`);
   }
 
   async onToolPreview(name: string, args: Record<string, unknown>): Promise<void> {
@@ -1415,7 +1423,7 @@ class SilentProgressReporter {
     return [];
   }
 
-  async sendThinkingBlocks(_blocks: string[]): Promise<void> {
+  async sendThinkingChunk(_block: string): Promise<void> {
     return;
   }
 
@@ -1512,27 +1520,13 @@ function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-function extractThinkingBlocks(messages: unknown[]): string[] {
-  const blocks: string[] = [];
-  for (const message of messages) {
-    const role = (message as { role?: unknown })?.role;
-    if (role !== "assistant") continue;
-    const content = (message as { content?: unknown })?.content;
-    if (!Array.isArray(content)) continue;
-    for (const item of content) {
-      if (!item || typeof item !== "object") continue;
-      const type = (item as { type?: unknown }).type;
-      if (type !== "thinking" && type !== "reasoning") continue;
-      const textValue =
-        (item as { thinking?: unknown }).thinking ??
-        (item as { text?: unknown }).text ??
-        (item as { reasoning?: unknown }).reasoning;
-      if (typeof textValue !== "string") continue;
-      const compact = textValue.trim();
-      if (compact) blocks.push(compact);
-    }
-  }
-  return blocks;
+function extractThinkingText(input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const textValue =
+    (input as { thinking?: unknown }).thinking ??
+    (input as { text?: unknown }).text ??
+    (input as { reasoning?: unknown }).reasoning;
+  return typeof textValue === "string" ? textValue.trim() : "";
 }
 
 function extractAssistantTextForToolCall(messages: unknown[], targetToolCallId?: string): string {

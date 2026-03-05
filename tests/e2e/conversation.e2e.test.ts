@@ -73,13 +73,24 @@ vi.mock("ai", () => {
         messages.push(assistantMessage);
 
         const toolCalls = resolved.content.filter((block) => block.type === "toolCall");
-        const stepText = resolved.content
-          .filter((block) => block.type === "text")
-          .map((block) => String(block.text ?? ""))
-          .join("\n")
-          .trim();
         fullStreamParts.push({ type: "start-step" });
-        if (stepText) fullStreamParts.push({ type: "text-delta", text: stepText });
+        const stepTextChunks: string[] = [];
+        for (const block of resolved.content) {
+          if (block.type === "thinking") {
+            fullStreamParts.push({ type: "thinking", thinking: String(block.thinking ?? "") });
+            continue;
+          }
+          if (block.type === "reasoning") {
+            fullStreamParts.push({ type: "reasoning", reasoning: String((block as { reasoning?: unknown }).reasoning ?? "") });
+            continue;
+          }
+          if (block.type === "text") {
+            const text = String(block.text ?? "");
+            stepTextChunks.push(text);
+            if (text) fullStreamParts.push({ type: "text-delta", text });
+          }
+        }
+        const stepText = stepTextChunks.join("\n").trim();
         for (const toolCall of toolCalls) {
           fullStreamParts.push({
             type: "tool-call",
@@ -524,6 +535,45 @@ describe("conversation e2e", () => {
     expect(thinkingMessages.length).toBe(1);
     expect(thinkingMessages[0]?.text).toContain("Check markers then answer briefly.");
     expect(sends.at(-1)?.text).toContain("Done.");
+  });
+
+  it("streams thinking in provider order around tool calls", async () => {
+    const { env } = createEnv();
+    const { sends } = setupTelegramFetch();
+
+    await callWebhook(env, 4011, "/debug on");
+    await callWebhook(env, 4012, "/show-thinking on");
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "thinking", thinking: "Think first." },
+          { type: "text", text: "Before tool." },
+          { type: "toolCall", id: "call-1", name: "search", arguments: { query: "pkg" } },
+        ],
+      },
+      {
+        stopReason: "endTurn",
+        content: [
+          { type: "thinking", thinking: "Think after tool." },
+          { type: "text", text: "After tool." },
+        ],
+      },
+    );
+
+    await callWebhook(env, 4013, "ordered thinking");
+
+    const ordered = sends.map((message) => message.text);
+    const firstThinkingIndex = ordered.findIndex((text) => text.includes("Think first."));
+    const beforeToolIndex = ordered.findIndex((text) => text.includes("Before tool."));
+    const secondThinkingIndex = ordered.findIndex((text) => text.includes("Think after tool."));
+    const afterToolIndex = ordered.findIndex((text) => text.includes("After tool."));
+
+    expect(firstThinkingIndex).toBeGreaterThan(-1);
+    expect(beforeToolIndex).toBeGreaterThan(firstThinkingIndex);
+    expect(secondThinkingIndex).toBeGreaterThan(beforeToolIndex);
+    expect(afterToolIndex).toBeGreaterThan(secondThinkingIndex);
   });
 
   it("supports search and execute tools for code mode", async () => {
