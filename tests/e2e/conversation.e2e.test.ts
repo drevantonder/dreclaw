@@ -405,6 +405,7 @@ describe("conversation e2e", () => {
     const codePreview = sends.find((message) => message.text.includes("<pre><code>const total = 1 + 2;"));
     expect(codePreview).toBeDefined();
     expect(sends.some((message) => message.text.includes("Step:</b> tools=[execute] ok=1 error=0"))).toBe(true);
+    expect(sends.some((message) => message.text.includes("Result:</b>"))).toBe(true);
     expect(sends.at(-1)?.text).toContain("Done.");
   });
 

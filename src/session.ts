@@ -801,7 +801,12 @@ function createAgentTools(
     try {
       const result = await execute();
       toolTranscripts.push(renderToolTranscript(name, true, args, result));
-      await progress.onStepSummary({ tools: [name], okCount: 1, errorCount: 0 });
+      await progress.onStepSummary({
+        tools: [name],
+        okCount: 1,
+        errorCount: 0,
+        resultPreview: name === "execute" ? formatExecuteResultPreview(result) : undefined,
+      });
       return result;
     } catch (error) {
       const detail = redactSensitiveText(compactErrorMessage(error));
@@ -907,12 +912,15 @@ class TelegramProgressReporter {
     okCount: number;
     errorCount: number;
     error?: string;
+    resultPreview?: string;
   }): Promise<void> {
     if (this.mode === "compact") return;
     const names = params.tools.join(", ");
     const base = `Step: tools=[${names}] ok=${params.okCount} error=${params.errorCount}`;
     const detail = params.error ? ` ${truncateForLog(params.error, 220)}` : "";
-    await this.safeSendMessage(`${base}${detail}`);
+    const lines = [`${base}${detail}`];
+    if (params.resultPreview) lines.push(params.resultPreview);
+    await this.safeSendMessage(lines.join("\n"));
   }
 
   private async safeSendMessage(text: string, rawHtml = false): Promise<void> {
@@ -1008,6 +1016,30 @@ function buildToolPreview(name: string, args: Record<string, unknown>): { key: s
     };
   }
   return null;
+}
+
+function formatExecuteResultPreview(output: unknown): string {
+  const value = output && typeof output === "object" ? (output as Record<string, unknown>) : null;
+  const result = value && Object.prototype.hasOwnProperty.call(value, "result") ? value.result : output;
+  const resultText = redactSensitiveText(truncateForLog(serializeUnknown(result), 420));
+  const lines = [`Result: ${resultText || "(no output)"}`];
+
+  if (value && Array.isArray(value.logs)) {
+    const logItems = value.logs
+      .filter((item): item is { level?: unknown; text?: unknown } => Boolean(item && typeof item === "object"))
+      .slice(0, 3)
+      .map((item) => {
+        const level = item.level === "warn" || item.level === "error" ? item.level : "log";
+        const text = redactSensitiveText(truncateForLog(String(item.text ?? ""), 120));
+        return text ? `[${level}] ${text}` : "";
+      })
+      .filter(Boolean);
+    if (logItems.length) {
+      lines.push(`Logs: ${truncateForLog(logItems.join(" | "), 420)}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 function truncateCodePreview(code: string, maxChars: number): string {

@@ -75,7 +75,7 @@ pnpm deploy
 - `/status` shows runtime/session/auth + memory metadata.
 - `/reset` clears conversation context only (keeps memory).
 - `/factory-reset` clears conversation context and wipes persisted memory.
-- `/debug on|off` toggles debug previews and per-step tool summaries.
+- `/debug on|off` toggles debug previews, per-step tool summaries, and execute result previews.
 - `/show-thinking on|off` toggles thinking block visibility.
 - `/google connect` starts Google OAuth linking flow.
 - `/google status` shows current Google link status and scopes.
