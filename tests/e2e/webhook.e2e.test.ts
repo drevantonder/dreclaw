@@ -241,4 +241,228 @@ describe("telegram webhook e2e", () => {
     const text = await callbackRes.text();
     expect(text).toContain("Invalid or expired state");
   });
+
+  it("enqueues long-form prompts and sends ack immediately", async () => {
+    const { env, queueMessages, fakeQueue } = createEnv();
+    env.AGENT_RUN_QUEUE = fakeQueue;
+    const sends: Array<{ body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/sendChatAction")) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        if (url.includes("/sendMessage")) {
+          sends.push({ body: init?.body ? JSON.parse(String(init.body)) : null });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const req = new Request("https://test.local/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify(makeUpdate(1401, "please do a very long deep analysis")),
+    });
+
+    const res = await app.fetch(req, env, {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    expect(queueMessages.length).toBe(1);
+    const sent = sends[0].body as { text: string };
+    expect(sent.text).toContain("working on this now");
+  });
+
+  it("processes queued run and sends final response once", async () => {
+    const { env, queueMessages, fakeQueue, db } = createEnv();
+    env.AGENT_RUN_QUEUE = fakeQueue;
+
+    const doFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ done: true, text: "Long run complete." }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    env.SESSION_RUNTIME = {
+      idFromName(name: string) {
+        return { toString: () => name } as unknown as DurableObjectId;
+      },
+      get() {
+        return { fetch: doFetch } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
+
+    const sends: Array<{ body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/sendChatAction")) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        if (url.includes("/sendMessage")) {
+          sends.push({ body: init?.body ? JSON.parse(String(init.body)) : null });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const webhookReq = new Request("https://test.local/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify(makeUpdate(1402, "big request")),
+    });
+    const webhookRes = await app.fetch(webhookReq, env, {} as ExecutionContext);
+    expect(webhookRes.status).toBe(200);
+    expect(queueMessages.length).toBe(1);
+
+    const queuePayload = queueMessages[0] as { runId: string; type: string };
+    await (worker as unknown as { queue: (batch: MessageBatch<unknown>, env: unknown, ctx: ExecutionContext) => Promise<void> }).queue(
+      {
+        queue: "dreclaw-agent-runs",
+        messages: [
+          {
+            id: "msg-1",
+            timestamp: new Date(),
+            body: queuePayload,
+            attempts: 1,
+            ack: () => undefined,
+            retry: () => undefined,
+          } as unknown as Message<unknown>,
+        ],
+        retryAll: () => undefined,
+        ackAll: () => undefined,
+      } as MessageBatch<unknown>,
+      env,
+      {} as ExecutionContext,
+    );
+
+    expect(doFetch).toHaveBeenCalledTimes(1);
+    expect(sends.length).toBe(2);
+    const finalSent = sends[1].body as { text: string };
+    expect(finalSent.text).toContain("Long run complete.");
+
+    const run = db.agentRuns.get(queuePayload.runId);
+    expect(run?.status).toBe("completed");
+    expect(run?.delivered_at).toBeTruthy();
+  });
+
+  it("continues queued run across multiple slices", async () => {
+    const { env, queueMessages, fakeQueue, db } = createEnv();
+    env.AGENT_RUN_QUEUE = fakeQueue;
+
+    const doFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ done: false, checkpoint: { messages: [{ role: "assistant", content: "..." }], toolTranscripts: [], imageBlocks: [] } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ done: true, text: "Completed after continuation." }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+    env.SESSION_RUNTIME = {
+      idFromName(name: string) {
+        return { toString: () => name } as unknown as DurableObjectId;
+      },
+      get() {
+        return { fetch: doFetch } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
+
+    const sends: Array<{ body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/sendChatAction")) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        if (url.includes("/sendMessage")) {
+          sends.push({ body: init?.body ? JSON.parse(String(init.body)) : null });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const webhookReq = new Request("https://test.local/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify(makeUpdate(1403, "very long task")),
+    });
+    await app.fetch(webhookReq, env, {} as ExecutionContext);
+
+    const firstPayload = queueMessages[0] as { runId: string; type: string };
+    const queueHandler = worker as unknown as {
+      queue: (batch: MessageBatch<unknown>, env: unknown, ctx: ExecutionContext) => Promise<void>;
+    };
+
+    await queueHandler.queue(
+      {
+        queue: "dreclaw-agent-runs",
+        messages: [
+          {
+            id: "msg-1",
+            timestamp: new Date(),
+            body: firstPayload,
+            attempts: 1,
+            ack: () => undefined,
+            retry: () => undefined,
+          } as unknown as Message<unknown>,
+        ],
+        retryAll: () => undefined,
+        ackAll: () => undefined,
+      } as MessageBatch<unknown>,
+      env,
+      {} as ExecutionContext,
+    );
+
+    expect(queueMessages.length).toBe(2);
+    expect(sends.length).toBe(1);
+
+    const secondPayload = queueMessages[1] as { runId: string; type: string };
+    await queueHandler.queue(
+      {
+        queue: "dreclaw-agent-runs",
+        messages: [
+          {
+            id: "msg-2",
+            timestamp: new Date(),
+            body: secondPayload,
+            attempts: 1,
+            ack: () => undefined,
+            retry: () => undefined,
+          } as unknown as Message<unknown>,
+        ],
+        retryAll: () => undefined,
+        ackAll: () => undefined,
+      } as MessageBatch<unknown>,
+      env,
+      {} as ExecutionContext,
+    );
+
+    expect(doFetch).toHaveBeenCalledTimes(2);
+    expect(sends.length).toBe(2);
+    const finalSent = sends[1].body as { text: string };
+    expect(finalSent.text).toContain("Completed after continuation.");
+    const run = db.agentRuns.get(firstPayload.runId);
+    expect(run?.status).toBe("completed");
+  });
 });

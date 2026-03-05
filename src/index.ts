@@ -1,18 +1,43 @@
-import { getGoogleOAuthState, markGoogleOAuthStateUsed, markUpdateSeen, upsertGoogleOAuthToken } from "./db";
+import {
+  cancelActiveRunsForChat,
+  claimAgentRunDelivery,
+  createAgentRun,
+  getAgentRun,
+  getGoogleOAuthState,
+  markAgentRunCompleted,
+  updateAgentRunPayload,
+  markAgentRunRetryableFailure,
+  markAgentRunRunning,
+  markGoogleOAuthStateUsed,
+  markUpdateSeen,
+  upsertGoogleOAuthToken,
+} from "./db";
 import { decodeEncryptionKey, encryptSecret } from "./crypto";
 import { exchangeGoogleOAuthCode, getGoogleOAuthConfig } from "./google-oauth";
 import { SessionRuntime } from "./session";
 import { sendTelegramChatAction, sendTelegramMessage } from "./telegram";
 import { processTelegramUpdate } from "./telegram-update-processor";
-import type { Env } from "./types";
+import type { Env, SessionRequest } from "./types";
 
 export { SessionRuntime };
 
 const WEBHOOK_MAX_BODY_BYTES = 256_000;
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
+const RUN_ACK_TEXT = "Got it - working on this now. I will reply when it is done.";
+const RUN_MAX_ATTEMPTS = 5;
+const RUN_QUEUE_KIND = "run.execute";
+
+interface QueueRunEnvelope {
+  sessionRequest: SessionRequest;
+  checkpoint?: {
+    messages: unknown[];
+    toolTranscripts: string[];
+    imageBlocks: string[];
+  };
+}
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -20,7 +45,7 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/telegram/webhook") {
-      return handleTelegramWebhook(request, env);
+      return handleTelegramWebhook(request, env, ctx);
     }
 
     if (request.method === "GET" && url.pathname === "/google/oauth/callback") {
@@ -29,9 +54,36 @@ export default {
 
     return new Response("Not found", { status: 404 });
   },
+  async queue(batch, env): Promise<void> {
+    for (const message of batch.messages) {
+      const body = message.body as { type?: unknown; runId?: unknown };
+      const type = typeof body?.type === "string" ? body.type : "";
+      const runId = typeof body?.runId === "string" ? body.runId : "";
+      if (type !== RUN_QUEUE_KIND || !runId) continue;
+      try {
+        await executeQueuedRun(env, runId);
+      } catch (error) {
+        const attempts = Number((message as { attempts?: number }).attempts ?? 1);
+        const messageText = error instanceof Error ? error.message : String(error ?? "unknown");
+        if (attempts >= RUN_MAX_ATTEMPTS) {
+          const nowIso = new Date().toISOString();
+          await markAgentRunRetryableFailure(env.DRECLAW_DB, runId, messageText, nowIso);
+          await markAgentRunCompleted(env.DRECLAW_DB, runId, `Failed: ${messageText}`, nowIso);
+          const run = await getAgentRun(env.DRECLAW_DB, runId);
+          if (run && (await claimAgentRunDelivery(env.DRECLAW_DB, run.id, nowIso))) {
+            await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, run.chatId, `Failed: ${messageText}`);
+          }
+          continue;
+        }
+        await markAgentRunRetryableFailure(env.DRECLAW_DB, runId, messageText, new Date().toISOString());
+        const retry = (message as { retry?: () => void }).retry;
+        if (typeof retry === "function") retry();
+      }
+    }
+  },
 } satisfies ExportedHandler<Env>;
 
-async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
+async function handleTelegramWebhook(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
   const secret = request.headers.get("x-telegram-bot-api-secret-token");
   if (!secret || !timingSafeEqual(secret, env.TELEGRAM_WEBHOOK_SECRET)) {
     return new Response("Unauthorized", { status: 401 });
@@ -71,14 +123,39 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       markUpdateSeen: (updateId) => markUpdateSeen(env.DRECLAW_DB, updateId),
       sendTyping: (chatId) => sendTelegramChatAction(env.TELEGRAM_BOT_TOKEN, chatId),
       runSession: async (sessionRequest) => {
-        const id = env.SESSION_RUNTIME.idFromName(String(sessionRequest.message.chat.id));
-        const stub = env.SESSION_RUNTIME.get(id);
-        const response = await stub.fetch("https://session.local/run", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(sessionRequest),
-        });
-        return (await response.json()) as { ok: boolean; text: string };
+        const commandText = (sessionRequest.message.text ?? sessionRequest.message.caption ?? "").trim().toLowerCase();
+        if (commandText.startsWith("/cancel")) {
+          const count = await cancelActiveRunsForChat(
+            env.DRECLAW_DB,
+            sessionRequest.message.chat.id,
+            new Date().toISOString(),
+          );
+          return {
+            ok: true,
+            text: count > 0 ? `Cancelled ${count} active run(s).` : "No active runs to cancel.",
+          };
+        }
+
+        if (shouldEnqueueSessionRun(sessionRequest, env)) {
+          const nowIso = new Date().toISOString();
+          const runId = crypto.randomUUID();
+          const created = await createAgentRun(env.DRECLAW_DB, {
+            id: runId,
+            updateId: sessionRequest.updateId,
+            chatId: sessionRequest.message.chat.id,
+            payloadJson: JSON.stringify({ sessionRequest } satisfies QueueRunEnvelope),
+            nowIso,
+          });
+          if (created) {
+            await env.AGENT_RUN_QUEUE?.send({ type: RUN_QUEUE_KIND, runId });
+          }
+          return {
+            ok: true,
+            text: created ? RUN_ACK_TEXT : "Already processing this update.",
+          };
+        }
+
+        return runSessionViaDurableObject(env, sessionRequest);
       },
     },
   );
@@ -88,6 +165,93 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   }
 
   return new Response("ok");
+}
+
+function shouldEnqueueSessionRun(sessionRequest: SessionRequest, env: Env): boolean {
+  if (!env.AGENT_RUN_QUEUE) return false;
+  const text = (sessionRequest.message.text ?? sessionRequest.message.caption ?? "").trim();
+  if (!text) return true;
+  return !text.startsWith("/");
+}
+
+async function executeQueuedRun(env: Env, runId: string): Promise<void> {
+  const run = await getAgentRun(env.DRECLAW_DB, runId);
+  if (!run) return;
+  if (run.status === "completed" || run.status === "cancelled") return;
+
+  const nowIso = new Date().toISOString();
+  const marked = await markAgentRunRunning(env.DRECLAW_DB, runId, nowIso);
+  if (!marked) return;
+
+  const envelope = parseQueueEnvelope(run.payloadJson);
+  const sliceSteps = parsePositiveInt(env.RUN_SLICE_STEPS, 2);
+  const step = await runSessionStepViaDurableObject(env, envelope, sliceSteps);
+
+  if (!step.done) {
+    const now = new Date().toISOString();
+    const nextPayload = JSON.stringify({
+      sessionRequest: envelope.sessionRequest,
+      checkpoint: step.checkpoint,
+    } satisfies QueueRunEnvelope);
+    await updateAgentRunPayload(env.DRECLAW_DB, runId, nextPayload, now);
+    await env.AGENT_RUN_QUEUE?.send({ type: RUN_QUEUE_KIND, runId });
+    return;
+  }
+
+  const completedAt = new Date().toISOString();
+  const text = step.text || "Done.";
+  await markAgentRunCompleted(env.DRECLAW_DB, runId, text, completedAt);
+
+  const claimed = await claimAgentRunDelivery(env.DRECLAW_DB, runId, completedAt);
+  if (!claimed) return;
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, run.chatId, text);
+}
+
+async function runSessionViaDurableObject(env: Env, sessionRequest: SessionRequest): Promise<{ ok: boolean; text: string }> {
+  const id = env.SESSION_RUNTIME.idFromName(String(sessionRequest.message.chat.id));
+  const stub = env.SESSION_RUNTIME.get(id);
+  const response = await stub.fetch("https://session.local/run", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(sessionRequest),
+  });
+  return (await response.json()) as { ok: boolean; text: string };
+}
+
+async function runSessionStepViaDurableObject(
+  env: Env,
+  envelope: QueueRunEnvelope,
+  sliceSteps: number,
+): Promise<{ done: boolean; text?: string; checkpoint?: QueueRunEnvelope["checkpoint"] }> {
+  const id = env.SESSION_RUNTIME.idFromName(String(envelope.sessionRequest.message.chat.id));
+  const stub = env.SESSION_RUNTIME.get(id);
+  const response = await stub.fetch("https://session.local/run-step", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionRequest: envelope.sessionRequest,
+      checkpoint: envelope.checkpoint,
+      sliceSteps,
+    }),
+  });
+  return (await response.json()) as { done: boolean; text?: string; checkpoint?: QueueRunEnvelope["checkpoint"] };
+}
+
+function parseQueueEnvelope(payloadJson: string): QueueRunEnvelope {
+  const raw = JSON.parse(payloadJson) as { sessionRequest?: unknown; checkpoint?: unknown };
+  if (!raw.sessionRequest || typeof raw.sessionRequest !== "object") {
+    throw new Error("Invalid queued run payload");
+  }
+  const sessionRequest = raw.sessionRequest as SessionRequest;
+  const checkpoint = raw.checkpoint && typeof raw.checkpoint === "object" ? (raw.checkpoint as QueueRunEnvelope["checkpoint"]) : undefined;
+  return { sessionRequest, checkpoint };
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  if (!raw?.trim()) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.trunc(value);
 }
 
 async function handleGoogleOAuthCallback(request: Request, env: Env): Promise<Response> {

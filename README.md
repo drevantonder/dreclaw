@@ -5,7 +5,7 @@
 ## v0 Scope
 
 - Telegram private chat-only, single-user (me)
-- Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/show-thinking`
+- Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/show-thinking`, `/cancel`
 - Core tools: `search`, `execute`
 - Persistent memory: D1 episodic/fact memory + Vectorize semantic recall
 - Hybrid memory pipeline: D1 episodic/fact memory + Vectorize semantic recall (Workers AI embeddings)
@@ -77,6 +77,7 @@ pnpm deploy
 - `/factory-reset` clears conversation context and wipes persisted memory.
 - `/debug on|off` toggles debug previews, per-step tool summaries, and execute result previews.
 - `/show-thinking on|off` toggles thinking block visibility.
+- `/cancel` cancels active queued/running long-form runs for the chat.
 - `/google connect` starts Google OAuth linking flow.
 - `/google status` shows current Google link status and scopes.
 - `/google disconnect` removes stored Google OAuth token.
@@ -85,6 +86,7 @@ pnpm deploy
 
 - `compact` (default): typing indicator while work runs + final reply.
 - `debug`: compact behavior plus friendly tool previews and per-step summaries.
+- Non-command prompts are queued; bot sends an immediate ack and then posts final answer when background run completes.
 
 ## Testing
 
