@@ -1,6 +1,7 @@
 import {
   deleteMemoryFactById,
   getActiveMemoryFactByTarget,
+  listActiveMemoryFacts,
   upsertSimilarMemoryFact,
   type MemoryFactRecord,
 } from "../db";
@@ -17,8 +18,24 @@ export async function executeMemoryFind(params: {
   chatId: number;
   embeddingModel: string;
   payload: unknown;
-}): Promise<{ facts: Array<{ id: string; kind: MemoryKind; text: string; confidence: number }> }> {
+}): Promise<{
+  query: string;
+  count: number;
+  truncated: boolean;
+  facts: Array<{ id: string; kind: MemoryKind; text: string; confidence: number }>;
+}> {
   const parsed = parseFindPayload(params.payload);
+
+  if (!parsed.query) {
+    const facts = await listActiveMemoryFacts(params.db, params.chatId, parsed.topK);
+    return {
+      query: parsed.query,
+      count: facts.length,
+      truncated: false,
+      facts: facts.map(serializeFact),
+    };
+  }
+
   const result = await retrieveMemoryContext({
     env: params.env,
     db: params.db,
@@ -28,8 +45,21 @@ export async function executeMemoryFind(params: {
     factTopK: parsed.topK,
     episodeTopK: 0,
   });
+
+  let facts = result.facts;
+  if (!facts.length && isShortQuery(parsed.query)) {
+    const normalized = normalizeForSearch(parsed.query);
+    const lexical = await listActiveMemoryFacts(params.db, params.chatId, 200);
+    facts = lexical
+      .filter((fact) => normalizeForSearch(fact.text).includes(normalized))
+      .slice(0, parsed.topK);
+  }
+
   return {
-    facts: result.facts.map(serializeFact),
+    query: parsed.query,
+    count: facts.length,
+    truncated: facts.length >= parsed.topK,
+    facts: facts.map(serializeFact),
   };
 }
 
@@ -85,8 +115,8 @@ function parseFindPayload(input: unknown): { query: string; topK: number } {
     throw new Error("memory.find requires payload object");
   }
   const payload = input as { query?: unknown; topK?: unknown };
+  assertSupportedKeys(payload, ["query", "topK"], "memory.find");
   const query = String(payload.query ?? "").trim();
-  if (!query) throw new Error("memory.find requires non-empty query");
   if (query.length > 600) throw new Error("memory.find query too long");
   const topKRaw = payload.topK;
   const topK =
@@ -101,6 +131,7 @@ function parseSavePayload(input: unknown): { text: string; kind: MemoryKind; con
     throw new Error("memory.save requires payload object");
   }
   const payload = input as { text?: unknown; kind?: unknown; confidence?: unknown };
+  assertSupportedKeys(payload, ["text", "kind", "confidence"], "memory.save");
   const text = String(payload.text ?? "").trim();
   if (!text) throw new Error("memory.save requires non-empty text");
   if (text.length > 2000) throw new Error("memory.save text too long");
@@ -124,6 +155,7 @@ function parseRemovePayload(input: unknown): string {
     throw new Error("memory.remove requires payload object");
   }
   const payload = input as { target?: unknown };
+  assertSupportedKeys(payload, ["target"], "memory.remove");
   const target = String(payload.target ?? "").trim();
   if (!target) throw new Error("memory.remove requires target");
   if (target.length > 2000) throw new Error("memory.remove target too long");
@@ -137,6 +169,23 @@ function serializeFact(fact: MemoryFactRecord): { id: string; kind: MemoryKind; 
     text: fact.text,
     confidence: fact.confidence,
   };
+}
+
+function isShortQuery(input: string): boolean {
+  return normalizeForSearch(input).length <= 6;
+}
+
+function normalizeForSearch(input: string): string {
+  return String(input ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function assertSupportedKeys(payload: Record<string, unknown>, allowed: string[], method: string): void {
+  const invalid = Object.keys(payload).filter((key) => !allowed.includes(key));
+  if (!invalid.length) return;
+  throw new Error(`${method} unsupported args: ${invalid.join(", ")}`);
 }
 
 function buildMemoryId(prefix: "fact"): string {
