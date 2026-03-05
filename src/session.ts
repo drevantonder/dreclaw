@@ -81,6 +81,10 @@ interface AgentRunCheckpoint {
   messages: ModelMessage[];
   toolTranscripts: string[];
   imageBlocks: string[];
+  interstitialAssistantTexts: string[];
+  openAssistantText?: string;
+  seenToolPreviewKeys?: string[];
+  emittedProgressKeys?: string[];
 }
 
 interface QueueRunStepRequest {
@@ -155,6 +159,17 @@ export class SessionRuntime implements DurableObject {
     const checkpoint = payload.checkpoint;
     const imageBlocks = checkpoint?.imageBlocks ?? (await this.loadImages(sessionRequest.message));
     const runtime = this.getRuntimeConfig();
+    const progress = new TelegramProgressReporter({
+      token: this.env.TELEGRAM_BOT_TOKEN,
+      chatId: sessionRequest.message.chat.id,
+      mode: this.getProgressMode(),
+      showThinking: this.shouldShowThinking(),
+    });
+    const draftReporter = new TelegramDraftReporter({
+      token: this.env.TELEGRAM_BOT_TOKEN,
+      chatId: sessionRequest.message.chat.id,
+      draftId: buildTelegramDraftId(sessionRequest.updateId),
+    });
     const run = await this.runAgentSlice(runtime, {
       userText: text,
       imageBlocks,
@@ -163,6 +178,12 @@ export class SessionRuntime implements DurableObject {
       toolTranscripts: checkpoint?.toolTranscripts ?? [],
       sliceSteps: normalizeSliceSteps(payload.sliceSteps),
       pendingUserMessages: pendingTexts,
+      interstitialAssistantTexts: checkpoint?.interstitialAssistantTexts ?? [],
+      openAssistantText: checkpoint?.openAssistantText ?? "",
+      seenToolPreviewKeys: checkpoint?.seenToolPreviewKeys ?? [],
+      emittedProgressKeys: checkpoint?.emittedProgressKeys ?? [],
+      progress,
+      draftReporter,
     });
 
     if (!run.done) {
@@ -172,6 +193,10 @@ export class SessionRuntime implements DurableObject {
           messages: run.messages,
           toolTranscripts: run.toolTranscripts,
           imageBlocks,
+          interstitialAssistantTexts: run.interstitialAssistantTexts,
+          openAssistantText: run.openAssistantText,
+          seenToolPreviewKeys: run.seenToolPreviewKeys,
+          emittedProgressKeys: run.emittedProgressKeys,
         },
       };
     }
@@ -179,6 +204,9 @@ export class SessionRuntime implements DurableObject {
     const responseText = run.finalText.trim() || "(empty response)";
     const combinedUserText = [text, ...pendingTexts].filter(Boolean).join("\n\n") || "[image]";
     this.pushHistory({ role: "user", content: combinedUserText });
+    for (const interstitialText of run.interstitialAssistantTexts) {
+      this.pushHistory({ role: "assistant", content: interstitialText });
+    }
     for (const transcript of run.toolTranscripts) {
       this.pushHistory({ role: "tool", content: transcript });
     }
@@ -350,6 +378,10 @@ export class SessionRuntime implements DurableObject {
       messages: undefined,
       toolTranscripts: [],
       sliceSteps: 8,
+      interstitialAssistantTexts: [],
+      openAssistantText: "",
+      seenToolPreviewKeys: [],
+      emittedProgressKeys: [],
       progress,
       draftReporter,
     });
@@ -370,6 +402,10 @@ export class SessionRuntime implements DurableObject {
       toolTranscripts: string[];
       sliceSteps: number;
       pendingUserMessages?: string[];
+      interstitialAssistantTexts: string[];
+      openAssistantText: string;
+      seenToolPreviewKeys: string[];
+      emittedProgressKeys: string[];
       progress?: TelegramProgressReporter;
       draftReporter?: TelegramDraftReporter;
     },
@@ -378,6 +414,9 @@ export class SessionRuntime implements DurableObject {
     finalText: string;
     toolTranscripts: string[];
     interstitialAssistantTexts: string[];
+    openAssistantText: string;
+    seenToolPreviewKeys: string[];
+    emittedProgressKeys: string[];
     messages: ModelMessage[];
   }> {
     const model = this.createModel(runtime);
@@ -394,9 +433,14 @@ export class SessionRuntime implements DurableObject {
         : messages;
 
     const toolTranscripts = [...params.toolTranscripts];
-    const interstitialAssistantTexts: string[] = [];
+    const interstitialAssistantTexts = [...params.interstitialAssistantTexts];
     const progress = params.progress ?? new SilentProgressReporter();
     const draftReporter = params.draftReporter ?? new SilentDraftReporter();
+    progress.seed(params.seenToolPreviewKeys, params.emittedProgressKeys);
+    draftReporter.seed(params.openAssistantText);
+    let currentStepNumber = -1;
+    let currentStepText = params.openAssistantText;
+    let currentStepHasToolCall = false;
     const traceEnabled = this.getProgressMode() === "debug";
     const logStreamTrace = (event: string, details: Record<string, unknown> = {}): void => {
       if (!traceEnabled) return;
@@ -406,18 +450,21 @@ export class SessionRuntime implements DurableObject {
         ...details,
       });
     };
+    const flushAssistantBeforeToolPreview = async (): Promise<void> => {
+      if (!currentStepText.trim()) return;
+      await sendInterstitial(currentStepNumber, currentStepText, "tool-preview-before-tool");
+      currentStepText = "";
+      draftReporter.reset();
+    };
     const agent = new ToolLoopAgent({
       model,
-      tools: createAgentTools(this, progress, toolTranscripts),
+      tools: createAgentTools(this, progress, toolTranscripts, flushAssistantBeforeToolPreview),
       stopWhen: stepCountIs(params.sliceSteps),
     });
 
-    const sentInterstitialStepNumbers = new Set<number>();
     const sendInterstitial = async (stepNumber: number, rawText: string, source: string): Promise<void> => {
       const stepText = rawText.trim();
       if (!stepText) return;
-      if (stepNumber >= 0 && sentInterstitialStepNumbers.has(stepNumber)) return;
-      if (stepNumber >= 0) sentInterstitialStepNumbers.add(stepNumber);
       interstitialAssistantTexts.push(stepText);
       logStreamTrace("interstitial-send", {
         stepNumber,
@@ -436,44 +483,29 @@ export class SessionRuntime implements DurableObject {
       }
     };
 
-    let currentStepNumber = -1;
-    let currentStepText = "";
-    let currentStepHasToolCall = false;
-
     const stream = await agent.stream({
       messages: mergedMessages,
       experimental_onToolCallStart: async (event) => {
-        const stepNumber = typeof event.stepNumber === "number" ? event.stepNumber : -1;
-        const toolCallId =
-          typeof (event.toolCall as { toolCallId?: unknown })?.toolCallId === "string"
-            ? (event.toolCall as { toolCallId: string }).toolCallId
-            : undefined;
-        const stepText = extractAssistantTextForToolCall(event.messages, toolCallId);
+        const stepNumber = typeof event.stepNumber === "number" ? event.stepNumber : currentStepNumber;
         logStreamTrace("tool-call-start", {
           stepNumber,
-          toolCallId,
-          extractedTextLength: stepText.length,
           currentStepTextLength: currentStepText.length,
         });
-        if (stepText) {
-          await sendInterstitial(stepNumber, stepText, "tool-call-start/messages");
-          return;
-        }
-        if (stepNumber >= 0 && stepNumber === currentStepNumber) {
-          await sendInterstitial(stepNumber, currentStepText, "tool-call-start/current-step");
-        }
+        if (!currentStepText.trim()) return;
+        await sendInterstitial(stepNumber, currentStepText, "tool-call-start/current-step");
+        currentStepText = "";
+        draftReporter.reset();
       },
     });
 
     for await (const part of stream.fullStream) {
       const type = (part as { type?: unknown }).type;
-      if (type === "start-step") {
-        currentStepNumber += 1;
-        currentStepText = "";
-        currentStepHasToolCall = false;
-        logStreamTrace("start-step", { stepNumber: currentStepNumber });
-        continue;
-      }
+        if (type === "start-step") {
+          currentStepNumber += 1;
+          currentStepHasToolCall = false;
+          logStreamTrace("start-step", { stepNumber: currentStepNumber });
+          continue;
+        }
       if (type === "text-delta") {
         const delta = (part as { text?: unknown }).text;
         if (typeof delta === "string" && delta) {
@@ -484,9 +516,6 @@ export class SessionRuntime implements DurableObject {
             stepTextLength: currentStepText.length,
           });
           await draftReporter.onTextDelta(delta);
-          if (currentStepHasToolCall) {
-            await sendInterstitial(currentStepNumber, currentStepText, "text-delta-after-tool-call");
-          }
         }
         continue;
       }
@@ -497,6 +526,8 @@ export class SessionRuntime implements DurableObject {
           stepTextLength: currentStepText.length,
         });
         await sendInterstitial(currentStepNumber, currentStepText, "tool-call-part");
+        currentStepText = "";
+        draftReporter.reset();
         continue;
       }
       if (type === "finish-step") {
@@ -505,9 +536,7 @@ export class SessionRuntime implements DurableObject {
           hasToolCall: currentStepHasToolCall,
           stepTextLength: currentStepText.length,
         });
-        if (currentStepHasToolCall) {
-          await sendInterstitial(currentStepNumber, currentStepText, "finish-step");
-        }
+        void currentStepHasToolCall;
       }
     }
     await draftReporter.flush();
@@ -523,6 +552,9 @@ export class SessionRuntime implements DurableObject {
       finalText: finalText || extractAssistantText(nextMessages),
       toolTranscripts,
       interstitialAssistantTexts,
+      openAssistantText: currentStepText,
+      seenToolPreviewKeys: progress.getSeenToolPreviewKeys(),
+      emittedProgressKeys: progress.getEmittedProgressKeys(),
       messages: nextMessages,
     };
   }
@@ -1055,6 +1087,14 @@ function compactErrorMessage(error: unknown): string {
   return `${compact.slice(0, 319)}…`;
 }
 
+function hashProgressText(input: string): string {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(16);
+}
+
 function normalizePrefs(prefs: SessionState["prefs"]): { progressMode: ProgressMode; showThinking: boolean } {
   const progressMode = prefs?.progressMode;
   const showThinking = Boolean(prefs?.showThinking);
@@ -1106,12 +1146,14 @@ function createAgentTools(
     }): Promise<void>;
   },
   toolTranscripts: string[],
+  beforeToolPreview?: () => Promise<void>,
 ) {
   async function runTool<T>(
     name: string,
     args: Record<string, unknown>,
     execute: () => Promise<T> | T,
   ): Promise<T | { ok: false; error: string }> {
+    await beforeToolPreview?.();
     await progress.onToolPreview(name, args);
     try {
       const result = await execute();
@@ -1191,6 +1233,8 @@ class TelegramProgressReporter {
   private readonly mode: ProgressMode;
   private readonly showThinking: boolean;
   private seenPreviews = new Set<string>();
+  private emittedProgressKeys = new Set<string>();
+  private pendingPreviewMessages: Array<{ text: string; rawHtml: boolean }> = [];
 
   constructor(params: {
     token: string;
@@ -1204,11 +1248,27 @@ class TelegramProgressReporter {
     this.showThinking = params.showThinking;
   }
 
+  seed(seenPreviewKeys: string[], emittedProgressKeys: string[]): void {
+    this.seenPreviews = new Set(seenPreviewKeys);
+    this.emittedProgressKeys = new Set(emittedProgressKeys);
+  }
+
+  getSeenToolPreviewKeys(): string[] {
+    return [...this.seenPreviews];
+  }
+
+  getEmittedProgressKeys(): string[] {
+    return [...this.emittedProgressKeys];
+  }
+
   async sendThinkingBlocks(blocks: string[]): Promise<void> {
     if (!this.showThinking) return;
     for (const block of blocks) {
       const text = truncateForLog(block, 700);
       if (!text) continue;
+      const key = `thinking:${hashProgressText(text)}`;
+      if (this.emittedProgressKeys.has(key)) continue;
+      this.emittedProgressKeys.add(key);
       await this.safeSendMessage(`Thinking:\n${text}`);
     }
   }
@@ -1219,7 +1279,7 @@ class TelegramProgressReporter {
     if (!preview) return;
     if (this.seenPreviews.has(preview.key)) return;
     this.seenPreviews.add(preview.key);
-    await this.safeSendMessage(preview.text, preview.rawHtml ?? false);
+    this.pendingPreviewMessages.push({ text: preview.text, rawHtml: preview.rawHtml ?? false });
   }
 
   async onStepSummary(params: {
@@ -1235,7 +1295,20 @@ class TelegramProgressReporter {
     const detail = params.error ? ` ${truncateForLog(params.error, 220)}` : "";
     const lines = [`${base}${detail}`];
     if (params.resultPreview) lines.push(params.resultPreview);
-    await this.safeSendMessage(lines.join("\n"));
+    const text = lines.join("\n");
+    const key = `step:${hashProgressText(text)}`;
+    if (this.emittedProgressKeys.has(key)) return;
+    await this.flushPendingPreviews();
+    this.emittedProgressKeys.add(key);
+    await this.safeSendMessage(text);
+  }
+
+  private async flushPendingPreviews(): Promise<void> {
+    while (this.pendingPreviewMessages.length) {
+      const next = this.pendingPreviewMessages.shift();
+      if (!next) continue;
+      await this.safeSendMessage(next.text, next.rawHtml);
+    }
   }
 
   private async safeSendMessage(text: string, rawHtml = false): Promise<void> {
@@ -1265,6 +1338,12 @@ class TelegramDraftReporter {
     this.token = params.token;
     this.chatId = params.chatId;
     this.draftId = params.draftId;
+  }
+
+  seed(text: string): void {
+    this.assembledText = String(text ?? "");
+    this.lastSentText = "";
+    this.lastSentAt = 0;
   }
 
   async onTextDelta(delta: string): Promise<void> {
@@ -1313,6 +1392,18 @@ class TelegramDraftReporter {
 }
 
 class SilentProgressReporter {
+  seed(_seenPreviewKeys: string[], _emittedProgressKeys: string[]): void {
+    return;
+  }
+
+  getSeenToolPreviewKeys(): string[] {
+    return [];
+  }
+
+  getEmittedProgressKeys(): string[] {
+    return [];
+  }
+
   async sendThinkingBlocks(_blocks: string[]): Promise<void> {
     return;
   }
@@ -1333,6 +1424,10 @@ class SilentProgressReporter {
 }
 
 class SilentDraftReporter {
+  seed(_text: string): void {
+    return;
+  }
+
   async onTextDelta(_delta: string): Promise<void> {
     return;
   }

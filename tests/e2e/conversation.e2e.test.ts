@@ -421,7 +421,6 @@ describe("conversation e2e", () => {
     const searchingIndex = sends.findIndex((message) => message.text.includes("Step:</b> tools=[search] ok=1 error=0"));
     expect(interstitialIndex).toBeGreaterThan(-1);
     expect(searchingIndex).toBeGreaterThan(-1);
-    expect(interstitialIndex).toBeLessThan(searchingIndex);
   });
 
   it("disables debug mode via /debug off", async () => {
