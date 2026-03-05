@@ -74,6 +74,7 @@ interface RuntimeConfig {
 interface AgentRunResult {
   finalText: string;
   toolTranscripts: string[];
+  interstitialAssistantTexts: string[];
 }
 
 const SYSTEM_PROMPT =
@@ -234,6 +235,9 @@ export class SessionRuntime implements DurableObject {
     const run = await this.runAgentLoop(runtime, text, imageBlocks, progress, draftReporter, payload.message.chat.id);
     const responseText = run.finalText.trim() || "(empty response)";
     this.pushHistory({ role: "user", content: text || "[image]" });
+    for (const interstitialText of run.interstitialAssistantTexts) {
+      this.pushHistory({ role: "assistant", content: interstitialText });
+    }
     for (const transcript of run.toolTranscripts) {
       this.pushHistory({ role: "tool", content: transcript });
     }
@@ -243,6 +247,7 @@ export class SessionRuntime implements DurableObject {
       chatId: payload.message.chat.id,
       userText: text || "[image]",
       assistantText: responseText,
+      interstitialAssistantTexts: run.interstitialAssistantTexts,
       toolTranscripts: run.toolTranscripts,
     });
 
@@ -271,6 +276,7 @@ export class SessionRuntime implements DurableObject {
     }
 
     const toolTranscripts: string[] = [];
+    const interstitialAssistantTexts: string[] = [];
     const agent = new ToolLoopAgent({
       model,
       tools: createAgentTools(this, progress, toolTranscripts),
@@ -279,6 +285,20 @@ export class SessionRuntime implements DurableObject {
 
     const stream = await agent.stream({
       messages: buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks),
+      onStepFinish: async (event) => {
+        const stepText = typeof event.text === "string" ? event.text.trim() : "";
+        if (!stepText) return;
+        if (!event.toolCalls?.length) return;
+        interstitialAssistantTexts.push(stepText);
+        try {
+          await sendTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, chatId, stepText);
+        } catch (error) {
+          console.warn("telegram-interstitial-send-failed", {
+            chatId,
+            error: error instanceof Error ? error.message : String(error ?? "unknown"),
+          });
+        }
+      },
     });
     for await (const delta of stream.textStream) {
       await draftReporter.onTextDelta(delta);
@@ -289,7 +309,7 @@ export class SessionRuntime implements DurableObject {
     await progress.sendThinkingBlocks(extractThinkingBlocks(response.messages));
     const generatedText = await stream.text;
     const finalText = typeof generatedText === "string" ? generatedText.trim() : "";
-    return { finalText: finalText || "(empty response)", toolTranscripts };
+    return { finalText: finalText || "(empty response)", toolTranscripts, interstitialAssistantTexts };
   }
 
   private async handleGoogleCommand(text: string, chatId: number, telegramUserId: number): Promise<SessionResponse> {
@@ -689,6 +709,7 @@ export class SessionRuntime implements DurableObject {
     chatId: number;
     userText: string;
     assistantText: string;
+    interstitialAssistantTexts: string[];
     toolTranscripts: string[];
   }): Promise<void> {
     const memory = this.getMemoryConfigSafe();
@@ -697,8 +718,9 @@ export class SessionRuntime implements DurableObject {
 
     const episodeInputs: Array<{ role: "user" | "assistant" | "tool"; content: string }> = [
       { role: "user", content: params.userText },
-      { role: "assistant", content: params.assistantText },
+      ...params.interstitialAssistantTexts.map((content) => ({ role: "assistant" as const, content })),
       ...params.toolTranscripts.map((content) => ({ role: "tool" as const, content })),
+      { role: "assistant", content: params.assistantText },
     ];
 
     for (const entry of episodeInputs) {
