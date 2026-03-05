@@ -23,8 +23,10 @@ v0 security model is intentionally simple and single-user.
 ## Runtime boundaries
 
 - No Sandbox/container dependency in v0.
-- Tool execution is constrained to `custom_context_get`, `custom_context_set`, and `custom_context_delete`.
-- Only stored custom context entries are editable via custom context management tools.
+- Tool execution is constrained to `search`, `execute`, and custom context management tools.
+- `execute` runs in QuickJS with strict resource limits and host-call limits.
+- Google API access in `execute` is gated by stored OAuth refresh token + configured allowed services.
+- Refresh token is encrypted at rest in D1 with `GOOGLE_OAUTH_ENCRYPTION_KEY`.
 
 ## Dependency posture
 

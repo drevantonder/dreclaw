@@ -78,6 +78,9 @@ pnpm deploy
 - `/factory-reset` clears conversation context and restores default `custom_context`.
 - `/debug on|off` toggles debug previews and per-step tool summaries.
 - `/show-thinking on|off` toggles thinking block visibility.
+- `/google connect` starts Google OAuth linking flow.
+- `/google status` shows current Google link status and scopes.
+- `/google disconnect` removes stored Google OAuth token.
 
 ### Telegram message modes
 
@@ -99,6 +102,36 @@ pnpm deploy
 - `custom_context_delete` removes one context entry by `id` with `expected_version` checks.
 - `search` returns QuickJS runtime capabilities/limits and package inventory.
 - `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, and `fetch` inside the runtime.
+- `execute` also exposes `google.api(service, version)`, `google.schema(service, version, method)`, and `google.execute({...})`.
+
+### Google OAuth setup
+
+- Configure Google OAuth app as **Web application** in Google Cloud Console.
+- Add redirect URI: `https://<worker-host>/google/oauth/callback`.
+- Set `GOOGLE_OAUTH_*` values in `.env` and sync secrets.
+- In Telegram, run `/google connect`, open link, approve scopes.
+
+### Google execute examples
+
+```js
+const gmail = await google.api("gmail", "v1")
+const messages = await gmail.users.messages.list({
+  params: { userId: "me", maxResults: 5, q: "is:unread" },
+})
+messages
+```
+
+```js
+const sheets = await google.api("sheets", "v4")
+await sheets.spreadsheets.values.update({
+  params: {
+    spreadsheetId: input.sheetId,
+    range: "Sheet1!A1:B2",
+    valueInputOption: "RAW",
+  },
+  body: { values: [["name", "value"], ["demo", "1"]] },
+})
+```
 
 ## Auth model
 
