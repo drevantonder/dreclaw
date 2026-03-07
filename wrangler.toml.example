@@ -46,10 +46,6 @@ MEMORY_RETENTION_DAYS = "90"
 MEMORY_MAX_INJECT_TOKENS = "1500"
 MEMORY_REFLECTION_EVERY_TURNS = "8"
 MEMORY_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
-RUN_SLICE_STEPS = "4"
-INLINE_BURST_MS = "3000"
-QUEUE_BURST_MS = "9000"
-TYPING_PULSE_MS = "3000"
 REASONING_EFFORT = "medium"
 
 [observability]
@@ -59,28 +55,3 @@ enabled = true
 binding = "DRECLAW_DB"
 database_name = "dreclaw"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
-
-[[durable_objects.bindings]]
-name = "SESSION_RUNTIME"
-class_name = "SessionRuntime"
-
-[[queues.producers]]
-binding = "AGENT_RUN_QUEUE"
-queue = "dreclaw-agent-runs"
-
-[[queues.consumers]]
-queue = "dreclaw-agent-runs"
-max_batch_size = 1
-max_batch_timeout = 1
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["SessionRuntime"]
-
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["Sandbox"]
-
-[[migrations]]
-tag = "v3"
-deleted_classes = ["Sandbox"]
