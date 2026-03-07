@@ -28,6 +28,9 @@ export default {
 
     return new Response("Not found", { status: 404 });
   },
+  async queue(): Promise<void> {
+    return;
+  },
 } satisfies ExportedHandler<Env>;
 
 async function handleGoogleOAuthCallback(request: Request, env: Env): Promise<Response> {
