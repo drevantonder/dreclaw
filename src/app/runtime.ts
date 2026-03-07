@@ -63,7 +63,7 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const SYSTEM_PROMPT =
-  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute supports async/await, network requests via fetch, and explicit memory APIs (memory.find, memory.save, memory.remove) in the QuickJS runtime. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
+  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute runs inside a QuickJS runtime, not Node.js: do not use require(), Node built-ins, or direct host internals. Use the provided globals only: fetch, fs.read(path), fs.write(path, content, { overwrite }), fs.list(prefix), fs.remove(path), memory.find(...), memory.save(...), memory.remove(...), pkg.install(spec), pkg.list(), and google.execute(...). search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -576,7 +576,12 @@ function renderTraceStart(name: string, args: Record<string, unknown>): string {
 }
 
 function renderTraceResult(trace: ToolTrace): string {
+  const executeOk =
+    trace.name === "execute" && trace.output && typeof trace.output === "object" && "ok" in (trace.output as Record<string, unknown>)
+      ? Boolean((trace.output as Record<string, unknown>).ok)
+      : trace.ok;
   const lines = [`Tool result: ${trace.name} ${trace.ok ? "ok" : "failed"}`];
+  lines[0] = `Tool result: ${trace.name} ${executeOk ? "ok" : "failed"}`;
   if (trace.writes?.length) lines.push(`writes: ${trace.writes.join(", ")}`);
   if (trace.ok) lines.push(`result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 1200))}`);
   else lines.push(`error: ${trace.error || "tool failed"}`);
