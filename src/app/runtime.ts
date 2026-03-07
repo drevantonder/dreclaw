@@ -63,7 +63,7 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const SYSTEM_PROMPT =
-  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute runs inside a QuickJS runtime, not Node.js: do not use require(), Node built-ins, or direct host internals. Use the provided globals only: fetch, fs.read(path), fs.write(path, content, { overwrite }), fs.list(prefix), fs.remove(path), memory.find(...), memory.save(...), memory.remove(...), pkg.install(spec), pkg.list(), and google.execute(...). In execute, console.log only writes debug logs; it does not become the tool result. Return the final value you want to inspect or summarize, and avoid logging large objects unless debugging is truly necessary. If your script uses await or multiple statements, explicitly use `return ...` for the final value. google.execute returns an HTTP wrapper object shaped like { ok, status, statusText, url, method, result }. For Google API payloads, read data from the nested result field. Examples: const list = await google.execute(...); const messages = list.result?.messages || []; const msg = await google.execute(...users.messages.get...); const headers = msg.result?.payload?.headers || []; const snippet = msg.result?.snippet || ''; const calendar = await google.execute(...calendar.events.list...); const items = calendar.result?.items || []. When the response shape is known, do one focused execute script and summarize the data; avoid repeated exploratory debug calls unless the prior call actually failed. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
+  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. Prefer the dedicated Google tools for common mail/calendar tasks: gmail_latest for recent mail and calendar_tomorrow for tomorrow's events. execute runs inside a QuickJS runtime, not Node.js: do not use require(), Node built-ins, or direct host internals. Use the provided globals only: fetch, fs.read(path), fs.write(path, content, { overwrite }), fs.list(prefix), fs.remove(path), memory.find(...), memory.save(...), memory.remove(...), pkg.install(spec), pkg.list(), and google.execute(...). In execute, console.log only writes debug logs; it does not become the tool result. Return the final value you want to inspect or summarize, and avoid logging large objects unless debugging is truly necessary. If your script uses await or multiple statements, explicitly use `return ...` for the final value. google.execute returns an HTTP wrapper object shaped like { ok, status, statusText, url, method, result }. For Google API payloads, read data from the nested result field. Examples: const list = await google.execute(...); const messages = list.result?.messages || []; const msg = await google.execute(...users.messages.get...); const headers = msg.result?.payload?.headers || []; const snippet = msg.result?.snippet || ''; const calendar = await google.execute(...calendar.events.list...); const items = calendar.result?.items || []. When the response shape is known, do one focused execute script and summarize the data; avoid repeated exploratory debug calls unless the prior call actually failed. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -266,6 +266,17 @@ export class BotRuntime {
               },
             ),
           ),
+      }),
+      gmail_latest: tool({
+        description: "Read the latest Gmail messages for the linked Google account",
+        inputSchema: z.object({ count: z.number().int().min(1).max(10).default(5) }),
+        execute: async (input) =>
+          runTool("gmail_latest", input as Record<string, unknown>, async () => this.getLatestEmails(input.count)),
+      }),
+      calendar_tomorrow: tool({
+        description: "List tomorrow's calendar events for the linked Google account",
+        inputSchema: z.object({}).default({}),
+        execute: async () => runTool("calendar_tomorrow", {}, async () => this.getTomorrowCalendarEvents()),
       }),
       execute: tool({
         description:
@@ -513,6 +524,75 @@ export class BotRuntime {
     const refreshed = await refreshGoogleAccessToken(getGoogleOAuthConfig(this.env), refreshToken, this.getCodeExecutionConfig().limits.netRequestTimeoutMs);
     return { accessToken: refreshed.accessToken, scope: refreshed.scope };
   }
+
+  private async getLatestEmails(count: number) {
+    const list = await this.googleApiFetch<{ messages?: Array<{ id: string; threadId: string }>; resultSizeEstimate?: number }>({
+      path: "/gmail/v1/users/me/messages",
+      query: { maxResults: String(count) },
+    });
+    const messages = Array.isArray(list.messages) ? list.messages.slice(0, count) : [];
+    const emails = [] as Array<{ id: string; from: string; subject: string; date: string; snippet: string }>;
+    for (const message of messages) {
+      const detail = await this.googleApiFetch<{ snippet?: string; payload?: { headers?: Array<{ name?: string; value?: string }> } }>({
+        path: `/gmail/v1/users/me/messages/${encodeURIComponent(message.id)}`,
+        query: { format: "metadata", metadataHeaders: ["Subject", "From", "Date"] },
+      });
+      const headers = Array.isArray(detail.payload?.headers) ? detail.payload.headers : [];
+      emails.push({
+        id: message.id,
+        from: findHeader(headers, "From") || "Unknown",
+        subject: findHeader(headers, "Subject") || "(no subject)",
+        date: findHeader(headers, "Date") || "",
+        snippet: String(detail.snippet ?? "").trim(),
+      });
+    }
+    return { count: emails.length, emails };
+  }
+
+  private async getTomorrowCalendarEvents() {
+    const bounds = getTomorrowBounds();
+    const result = await this.googleApiFetch<{ items?: Array<Record<string, unknown>> }>({
+      path: "/calendar/v3/calendars/primary/events",
+      query: {
+        singleEvents: "true",
+        orderBy: "startTime",
+        timeMin: bounds.start,
+        timeMax: bounds.end,
+      },
+    });
+    const items = Array.isArray(result.items) ? result.items : [];
+    return {
+      date: bounds.day,
+      events: items.map((item) => ({
+        id: String(item.id ?? ""),
+        summary: String(item.summary ?? "(untitled)"),
+        start: extractCalendarTime(item.start),
+        end: extractCalendarTime(item.end),
+        location: String(item.location ?? "").trim(),
+      })),
+    };
+  }
+
+  private async googleApiFetch<T>(params: { path: string; query?: Record<string, string | string[]> }): Promise<T> {
+    const { accessToken } = await this.getGoogleAccessToken();
+    const url = new URL(`https://www.googleapis.com${params.path}`);
+    for (const [key, rawValue] of Object.entries(params.query ?? {})) {
+      if (Array.isArray(rawValue)) {
+        for (const value of rawValue) url.searchParams.append(key, value);
+      } else {
+        url.searchParams.set(key, rawValue);
+      }
+    }
+    const response = await fetch(url, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok) {
+      const errorPayload = payload.error as { message?: unknown } | undefined;
+      throw new Error(`Google API failed (${response.status}): ${String(errorPayload?.message ?? payload.error ?? response.statusText)}`);
+    }
+    return payload as T;
+  }
 }
 
 class VerboseTracer {
@@ -668,4 +748,27 @@ function redactSensitiveText(input: string): string {
     redacted = redacted.replace(pattern, (_match, prefix: string) => `${prefix}[REDACTED]`);
   }
   return redacted;
+}
+
+function findHeader(headers: Array<{ name?: string; value?: string }>, name: string): string {
+  return headers.find((header) => String(header.name ?? "").toLowerCase() === name.toLowerCase())?.value?.trim() || "";
+}
+
+function getTomorrowBounds() {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 2, 0, 0, 0, 0));
+  return {
+    day: start.toISOString().slice(0, 10),
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
+}
+
+function extractCalendarTime(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const data = value as { dateTime?: unknown; date?: unknown };
+  if (typeof data.dateTime === "string") return data.dateTime;
+  if (typeof data.date === "string") return data.date;
+  return "";
 }
