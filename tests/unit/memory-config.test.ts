@@ -9,7 +9,6 @@ function baseEnv(overrides: Partial<Env> = {}): Env {
     TELEGRAM_ALLOWED_USER_ID: "1",
     MODEL: "m",
     DRECLAW_DB: {} as D1Database,
-    SESSION_RUNTIME: {} as DurableObjectNamespace,
     ...overrides,
   };
 }

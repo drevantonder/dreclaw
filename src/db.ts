@@ -267,6 +267,20 @@ export async function deleteVfsEntry(db: D1Database, path: string, nowIso: strin
   }, 150);
 }
 
+export async function clearAllVfsEntries(db: D1Database, nowIso: string): Promise<number> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare("UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE deleted_at IS NULL")
+      .bind(nowIso, nowIso)
+      .run();
+    const changes = Number(result.meta.changes ?? 0);
+    if (changes > 0) {
+      await bumpVfsRevision(db, nowIso);
+    }
+    return changes;
+  }, 150);
+}
+
 export async function createAgentRun(
   db: D1Database,
   input: {

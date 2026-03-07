@@ -5,6 +5,7 @@ export const DEFAULT_BASE_URL = OPENCODE_ZEN_BASE_URL;
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
+  TELEGRAM_BOT_USERNAME?: string;
   TELEGRAM_ALLOWED_USER_ID: string;
   AI_PROVIDER?: string;
   MODEL: string;
@@ -52,8 +53,6 @@ export interface Env {
   TYPING_PULSE_MS?: string;
   REASONING_EFFORT?: string;
   DRECLAW_DB: D1Database;
-  SESSION_RUNTIME: DurableObjectNamespace;
-  AGENT_RUN_QUEUE?: Queue;
 }
 
 export interface TelegramUpdate {
@@ -74,12 +73,4 @@ export interface TelegramMessage {
 export interface SessionRequest {
   updateId: number;
   message: TelegramMessage;
-}
-
-export type ProgressMode = "compact" | "debug";
-
-export interface SessionResponse {
-  ok: boolean;
-  text: string;
-  deferReply?: boolean;
 }

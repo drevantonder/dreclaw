@@ -1,59 +1,41 @@
-import { SessionRuntime } from "../../src/session";
 import type { Env } from "../../src/types";
 
 type SqlResult = { meta: { changes?: number } };
 
 export class FakeD1 {
-  readonly updates = new Set<number>();
   readonly oauthStates = new Map<string, Record<string, unknown>>();
   readonly oauthTokens = new Map<string, Record<string, unknown>>();
   readonly vfsEntries = new Map<string, Record<string, unknown>>();
-  readonly agentRuns = new Map<string, Record<string, unknown>>();
-  readonly chatInbox = new Map<string, Record<string, unknown>>();
+  readonly subscriptions = new Map<string, Record<string, unknown>>();
+  readonly kv = new Map<string, Record<string, unknown>>();
+  readonly locks = new Map<string, Record<string, unknown>>();
   vfsRevision = 0;
 
   prepare(sql: string) {
     return {
       bind: (...args: unknown[]) => ({
         run: async () => this.run(sql, args),
-        all: async () => this.all(sql),
+        all: async () => this.all(sql, args),
         first: async () => this.first(sql, args),
       }),
-      all: async () => this.all(sql),
+      all: async () => this.all(sql, []),
       first: async () => this.first(sql, []),
     };
   }
 
-  private async all(sql: string): Promise<{ results: Array<Record<string, unknown>> }> {
+  private async all(sql: string, _args: unknown[]): Promise<{ results: Array<Record<string, unknown>> }> {
     if (sql.includes("FROM vfs_entries")) {
-      const rows = [...this.vfsEntries.values()]
-        .filter((row) => row.deleted_at === null || row.deleted_at === undefined)
-        .sort((a, b) => String(a.path).localeCompare(String(b.path)));
-      return { results: rows };
-    }
-    if (sql.includes("FROM agent_runs")) {
-      return { results: [...this.agentRuns.values()] };
-    }
-    if (sql.includes("FROM chat_inbox")) {
-      const rows = [...this.chatInbox.values()]
-        .filter((row) => row.consumed_at === null || row.consumed_at === undefined)
-        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-      return { results: rows };
+      return {
+        results: [...this.vfsEntries.values()].filter((row) => row.deleted_at === null || row.deleted_at === undefined),
+      };
     }
     return { results: [] };
   }
 
   private async run(sql: string, args: unknown[]): Promise<SqlResult> {
-    if (sql.includes("INSERT OR IGNORE INTO telegram_updates")) {
-      const updateId = Number(args[0]);
-      const had = this.updates.has(updateId);
-      this.updates.add(updateId);
-      return { meta: { changes: had ? 0 : 1 } };
-    }
     if (sql.includes("INSERT INTO google_oauth_states")) {
-      const state = String(args[0]);
-      this.oauthStates.set(state, {
-        state,
+      this.oauthStates.set(String(args[0]), {
+        state: String(args[0]),
         chat_id: Number(args[1]),
         telegram_user_id: Number(args[2]),
         expires_at: String(args[3]),
@@ -63,21 +45,15 @@ export class FakeD1 {
       return { meta: { changes: 1 } };
     }
     if (sql.includes("UPDATE google_oauth_states SET used_at")) {
-      const usedAt = String(args[0]);
-      const state = String(args[1]);
-      const current = this.oauthStates.get(state);
-      if (!current || current.used_at) {
-        return { meta: { changes: 0 } };
-      }
-      current.used_at = usedAt;
-      this.oauthStates.set(state, current);
+      const row = this.oauthStates.get(String(args[1]));
+      if (!row || row.used_at) return { meta: { changes: 0 } };
+      row.used_at = String(args[0]);
       return { meta: { changes: 1 } };
     }
     if (sql.includes("INSERT INTO google_oauth_tokens")) {
-      const principal = String(args[0]);
-      this.oauthTokens.set(principal, {
-        principal,
-        telegram_user_id: args[1] === null || args[1] === undefined ? null : Number(args[1]),
+      this.oauthTokens.set(String(args[0]), {
+        principal: String(args[0]),
+        telegram_user_id: args[1] == null ? null : Number(args[1]),
         refresh_token_ciphertext: String(args[2]),
         nonce: String(args[3]),
         scopes: String(args[4]),
@@ -86,14 +62,59 @@ export class FakeD1 {
       return { meta: { changes: 1 } };
     }
     if (sql.includes("DELETE FROM google_oauth_tokens")) {
-      const principal = String(args[0]);
-      const deleted = this.oauthTokens.delete(principal);
-      return { meta: { changes: deleted ? 1 : 0 } };
+      return { meta: { changes: this.oauthTokens.delete(String(args[0])) ? 1 : 0 } };
     }
-    if (sql.includes("INSERT INTO vfs_entries") || sql.includes("INSERT OR REPLACE INTO vfs_entries")) {
-      const path = String(args[0]);
-      this.vfsEntries.set(path, {
-        path,
+    if (sql.includes("INSERT INTO chat_state_subscriptions")) {
+      this.subscriptions.set(String(args[0]), { thread_id: String(args[0]), created_at: String(args[1]), updated_at: String(args[2]) });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("DELETE FROM chat_state_subscriptions")) {
+      return { meta: { changes: this.subscriptions.delete(String(args[0])) ? 1 : 0 } };
+    }
+    if (sql.includes("INSERT INTO chat_state_kv") || sql.includes("INSERT OR IGNORE INTO chat_state_kv")) {
+      const key = String(args[0]);
+      const exists = this.kv.has(key);
+      if (sql.includes("INSERT OR IGNORE") && exists) return { meta: { changes: 0 } };
+      this.kv.set(key, { key, value_json: String(args[1]), expires_at: args[2] == null ? null : String(args[2]), updated_at: String(args[3]) });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("DELETE FROM chat_state_kv WHERE key = ? AND expires_at")) {
+      const row = this.kv.get(String(args[0]));
+      if (!row || row.expires_at == null || String(row.expires_at) > String(args[1])) return { meta: { changes: 0 } };
+      this.kv.delete(String(args[0]));
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("DELETE FROM chat_state_kv WHERE key = ?")) {
+      return { meta: { changes: this.kv.delete(String(args[0])) ? 1 : 0 } };
+    }
+    if (sql.includes("DELETE FROM chat_state_locks WHERE thread_id = ? AND expires_at")) {
+      const row = this.locks.get(String(args[0]));
+      if (!row || String(row.expires_at) > String(args[1])) return { meta: { changes: 0 } };
+      this.locks.delete(String(args[0]));
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT OR IGNORE INTO chat_state_locks")) {
+      const key = String(args[0]);
+      if (this.locks.has(key)) return { meta: { changes: 0 } };
+      this.locks.set(key, { thread_id: key, token: String(args[1]), expires_at: String(args[2]), created_at: String(args[3]), updated_at: String(args[4]) });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE chat_state_locks SET expires_at")) {
+      const row = this.locks.get(String(args[2]));
+      if (!row || String(row.token) !== String(args[3]) || String(row.expires_at) <= String(args[4])) return { meta: { changes: 0 } };
+      row.expires_at = String(args[0]);
+      row.updated_at = String(args[1]);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("DELETE FROM chat_state_locks WHERE thread_id = ? AND token = ?")) {
+      const row = this.locks.get(String(args[0]));
+      if (!row || String(row.token) !== String(args[1])) return { meta: { changes: 0 } };
+      this.locks.delete(String(args[0]));
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT INTO vfs_entries")) {
+      this.vfsEntries.set(String(args[0]), {
+        path: String(args[0]),
         content: String(args[1]),
         size_bytes: Number(args[2]),
         sha256: String(args[3]),
@@ -104,267 +125,66 @@ export class FakeD1 {
       });
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("UPDATE vfs_entries SET deleted_at")) {
-      const path = String(args[2]);
-      const current = this.vfsEntries.get(path);
-      if (!current || current.deleted_at) {
-        return { meta: { changes: 0 } };
+    if (sql.includes("UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE path = ?")) {
+      const row = this.vfsEntries.get(String(args[2]));
+      if (!row || row.deleted_at) return { meta: { changes: 0 } };
+      row.deleted_at = String(args[0]);
+      row.updated_at = String(args[1]);
+      row.version = Number(row.version ?? 0) + 1;
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE deleted_at IS NULL")) {
+      let changes = 0;
+      for (const row of this.vfsEntries.values()) {
+        if (row.deleted_at) continue;
+        row.deleted_at = String(args[0]);
+        row.updated_at = String(args[1]);
+        row.version = Number(row.version ?? 0) + 1;
+        changes += 1;
       }
-      current.deleted_at = String(args[0]);
-      current.updated_at = String(args[1]);
-      current.version = Number(current.version ?? 0) + 1;
-      this.vfsEntries.set(path, current);
-      return { meta: { changes: 1 } };
+      return { meta: { changes } };
     }
-    if (sql.includes("INSERT OR IGNORE INTO vfs_meta")) {
-      return { meta: { changes: 1 } };
-    }
+    if (sql.includes("INSERT OR IGNORE INTO vfs_meta")) return { meta: { changes: 1 } };
     if (sql.includes("UPDATE vfs_meta SET revision = revision + 1")) {
       this.vfsRevision += 1;
       return { meta: { changes: 1 } };
-    }
-    if (sql.includes("INSERT OR IGNORE INTO agent_runs")) {
-      const id = String(args[0]);
-      const updateId = Number(args[1]);
-      if ([...this.agentRuns.values()].some((row) => Number(row.update_id) === updateId)) {
-        return { meta: { changes: 0 } };
-      }
-      this.agentRuns.set(id, {
-        id,
-        update_id: updateId,
-        chat_id: Number(args[2]),
-        payload_json: String(args[3]),
-        status: "queued",
-        attempts: 0,
-        result_text: null,
-        error_message: null,
-        created_at: String(args[4]),
-        updated_at: String(args[5]),
-        delivered_at: null,
-      });
-      return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE agent_runs SET status = 'running'")) {
-      const id = String(args[1]);
-      const current = this.agentRuns.get(id);
-      if (!current) return { meta: { changes: 0 } };
-      if (!["queued", "running"].includes(String(current.status))) return { meta: { changes: 0 } };
-      current.status = "running";
-      current.error_message = null;
-      current.updated_at = String(args[0]);
-      this.agentRuns.set(id, current);
-      return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE agent_runs SET status = 'completed'")) {
-      const id = String(args[2]);
-      const current = this.agentRuns.get(id);
-      if (!current) return { meta: { changes: 0 } };
-      current.status = "completed";
-      current.result_text = String(args[0]);
-      current.error_message = null;
-      current.updated_at = String(args[1]);
-      this.agentRuns.set(id, current);
-      return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE agent_runs SET status = 'queued', payload_json")) {
-      const id = String(args[2]);
-      const current = this.agentRuns.get(id);
-      if (!current) return { meta: { changes: 0 } };
-      current.status = "queued";
-      current.payload_json = String(args[0]);
-      current.updated_at = String(args[1]);
-      this.agentRuns.set(id, current);
-      return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE agent_runs SET status = 'queued'")) {
-      const id = String(args[2]);
-      const current = this.agentRuns.get(id);
-      if (!current) return { meta: { changes: 0 } };
-      current.status = "queued";
-      current.attempts = Number(current.attempts ?? 0) + 1;
-      current.error_message = String(args[0]);
-      current.updated_at = String(args[1]);
-      this.agentRuns.set(id, current);
-      return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE agent_runs SET delivered_at")) {
-      const id = String(args[2]);
-      const current = this.agentRuns.get(id);
-      if (!current || current.delivered_at) return { meta: { changes: 0 } };
-      current.delivered_at = String(args[0]);
-      current.updated_at = String(args[1]);
-      this.agentRuns.set(id, current);
-      return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE agent_runs SET status = 'cancelled'")) {
-      const chatId = Number(args[1]);
-      let changes = 0;
-      for (const run of this.agentRuns.values()) {
-        if (Number(run.chat_id) === chatId && ["queued", "running"].includes(String(run.status))) {
-          run.status = "cancelled";
-          run.updated_at = String(args[0]);
-          changes += 1;
-        }
-      }
-      return { meta: { changes } };
-    }
-    if (sql.includes("INSERT OR IGNORE INTO chat_inbox")) {
-      const id = String(args[0]);
-      const updateId = Number(args[2]);
-      if ([...this.chatInbox.values()].some((row) => Number(row.update_id) === updateId)) {
-        return { meta: { changes: 0 } };
-      }
-      this.chatInbox.set(id, {
-        id,
-        chat_id: Number(args[1]),
-        update_id: updateId,
-        text_json: String(args[3]),
-        created_at: String(args[4]),
-        consumed_at: null,
-        consumed_by_run_id: null,
-      });
-      return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = ? WHERE id")) {
-      const id = String(args[2]);
-      const row = this.chatInbox.get(id);
-      if (!row || row.consumed_at) return { meta: { changes: 0 } };
-      row.consumed_at = String(args[0]);
-      row.consumed_by_run_id = String(args[1]);
-      this.chatInbox.set(id, row);
-      return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = 'cancelled'")) {
-      const chatId = Number(args[1]);
-      let changes = 0;
-      for (const row of this.chatInbox.values()) {
-        if (Number(row.chat_id) === chatId && !row.consumed_at) {
-          row.consumed_at = String(args[0]);
-          row.consumed_by_run_id = "cancelled";
-          changes += 1;
-        }
-      }
-      return { meta: { changes } };
     }
     return { meta: { changes: 0 } };
   }
 
   private async first(sql: string, args: unknown[]): Promise<Record<string, unknown> | null> {
-    if (sql.includes("SELECT state, chat_id, telegram_user_id, expires_at, used_at, created_at FROM google_oauth_states")) {
-      const state = String(args[0]);
-      return this.oauthStates.get(state) ?? null;
+    if (sql.includes("FROM google_oauth_states")) return this.oauthStates.get(String(args[0])) ?? null;
+    if (sql.includes("FROM google_oauth_tokens")) return this.oauthTokens.get(String(args[0])) ?? null;
+    if (sql.includes("FROM chat_state_subscriptions")) return this.subscriptions.get(String(args[0])) ?? null;
+    if (sql.includes("SELECT value_json FROM chat_state_kv")) return this.kv.get(String(args[0])) ?? null;
+    if (sql.includes("SELECT path, content, size_bytes, sha256, version, created_at, updated_at FROM vfs_entries WHERE path = ?")) {
+      const row = this.vfsEntries.get(String(args[0]));
+      return !row || row.deleted_at ? null : row;
     }
-    if (sql.includes("SELECT principal, telegram_user_id, refresh_token_ciphertext, nonce, scopes, updated_at FROM google_oauth_tokens")) {
-      const principal = String(args[0]);
-      return this.oauthTokens.get(principal) ?? null;
-    }
-    if (sql.includes("SELECT path, content, size_bytes, sha256, version, created_at, updated_at FROM vfs_entries")) {
-      const path = String(args[0]);
-      const row = this.vfsEntries.get(path);
-      if (!row || row.deleted_at) return null;
-      return row;
-    }
-    if (sql.includes("SELECT revision FROM vfs_meta")) {
-      return { revision: this.vfsRevision };
-    }
+    if (sql.includes("SELECT revision FROM vfs_meta")) return { revision: this.vfsRevision };
     if (sql.includes("SELECT COUNT(*) AS count FROM vfs_entries")) {
-      const count = [...this.vfsEntries.values()].filter((row) => row.deleted_at === null || row.deleted_at === undefined).length;
-      return { count };
-    }
-    if (sql.includes("SELECT id, update_id, chat_id, payload_json, status, attempts, result_text, error_message, created_at, updated_at, delivered_at FROM agent_runs WHERE chat_id")) {
-      const chatId = Number(args[0]);
-      const row = [...this.agentRuns.values()]
-        .filter((item) => Number(item.chat_id) === chatId && ["queued", "running"].includes(String(item.status)))
-        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))[0];
-      return row ?? null;
-    }
-    if (sql.includes("SELECT id, update_id, chat_id, payload_json, status, attempts, result_text, error_message, created_at, updated_at, delivered_at FROM agent_runs")) {
-      const id = String(args[0]);
-      return this.agentRuns.get(id) ?? null;
+      return { count: [...this.vfsEntries.values()].filter((row) => row.deleted_at == null).length };
     }
     return null;
   }
 }
 
-class FakeStorage {
-  private values = new Map<string, unknown>();
-
-  async get<T>(key: string): Promise<T | undefined> {
-    return this.values.get(key) as T | undefined;
-  }
-
-  async put(key: string, value: unknown): Promise<void> {
-    this.values.set(key, value);
-  }
-}
-
-class FakeDurableObjectState {
-  readonly storage = new FakeStorage();
-  readonly id: DurableObjectId;
-
-  constructor(idText: string) {
-    this.id = {
-      toString: () => idText,
-      equals: () => false,
-      name: idText,
-      jurisdiction: undefined,
-    } as unknown as DurableObjectId;
-  }
-}
-
-export function createEnv() {
+export function createEnv(overrides?: Partial<Env>) {
   const db = new FakeD1();
-  const runtimes = new Map<string, SessionRuntime>();
-  const queueMessages: unknown[] = [];
-
-  const base = {
-    TELEGRAM_BOT_TOKEN: "test-bot-token",
-    TELEGRAM_WEBHOOK_SECRET: "secret-1",
+  const env: Env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "secret",
+    TELEGRAM_BOT_USERNAME: "dreclawbot",
     TELEGRAM_ALLOWED_USER_ID: "42",
-    AI_PROVIDER: "opencode-go",
-    MODEL: "kimi-k2.5",
-    BASE_URL: "https://opencode.ai/zen/go/v1",
-    OPENCODE_API_KEY: "test-opencode-key",
-    GOOGLE_OAUTH_CLIENT_ID: "test-google-client-id",
-    GOOGLE_OAUTH_CLIENT_SECRET: "test-google-client-secret",
-    GOOGLE_OAUTH_REDIRECT_URI: "https://worker.test/google/oauth/callback",
-    GOOGLE_OAUTH_SCOPES: "https://www.googleapis.com/auth/gmail.readonly",
-    GOOGLE_OAUTH_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-    CODE_EXEC_ENABLED: "false",
+    MODEL: "test-model",
+    OPENCODE_API_KEY: "test-key",
+    GOOGLE_OAUTH_CLIENT_ID: "client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+    GOOGLE_OAUTH_REDIRECT_URI: "https://test.local/google/oauth/callback",
+    GOOGLE_OAUTH_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
     MEMORY_ENABLED: "false",
     DRECLAW_DB: db as unknown as D1Database,
+    ...overrides,
   };
-
-  const namespace = {
-    idFromName(name: string) {
-      return { toString: () => name } as unknown as DurableObjectId;
-    },
-    get(id: DurableObjectId) {
-      const key = id.toString();
-      let runtime = runtimes.get(key);
-      if (!runtime) {
-        runtime = new SessionRuntime(new FakeDurableObjectState(key) as unknown as DurableObjectState, {
-          ...base,
-          SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
-        } as Env);
-        runtimes.set(key, runtime);
-      }
-      return {
-        fetch: (input: RequestInfo | URL, init?: RequestInit) => runtime.fetch(new Request(input, init)),
-      } as unknown as DurableObjectStub;
-    },
-  };
-
-  const fakeQueue = {
-    send: async (body: unknown) => {
-      queueMessages.push(body);
-    },
-  } as unknown as Queue;
-
-  const env: Env = {
-    ...base,
-    SESSION_RUNTIME: namespace as unknown as DurableObjectNamespace,
-  };
-
-  return { env, db, queueMessages, fakeQueue };
+  return { env, db };
 }
