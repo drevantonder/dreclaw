@@ -380,6 +380,11 @@ async function evalUserCodeWithAwaitFallback(vm: QuickJsContext, code: string) {
     const runResult = await vm.evalCodeAsync(code, "execute.mjs", { type: "module" });
     return vm.unwrapResult(runResult);
   }
+  if (shouldWrapUserCode(code)) {
+    const wrapped = wrapTopLevelAwaitCode(code);
+    const runResult = await vm.evalCodeAsync(wrapped, "execute.js");
+    return vm.unwrapResult(runResult);
+  }
   try {
     const runResult = await vm.evalCodeAsync(code, "execute.js");
     return vm.unwrapResult(runResult);
@@ -391,6 +396,10 @@ async function evalUserCodeWithAwaitFallback(vm: QuickJsContext, code: string) {
     const runResult = await vm.evalCodeAsync(wrapped, "execute.js");
     return vm.unwrapResult(runResult);
   }
+}
+
+function shouldWrapUserCode(code: string): boolean {
+  return /\bawait\b/.test(code) || /(^|\n)\s*return\b/.test(code);
 }
 
 function hasStaticModuleSyntax(code: string): boolean {
