@@ -1,11 +1,12 @@
 # dréclaw
 
-`dréclaw` is a personal Cloudflare-first AI assistant inspired by OpenClaw.
+`dréclaw` is a personal Cloudflare-first Telegram AI assistant.
 
 ## v0 Scope
 
 - Telegram private chat-only, single-user (me)
-- Commands: `/status`, `/reset`, `/factory-reset`, `/debug`, `/show-thinking`, `/cancel`
+- Chat SDK + Telegram adapter runtime
+- Commands: `/help`, `/status`, `/reset`, `/factory-reset`, `/verbose`, `/google ...`
 - Core tools: `search`, `execute`
 - Persistent memory: D1 episodic/fact memory + Vectorize semantic recall
 - Hybrid memory pipeline: D1 episodic/fact memory + Vectorize semantic recall (Workers AI embeddings)
@@ -16,15 +17,15 @@
 ```mermaid
 flowchart TD
   U[Telegram Chat] --> W[Worker Gateway]
-  W --> DO[Durable Object Session]
-  DO --> M[Model Loop]
+  W --> C[Chat SDK]
+  C --> M[Model Loop]
   M --> MM[Memory: episodes/facts]
   M --> T[Tools: search/execute]
-  DO --> W --> U
+  C --> W --> U
 ```
 
-- Worker verifies Telegram requests and routes updates.
-- Durable Object serializes turns and stores session state.
+- Worker routes Telegram webhooks into Chat SDK.
+- Chat SDK handles Telegram transport, subscriptions, streaming, and locking via a D1-backed state adapter.
 - Runtime retrieves memory context (hybrid semantic + lexical + recency) and injects it into the system prompt.
 - Agent loop runs on AI SDK `ToolLoopAgent` with runtime-managed memory persistence.
 - OpenCode uses `AI_PROVIDER=opencode` (Zen default URL) or `AI_PROVIDER=opencode-go` (Go default URL).
@@ -72,21 +73,16 @@ pnpm deploy
 ## Usage
 
 - Message the bot in a private Telegram chat.
-- `/status` shows runtime/session/auth + memory metadata.
+- `/help` lists commands.
+- `/status` shows model/provider/memory/google/verbose status.
 - `/reset` clears conversation context only (keeps memory).
-- `/factory-reset` clears conversation context and wipes persisted memory.
-- `/debug on|off` toggles debug previews, per-step tool summaries, and execute result previews.
-- `/show-thinking on|off` toggles thinking block visibility.
-- `/cancel` cancels active queued/running long-form runs for the chat.
+- `/factory-reset` clears conversation, memory, runtime state, and VFS.
+- `/verbose on|off` toggles tool traces, including execute code, writes, and result summaries.
 - `/google connect` starts Google OAuth linking flow.
 - `/google status` shows current Google link status and scopes.
 - `/google disconnect` removes stored Google OAuth token.
 
-### Telegram message modes
-
-- `compact` (default): typing indicator while work runs + final reply.
-- `debug`: compact behavior plus friendly tool previews and per-step summaries.
-- Non-command prompts are queued; bot sends an immediate ack and then posts final answer when background run completes.
+Normal messages stream a single assistant reply.
 
 ## Testing
 
@@ -97,7 +93,7 @@ pnpm deploy
 
 ## Persistence model
 
-- Durable conversation history lives in session state.
+- Conversation history and bot state live in Chat SDK thread state backed by D1.
 - Long-term memory facts/episodes live in D1 + Vectorize (`VECTORIZE_MEMORY`) with Workers AI embeddings (`env.AI`).
 - Memory writes are salience-gated and consolidated through reflection.
 - `search` returns QuickJS runtime capabilities/limits and package inventory.
