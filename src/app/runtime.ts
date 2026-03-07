@@ -63,7 +63,7 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const SYSTEM_PROMPT =
-  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute runs inside a QuickJS runtime, not Node.js: do not use require(), Node built-ins, or direct host internals. Use the provided globals only: fetch, fs.read(path), fs.write(path, content, { overwrite }), fs.list(prefix), fs.remove(path), memory.find(...), memory.save(...), memory.remove(...), pkg.install(spec), pkg.list(), and google.execute(...). search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
+  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. execute runs inside a QuickJS runtime, not Node.js: do not use require(), Node built-ins, or direct host internals. Use the provided globals only: fetch, fs.read(path), fs.write(path, content, { overwrite }), fs.list(prefix), fs.remove(path), memory.find(...), memory.save(...), memory.remove(...), pkg.install(spec), pkg.list(), and google.execute(...). google.execute returns an HTTP wrapper object shaped like { ok, status, statusText, url, method, result }. For Google API payloads, read data from the nested result field. Example: const list = await google.execute(...); const messages = list.result?.messages || []; const eventItems = calendar.result?.items || []; Gmail metadata lives under detail.result?.payload?.headers and snippets under detail.result?.snippet. search is a local runtime/package introspection tool (not a web search engine). Be creative and resourceful: if you hit limitations, attempt safe novel approaches and fallback strategies with the tools available. Prefer the latest current information and verify time-sensitive facts with tools when possible.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -268,7 +268,8 @@ export class BotRuntime {
           ),
       }),
       execute: tool({
-        description: "Run JavaScript in QuickJS runtime (supports async/await and fetch)",
+        description:
+          "Run JavaScript in QuickJS runtime (supports async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, and google.execute which returns { ok, status, result })",
         inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
         execute: async (input) => {
           const writes: string[] = [];
