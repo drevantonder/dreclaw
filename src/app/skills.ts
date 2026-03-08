@@ -20,6 +20,7 @@ Rules:
 - Do not use require(), fs from Node, process, Buffer, or googleapis imports.
 - If a script uses await or multiple statements, explicitly return the final value.
 - For reusable helpers, write modules to VFS and import them with vfs:/ paths.
+- When formatting user-facing summaries, prefer simple string concatenation over large template literals.
 
 Patterns:
 
@@ -54,6 +55,7 @@ Rules:
 - For multi-step flows, write a helper module with export async function run(input) { ... }.
 - For inbox summaries, fetch the list first, then fetch each message with format: 'metadata' and metadataHeaders: ['From', 'Subject', 'Date'].
 - For user-facing summaries, return one final formatted string instead of a raw array when possible.
+- For final formatting, prefer building lines with string concatenation and join('\n') rather than complex template literals.
 
 Shapes:
 - Gmail list: list.result?.messages
