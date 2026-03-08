@@ -1463,7 +1463,7 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
 }
 
 function normalizeUserCode(code: string): string {
-  return code.replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/g, " ");
+  return code.replace(/[\p{Zs}\p{Cf}\u180e]/gu, " ");
 }
 
 function bumpHostCall(stats: HostStats, _maxHostCalls: number): void {
