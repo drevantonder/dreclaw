@@ -285,7 +285,7 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     };
   }
 
-  const code = typeof payload.code === "string" ? payload.code : "";
+  const code = normalizeUserCode(typeof payload.code === "string" ? payload.code : "");
   if (!code.trim()) {
     return {
       ok: false,
@@ -1434,6 +1434,10 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return fallback;
   return Math.trunc(value);
+}
+
+function normalizeUserCode(code: string): string {
+  return code.replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/g, " ");
 }
 
 function bumpHostCall(stats: HostStats, _maxHostCalls: number): void {
