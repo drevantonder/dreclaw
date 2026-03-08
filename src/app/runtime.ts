@@ -187,6 +187,8 @@ export class BotRuntime {
     if (loadedSkills.length) {
       promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
     }
+    const taskGuidance = renderTaskGuidance(userText);
+    if (taskGuidance) promptSections.push(`Task guidance:\n${taskGuidance}`);
     const historyContext = renderHistoryContext(state.history);
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
     const memoryContext = await this.renderMemoryContext(chatId, userText || "[image message]");
@@ -684,6 +686,19 @@ function inferImplicitSkillNames(userText: string): string[] {
   if (/memory|remember|label/.test(text)) names.add("memory");
   if (/skill|workflow/.test(text)) names.add("skill-authoring");
   return [...names];
+}
+
+function renderTaskGuidance(userText: string): string {
+  const text = String(userText ?? "").toLowerCase();
+  const lines: string[] = [];
+  if (/gmail|email|inbox/.test(text)) {
+    lines.push("- For Gmail summaries, prefer multiple small execute runs over one long loop with many google.execute calls.");
+    lines.push("- Good pattern: one execute run to list ids, one or more execute runs to fetch details, one final execute run to format a string summary.");
+  }
+  if (/calendar/.test(text)) {
+    lines.push("- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.");
+  }
+  return lines.join("\n");
 }
 
 function renderFailureHints(history: BotThreadState["history"]): string {
