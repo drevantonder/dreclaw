@@ -1304,11 +1304,17 @@ async function flushAsyncWork(
   deadline: number,
   maxJobs: number,
 ): Promise<void> {
-  while (runtime.hasPendingJob() || stats.activeFetches > 0 || stats.fetchWaiters.length > 0) {
+  let idlePasses = 0;
+  while (idlePasses < 3) {
     if (Date.now() > deadline) {
       throw new Error("Execution timed out");
     }
     runPendingJobs(runtime, maxJobs);
+    if (runtime.hasPendingJob() || stats.activeFetches > 0 || stats.fetchWaiters.length > 0) {
+      idlePasses = 0;
+    } else {
+      idlePasses += 1;
+    }
     await sleep(10);
   }
 }
