@@ -14,6 +14,7 @@ import {
   getGoogleOAuthToken,
   getPersistedRunStatus,
   getPersistedThreadControls,
+  getPersistedWorkflowInstanceId,
   getVfsEntry,
   getVfsRevision,
   insertMemoryEpisode,
@@ -79,7 +80,7 @@ const MEMORY_EPISODE_TOP_K = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 25_000;
 const RUN_HEARTBEAT_INTERVAL_MS = 4_000;
 const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. If an execute script fails, simplify it immediately instead of retrying the same shape. search is only for local runtime/package introspection, not web search.";
+  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape. search is only for local runtime/package introspection, not web search.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -89,6 +90,7 @@ export class BotRuntime {
     const memory = this.getMemoryConfigSafe();
     const googleLinked = Boolean(await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL));
     const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
+    const workflowInstanceId = await getPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
     const persistedRunStatus = (await getPersistedRunStatus(this.env.DRECLAW_DB, threadId)) ?? state.runStatus;
     const busy = formatBusyState(persistedRunStatus);
     return [
@@ -99,6 +101,7 @@ export class BotRuntime {
       `busy: ${busy}`,
       `cancel_requested: ${persistedRunStatus.cancelRequested ? "yes" : "no"}`,
       `stopped: ${persistedRunStatus.stoppedAt ? "yes" : "no"}`,
+      `workflow_id: ${workflowInstanceId ?? persistedRunStatus.workflowInstanceId ?? "-"}`,
       `running_for: ${isRunStatusActive(persistedRunStatus) ? formatDurationSince(persistedRunStatus.startedAt) : "-"}`,
       `last_heartbeat: ${formatElapsedSince(persistedRunStatus.lastHeartbeatAt)}`,
       `verbose: ${(controls?.verbose ?? state.verbose) ? "on" : "off"}`,
@@ -186,6 +189,7 @@ export class BotRuntime {
     thread: Thread<BotThreadState>;
     message: Message;
     state: BotThreadState;
+    runTimeoutMs?: number;
   }): Promise<BotThreadState> {
     const { thread, message } = params;
     let state = normalizeBotThreadState(params.state);
@@ -243,7 +247,7 @@ export class BotRuntime {
     heartbeat.start();
 
     let finalText = "";
-    const runTimeoutMs = getRunTimeoutMs(userText);
+    const runTimeoutMs = params.runTimeoutMs ?? getRunTimeoutMs(userText);
     try {
       await this.throwIfCancelled(thread.id);
       finalText = await withTimeout(
@@ -320,6 +324,130 @@ export class BotRuntime {
     });
     state.memoryTurns += 1;
     return stripEphemeralState(state);
+  }
+
+  async runConversationAgentStep(params: {
+    thread: Thread<BotThreadState>;
+    message: Message;
+    state: BotThreadState;
+    runTimeoutMs?: number;
+    baseMessages?: ModelMessage[];
+    isFirstStep?: boolean;
+  }): Promise<{ state: BotThreadState; nextMessages: ModelMessage[]; shouldContinue: boolean }> {
+    const { thread, message } = params;
+    let state = normalizeBotThreadState(params.state);
+    const chatId = getTelegramChatId(thread.id, message.raw);
+    const userText = message.text.trim();
+    const imageBlocks = await loadImages(this.env, message.raw);
+    const runtime = this.getRuntimeConfig();
+    const toolTraces: ToolTrace[] = [];
+    const tracer = new VerboseTracer(this.env.DRECLAW_DB, thread);
+    const model = this.createModel(runtime);
+    const inputMessages = isModelMessageArray(params.baseMessages)
+      ? params.baseMessages
+      : await this.buildConversationMessages({ chatId, state, userText, imageBlocks });
+    const runTimeoutMs = params.runTimeoutMs ?? getRunTimeoutMs(userText);
+    let stepHadToolCalls = false;
+    let stepText = "";
+
+    const agent = new ToolLoopAgent({
+      model,
+      stopWhen: stepCountIs(1),
+      providerOptions: this.getAgentProviderOptions(runtime),
+      tools: this.createAgentTools({
+        chatId,
+        threadId: thread.id,
+        state,
+        saveState: async (next) => {
+          state = next;
+          await thread.setState(stripEphemeralState(state), { replace: true });
+        },
+        tracer,
+        toolTraces,
+      }),
+    });
+
+    const heartbeat = this.createRunHeartbeat(thread, () => state, (nextState) => {
+      state = nextState;
+    });
+
+    try {
+      await thread.startTyping();
+    } catch {
+      // noop
+    }
+    heartbeat.start();
+
+    try {
+      await this.throwIfCancelled(thread.id);
+      const stream = await withTimeout(
+        agent.stream({
+          messages: inputMessages,
+          onStepFinish(step) {
+            stepHadToolCalls = (step.toolCalls?.length ?? 0) > 0;
+            stepText = typeof step.text === "string" ? step.text : "";
+          },
+        }),
+        runTimeoutMs,
+        "Agent step timed out",
+      );
+      const response = await withTimeout(Promise.resolve(stream.response), runTimeoutMs, "Assistant response timed out");
+      const text = await withTimeout(Promise.resolve(stream.text), runTimeoutMs, "Assistant text timed out");
+      await this.throwIfCancelled(thread.id);
+      const responseMessages = isModelMessageArray(response.messages) ? response.messages : [];
+      const nextMessages = mergeContinuationMessages(inputMessages, responseMessages);
+
+      heartbeat.stop();
+      if (params.isFirstStep) state = pushHistory(state, "user", userText || "[image]");
+      for (const trace of toolTraces) {
+        state = pushHistory(state, "tool", renderToolTranscript(trace));
+      }
+
+      const assistantText = [text, stepText].find((value) => typeof value === "string" && value.trim())?.trim() ?? "";
+      if (assistantText && !stepHadToolCalls) {
+        try {
+          await thread.post(assistantText);
+        } catch {
+          // noop
+        }
+        state = pushHistory(state, "assistant", assistantText);
+      }
+      if (!stepHadToolCalls) {
+        state = markRunFinished(state);
+        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+      }
+      return { state: stripEphemeralState(state), nextMessages, shouldContinue: stepHadToolCalls };
+    } catch (error) {
+      heartbeat.stop();
+      if (isRunCancelledError(error)) {
+        state = markRunFinished(state);
+        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+        return { state: stripEphemeralState(state), nextMessages: inputMessages, shouldContinue: false };
+      }
+      throw error;
+    }
+  }
+
+  private async buildConversationMessages(params: {
+    chatId: number;
+    state: BotThreadState;
+    userText: string;
+    imageBlocks: string[];
+  }) {
+    const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
+    const skillCatalog = await this.listSkills();
+    promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
+    const loadedSkills = await this.getLoadedSkills(inferImplicitSkillNames(params.userText));
+    if (loadedSkills.length) {
+      promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
+    }
+    const taskGuidance = renderTaskGuidance(params.userText);
+    if (taskGuidance) promptSections.push(`Task guidance:\n${taskGuidance}`);
+    const historyContext = renderHistoryContext(params.state.history);
+    if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
+    const memoryContext = await this.renderMemoryContext(params.chatId, params.userText || "[image message]");
+    if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
+    return buildAgentMessages(promptSections.join("\n\n"), params.userText, params.imageBlocks);
   }
 
   private createRunHeartbeat(
@@ -950,6 +1078,19 @@ function buildAgentMessages(systemPrompt: string, userText: string, imageBlocks:
   ];
 }
 
+function isModelMessageArray(value: unknown): value is ModelMessage[] {
+  return Array.isArray(value) && value.every((item) => item && typeof item === "object" && typeof (item as { role?: unknown }).role === "string");
+}
+
+function mergeContinuationMessages(base: ModelMessage[], continuation: ModelMessage[]): ModelMessage[] {
+  if (!continuation.length) return base;
+  if (continuation.length >= base.length) {
+    const prefix = continuation.slice(0, base.length);
+    if (JSON.stringify(prefix) === JSON.stringify(base)) return continuation;
+  }
+  return [...base, ...continuation];
+}
+
 async function loadImages(env: Env, rawMessage: unknown): Promise<string[]> {
   const photo = (rawMessage as { photo?: Array<{ file_id?: string; file_size?: number }> })?.photo;
   if (!Array.isArray(photo) || !photo.length) return [];
@@ -1018,6 +1159,7 @@ function idleRunStatus() {
     cancelRequested: false,
     cancelRequestedAt: null,
     stoppedAt: null,
+    workflowInstanceId: null,
   };
 }
 
@@ -1026,6 +1168,7 @@ function markRunStarted(state: BotThreadState): BotThreadState {
   return {
     ...state,
     runStatus: {
+      ...state.runStatus,
       running: true,
       startedAt: nowIso,
       lastHeartbeatAt: nowIso,

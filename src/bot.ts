@@ -1,21 +1,25 @@
 import { createTelegramAdapter } from "@chat-adapter/telegram";
-import { Chat, type Message, type Thread } from "chat";
+import { Chat, type Message, type SerializedThread, type Thread } from "chat";
 import { BotRuntime } from "./app/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "./app/state";
 import { createD1StateAdapter } from "./chat-state";
 import {
+  clearPersistedWorkflowInstanceId,
   finalizePersistedRunStop,
   getPersistedRunStatus,
   getPersistedThreadControls,
+  getPersistedWorkflowInstanceId,
   getThreadStateSnapshot,
   requestPersistedRunStop,
+  setPersistedRunStatus,
   setPersistedThreadControls,
+  setPersistedWorkflowInstanceId,
   setThreadStateSnapshot,
 } from "./db";
 import { sendTelegramTextMessage } from "./telegram-api";
 import type { Env, TelegramUpdate } from "./types";
 
-export function createBot(env: Env) {
+export function createChat(env: Env) {
   const adapters = {
     telegram: createTelegramAdapter({
       botToken: env.TELEGRAM_BOT_TOKEN,
@@ -23,15 +27,19 @@ export function createBot(env: Env) {
       userName: env.TELEGRAM_BOT_USERNAME,
     }),
   };
-  const runtime = new BotRuntime(env);
-  const bot = new Chat<typeof adapters, BotThreadState>({
+  return new Chat<typeof adapters, BotThreadState>({
     adapters,
     state: createD1StateAdapter(env.DRECLAW_DB),
     userName: env.TELEGRAM_BOT_USERNAME || "dreclaw",
-    fallbackStreamingPlaceholderText: "Thinking...",
+    fallbackStreamingPlaceholderText: null,
     streamingUpdateIntervalMs: 700,
     logger: "info",
   });
+}
+
+export function createBot(env: Env) {
+  const runtime = new BotRuntime(env);
+  const bot = createChat(env);
 
   const handleIncoming = async (thread: Thread<BotThreadState>, message: Message, subscribe: boolean) => {
     if (!isTelegramPrivateMessage(message.raw)) return;
@@ -55,13 +63,64 @@ export function createBot(env: Env) {
     let currentState = normalizeBotThreadState(await thread.state);
     const controls = await getPersistedThreadControls(env.DRECLAW_DB, thread.id);
     if (controls) currentState = { ...currentState, verbose: controls.verbose };
-    const nextState = await runtime.runConversation({ thread, message, state: currentState });
-    await thread.setState(nextState, { replace: true });
+    const runStatus = (await getPersistedRunStatus(env.DRECLAW_DB, thread.id)) ?? currentState.runStatus;
+    if (isRunBusy(runStatus)) {
+      await thread.post("Currently busy. Not executed. Use /status or /stop.");
+      return;
+    }
+    if (!env.CONVERSATION_WORKFLOW) {
+      const nextState = await runtime.runConversation({ thread, message, state: currentState });
+      await thread.setState(nextState, { replace: true });
+      return;
+    }
+    await startConversationWorkflow(env, thread, message, currentState);
   };
 
   bot.onNewMessage(/^.*$/s, async (thread, message) => handleIncoming(thread, message, true));
   bot.onSubscribedMessage(async (thread, message) => handleIncoming(thread, message, false));
   return bot;
+}
+
+export async function startConversationWorkflow(
+  env: Env,
+  thread: Thread<BotThreadState>,
+  message: Message,
+  state: BotThreadState,
+): Promise<string> {
+  if (!env.CONVERSATION_WORKFLOW) return "";
+  const threadId = thread.id;
+  const startedAt = new Date().toISOString();
+  const workflowInstanceId = crypto.randomUUID();
+  const runStatus: BotThreadState["runStatus"] = {
+    running: true,
+    startedAt,
+    lastHeartbeatAt: startedAt,
+    cancelRequested: false,
+    cancelRequestedAt: null,
+    stoppedAt: null,
+    workflowInstanceId,
+  };
+  const workflowState: BotThreadState = {
+    ...state,
+    runStatus,
+  };
+  const instance = await env.CONVERSATION_WORKFLOW.create({
+    id: workflowInstanceId,
+    params: {
+      thread: (thread as Thread<BotThreadState> & { toJSON(): SerializedThread }).toJSON(),
+      message: message.toJSON(),
+      state: workflowState,
+    },
+  });
+
+  const nextState: BotThreadState = {
+    ...state,
+    runStatus: { ...runStatus, workflowInstanceId: instance.id },
+  };
+  await thread.setState(nextState, { replace: true });
+  await setPersistedRunStatus(env.DRECLAW_DB, threadId, nextState.runStatus);
+  await setPersistedWorkflowInstanceId(env.DRECLAW_DB, threadId, instance.id);
+  return instance.id;
 }
 
 export async function maybeHandleAsyncTelegramCommand(
@@ -102,6 +161,7 @@ async function handleAsyncCommand(params: {
   const state = normalizeBotThreadState(await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId));
   const controls = await getPersistedThreadControls(env.DRECLAW_DB, threadId);
   const controlledState = controls ? { ...state, verbose: controls.verbose } : state;
+  const workflowInstanceId = await getPersistedWorkflowInstanceId(env.DRECLAW_DB, threadId);
   const runStatus = (await getPersistedRunStatus(env.DRECLAW_DB, threadId)) ?? controlledState.runStatus;
   const busy = isRunBusy(runStatus);
 
@@ -111,13 +171,23 @@ async function handleAsyncCommand(params: {
   }
 
   if (lowered === "/status") {
+    const workflowStatus = workflowInstanceId && env.CONVERSATION_WORKFLOW
+      ? await (await env.CONVERSATION_WORKFLOW
+          .get(workflowInstanceId))
+          .status()
+          .then((value: { status: string }) => value.status)
+          .catch(() => null)
+      : null;
     await sendTelegramTextMessage(
       env.TELEGRAM_BOT_TOKEN,
       chatId,
-      await runtime.status(threadId, {
+      [await runtime.status(threadId, {
         ...controlledState,
-        runStatus,
-      }),
+        runStatus: {
+          ...runStatus,
+          workflowInstanceId,
+        },
+      }), workflowStatus ? `workflow: ${workflowStatus}` : null].filter(Boolean).join("\n"),
     );
     return;
   }
@@ -128,8 +198,24 @@ async function handleAsyncCommand(params: {
       return;
     }
     await requestPersistedRunStop(env.DRECLAW_DB, threadId);
-    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Stopping current run...");
-    schedule?.(watchForStoppedRun(env, threadId, chatId));
+    if (workflowInstanceId && env.CONVERSATION_WORKFLOW) {
+      await (await env.CONVERSATION_WORKFLOW.get(workflowInstanceId)).terminate().catch(() => null);
+    }
+    await clearPersistedWorkflowInstanceId(env.DRECLAW_DB, threadId);
+    const finalized = await finalizePersistedRunStop(env.DRECLAW_DB, threadId);
+    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, {
+      ...controlledState,
+      runStatus: {
+        running: false,
+        startedAt: null,
+        lastHeartbeatAt: null,
+        cancelRequested: false,
+        cancelRequestedAt: finalized?.cancelRequestedAt ?? runStatus.cancelRequestedAt,
+        stoppedAt: finalized?.stoppedAt ?? new Date().toISOString(),
+        workflowInstanceId: null,
+      },
+    });
+    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Stopped.");
     return;
   }
 
@@ -206,30 +292,4 @@ function isRunBusy(runStatus: BotThreadState["runStatus"]): boolean {
 
 function busyMessage(command: string): string {
   return `Currently busy. Not executed. Run ${command} again when not busy.`;
-}
-
-async function watchForStoppedRun(env: Env, threadId: string, chatId: number): Promise<void> {
-  await sleep(12_000);
-  const status = await getPersistedRunStatus(env.DRECLAW_DB, threadId);
-  if (!status?.running && status?.stoppedAt) return;
-  if (!status?.cancelRequested || !status.lastHeartbeatAt || isRunBusy(status)) return;
-  const finalized = await finalizePersistedRunStop(env.DRECLAW_DB, threadId);
-  if (!finalized?.stoppedAt) return;
-  const state = normalizeBotThreadState(await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId));
-  await setThreadStateSnapshot(env.DRECLAW_DB, threadId, {
-    ...state,
-    runStatus: {
-      running: false,
-      startedAt: null,
-      lastHeartbeatAt: null,
-      cancelRequested: false,
-      cancelRequestedAt: null,
-      stoppedAt: finalized.stoppedAt,
-    },
-  });
-  await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Stopped.");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

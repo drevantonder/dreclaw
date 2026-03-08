@@ -1,6 +1,7 @@
 import { decodeEncryptionKey, encryptSecret } from "./crypto";
 import { getGoogleOAuthState, markGoogleOAuthStateUsed, markUpdateSeen, upsertGoogleOAuthToken } from "./db";
 import { createBot, maybeHandleAsyncTelegramCommand } from "./bot";
+import { ConversationWorkflow } from "./conversation-workflow";
 import { exchangeGoogleOAuthCode, getGoogleOAuthConfig } from "./google-oauth";
 import { sendTelegramTextMessage } from "./telegram-api";
 import type { Env, TelegramUpdate } from "./types";
@@ -41,6 +42,8 @@ export default {
     return;
   },
 } satisfies ExportedHandler<Env>;
+
+export { ConversationWorkflow };
 
 async function handleGoogleOAuthCallback(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);

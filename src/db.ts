@@ -89,6 +89,7 @@ export interface PersistedRunStatus {
   cancelRequested: boolean;
   cancelRequestedAt: string | null;
   stoppedAt: string | null;
+  workflowInstanceId: string | null;
 }
 
 export interface PersistedThreadControls {
@@ -148,6 +149,7 @@ export async function finalizePersistedRunStop(db: D1Database, threadId: string)
     cancelRequested: false,
     cancelRequestedAt: current.cancelRequestedAt,
     stoppedAt: nowIso,
+    workflowInstanceId: null,
   };
   await setPersistedRunStatus(db, threadId, next);
   return next;
@@ -159,6 +161,19 @@ export async function getPersistedThreadControls(db: D1Database, threadId: strin
 
 export async function setPersistedThreadControls(db: D1Database, threadId: string, value: PersistedThreadControls): Promise<void> {
   await setChatStateValue(db, threadControlsKey(threadId), value);
+}
+
+export async function getPersistedWorkflowInstanceId(db: D1Database, threadId: string): Promise<string | null> {
+  const value = await getChatStateValue<{ workflowInstanceId?: string }>(db, workflowInstanceKey(threadId));
+  return typeof value?.workflowInstanceId === "string" && value.workflowInstanceId.trim() ? value.workflowInstanceId : null;
+}
+
+export async function setPersistedWorkflowInstanceId(db: D1Database, threadId: string, workflowInstanceId: string): Promise<void> {
+  await setChatStateValue(db, workflowInstanceKey(threadId), { workflowInstanceId });
+}
+
+export async function clearPersistedWorkflowInstanceId(db: D1Database, threadId: string): Promise<void> {
+  await deleteChatStateValue(db, workflowInstanceKey(threadId));
 }
 
 export async function createGoogleOAuthState(
@@ -569,6 +584,10 @@ function runStatusKey(threadId: string): string {
 
 function threadControlsKey(threadId: string): string {
   return `thread-controls:${threadId}`;
+}
+
+function workflowInstanceKey(threadId: string): string {
+  return `workflow-instance:${threadId}`;
 }
 
 function mapGoogleOAuthTokenRecord(row: Record<string, unknown>): GoogleOAuthTokenRecord {

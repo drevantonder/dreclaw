@@ -20,6 +20,7 @@ function createEnv(overrides?: Partial<Env>): Env {
     TELEGRAM_ALLOWED_USER_ID: "42",
     MODEL: "model",
     DRECLAW_DB: {} as D1Database,
+    CONVERSATION_WORKFLOW: {} as Env["CONVERSATION_WORKFLOW"],
     GOOGLE_OAUTH_CLIENT_ID: "client-id",
     GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
     GOOGLE_OAUTH_REDIRECT_URI: "https://worker.example.com/google/oauth/callback",

@@ -12,6 +12,7 @@ export interface RunStatus {
   cancelRequested: boolean;
   cancelRequestedAt: string | null;
   stoppedAt: string | null;
+  workflowInstanceId: string | null;
 }
 
 export interface BotThreadState {
@@ -55,6 +56,10 @@ export function normalizeBotThreadState(input: BotThreadState | null | undefined
           ? source.runStatus.cancelRequestedAt
           : null,
       stoppedAt: typeof source?.runStatus?.stoppedAt === "string" && source.runStatus.stoppedAt.trim() ? source.runStatus.stoppedAt : null,
+      workflowInstanceId:
+        typeof source?.runStatus?.workflowInstanceId === "string" && source.runStatus.workflowInstanceId.trim()
+          ? source.runStatus.workflowInstanceId
+          : null,
     },
   };
 }
