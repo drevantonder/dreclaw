@@ -219,11 +219,27 @@ export class BotRuntime {
       // noop
     }
 
-    const stream = await agent.stream({ messages });
-    await thread.post(stream.textStream);
-    const response = await stream.response;
-    const generatedText = await stream.text;
-    const finalText = (typeof generatedText === "string" ? generatedText : "").trim() || extractAssistantText(response.messages as ModelMessage[]);
+    let finalText = "";
+    try {
+      const stream = await withTimeout(agent.stream({ messages }), 90_000, "Agent stream timed out");
+      await withTimeout(thread.post(stream.textStream), 90_000, "Assistant response timed out");
+      const response = await withTimeout(Promise.resolve(stream.response), 90_000, "Assistant response timed out");
+      const generatedText = await withTimeout(Promise.resolve(stream.text), 90_000, "Assistant text timed out");
+      finalText = (typeof generatedText === "string" ? generatedText : "").trim() || extractAssistantText(response.messages as ModelMessage[]);
+    } catch (error) {
+      finalText = "I hit a timeout while working on that. I may have updated the library; retry the task and I will continue from there.";
+      try {
+        await thread.post(finalText);
+      } catch {
+        // noop
+      }
+      state = pushHistory(state, "user", userText || "[image]");
+      for (const trace of toolTraces) {
+        state = pushHistory(state, "tool", renderToolTranscript(trace));
+      }
+      state = pushHistory(state, "assistant", `${finalText} (${compactErrorMessage(error)})`);
+      return state;
+    }
 
     state = pushHistory(state, "user", userText || "[image]");
     for (const trace of toolTraces) {
@@ -788,6 +804,18 @@ function countLines(content: string): number {
   return content ? content.split("\n").length : 0;
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeoutPromise = new Promise<T>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function getStepLimit(userText: string): number {
   const text = String(userText ?? "").toLowerCase();
   if (/gmail|email|inbox|calendar|drive|docs|sheets|google|script|skill|workflow|library|merge|update/.test(text)) {
@@ -831,6 +859,7 @@ function renderTaskGuidance(userText: string): string {
     lines.push("- Use the vfs tool to inspect /scripts and /skills/user before creating anything new.");
     lines.push("- Patch or merge overlapping helpers instead of creating near-duplicates.");
     lines.push("- Delete superseded drafts to keep the library tidy.");
+    lines.push("- If asked to update the library and solve a task, do both before stopping.");
   }
   return lines.join("\n");
 }
