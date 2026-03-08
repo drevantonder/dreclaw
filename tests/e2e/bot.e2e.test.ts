@@ -96,6 +96,20 @@ vi.mock("../../src/code-exec", () => ({
   searchCodeRuntime: vi.fn(({ query }: { query?: string }) => ({ runtime: { engine: "quickjs-emscripten", apis: [], limits: {} }, packages: query ? [{ spec: query }] : [] })),
 }));
 
+vi.mock("../../src/bash-exec", () => ({
+  executeBash: vi.fn(async (_input: { command: string }, ctx: { vfs: { writeFile: (path: string, content: string, overwrite: boolean) => Promise<unknown> } }) => {
+    await ctx.vfs.writeFile("/tmp/bash-output.txt", "hello from bash\n", true);
+    return {
+      ok: true,
+      stdout: "hello from bash\n",
+      stderr: "",
+      exitCode: 0,
+      cwd: "/",
+      writes: ["write /tmp/bash-output.txt"],
+    };
+  }),
+}));
+
 vi.mock("ai", () => {
   class MockToolLoopAgent {
     private readonly tools: Record<string, { execute?: (args: unknown) => Promise<unknown> }>;
@@ -305,6 +319,90 @@ describe("chat sdk bot", () => {
     expect(output).toContain("writes: write /tmp/output.txt");
     expect(output).toContain("result: {\"ok\":true");
     expect(output).toContain("Done running code.");
+  });
+
+  it("supports /verbose and emits bash traces with commands, writes, and result", async () => {
+    const { env } = createEnv();
+    const sent: string[] = [];
+    const edited: string[] = [];
+    const tracker = createExecutionTracker();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/getMe")) {
+          return new Response(JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }), { status: 200 });
+        }
+        if (url.includes("/getWebhookInfo")) {
+          return new Response(JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }), { status: 200 });
+        }
+        if (url.includes("/sendChatAction")) {
+          return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+        }
+        if (url.includes("/sendMessage")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          sent.push(body.text ?? "");
+          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)), { status: 200 });
+        }
+        if (url.includes("/editMessageText")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          edited.push(body.text ?? "");
+          return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }),
+    );
+
+    const headers = {
+      "content-type": "application/json",
+      "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+    };
+
+    await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(makeUpdate(30, "/verbose on")),
+      }) as unknown as Request,
+      env,
+      tracker.ctx,
+    );
+    await tracker.wait();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "tool-bash-1",
+            name: "bash",
+            arguments: { command: 'printf "hello" > /tmp/bash-output.txt && cat /tmp/bash-output.txt' },
+          },
+        ],
+      },
+      { stopReason: "endTurn", content: [{ type: "text", text: "Done running bash." }] },
+    );
+
+    await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(makeUpdate(31, "run bash")),
+      }) as unknown as Request,
+      env,
+      tracker.ctx,
+    );
+    await tracker.wait();
+
+    const output = [...sent, ...edited].join("\n");
+    expect(output).toContain("verbose enabled");
+    expect(output).toContain("Tool: bash");
+    expect(output).toContain("printf \"hello\"");
+    expect(output).toContain("writes: write /tmp/bash-output.txt");
+    expect(output).toContain('result: {"ok":true');
+    expect(output).toContain("Done running bash.");
   });
 
   it("handles status and google connect commands", async () => {
