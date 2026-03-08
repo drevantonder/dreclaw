@@ -1,4 +1,4 @@
-import { ToolLoopAgent, stepCountIs, tool, type ModelMessage } from "ai";
+import { ToolLoopAgent, generateText, stepCountIs, tool, type ModelMessage } from "ai";
 import type { Thread, Message } from "chat";
 import { z } from "zod";
 import { decodeEncryptionKey, decryptSecret } from "../crypto";
@@ -232,7 +232,11 @@ export class BotRuntime {
         "Conversation timed out",
       );
     } catch (error) {
-      finalText = "I hit a timeout while working on that. Please retry and I will continue from the conversation context.";
+      finalText = await this.recoverTimedOutRun({
+        model,
+        userText: userText || "[image]",
+        toolTraces,
+      });
       try {
         await thread.post(finalText);
       } catch {
@@ -242,7 +246,7 @@ export class BotRuntime {
       for (const trace of toolTraces) {
         state = pushHistory(state, "tool", renderToolTranscript(trace));
       }
-      state = pushHistory(state, "assistant", `${finalText} (${compactErrorMessage(error)})`);
+      state = pushHistory(state, "assistant", finalText);
       return stripEphemeralState(state);
     }
 
@@ -434,6 +438,37 @@ export class BotRuntime {
         },
       }),
     };
+  }
+
+  private async recoverTimedOutRun(params: { model: ReturnType<BotRuntime["createModel"]>; userText: string; toolTraces: ToolTrace[] }) {
+    const successfulToolTraces = params.toolTraces.filter((trace) => trace.ok);
+    if (successfulToolTraces.length) {
+      try {
+        const result = await withTimeout(
+          generateText({
+            model: params.model,
+            system:
+              "You are dréclaw. Finish the user's task using only the provided tool results. Be concise, direct, and helpful. Do not mention timeouts, internal failures, or tool orchestration. If the gathered data is incomplete, give the best useful answer you can and state the uncertainty briefly.",
+            messages: [
+              {
+                role: "user",
+                content: [
+                  `User request:\n${params.userText}`,
+                  `\nAvailable tool results:\n${successfulToolTraces.map(renderToolTranscript).join("\n\n")}`,
+                ].join("\n"),
+              },
+            ],
+          }),
+          8_000,
+          "Recovery summary timed out",
+        );
+        const text = result.text.trim();
+        if (text) return text;
+      } catch {
+        // noop
+      }
+    }
+    return "That took longer than expected. Send the same message again and I'll continue from where I left off with a simpler path.";
   }
 
   private async listSkills(): Promise<Array<Pick<SkillRecord, "name" | "description" | "scope">>> {
