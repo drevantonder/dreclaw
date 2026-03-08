@@ -221,10 +221,10 @@ export class BotRuntime {
 
     let finalText = "";
     try {
-      const stream = await withTimeout(agent.stream({ messages }), 90_000, "Agent stream timed out");
-      await withTimeout(thread.post(stream.textStream), 90_000, "Assistant response timed out");
-      const response = await withTimeout(Promise.resolve(stream.response), 90_000, "Assistant response timed out");
-      const generatedText = await withTimeout(Promise.resolve(stream.text), 90_000, "Assistant text timed out");
+      const stream = await withTimeout(agent.stream({ messages }), 45_000, "Agent stream timed out");
+      await withTimeout(thread.post(stream.textStream), 45_000, "Assistant response timed out");
+      const response = await withTimeout(Promise.resolve(stream.response), 45_000, "Assistant response timed out");
+      const generatedText = await withTimeout(Promise.resolve(stream.text), 45_000, "Assistant text timed out");
       finalText = (typeof generatedText === "string" ? generatedText : "").trim() || extractAssistantText(response.messages as ModelMessage[]);
     } catch (error) {
       finalText = "I hit a timeout while working on that. I may have updated the library; retry the task and I will continue from there.";
