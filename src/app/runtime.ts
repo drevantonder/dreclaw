@@ -97,6 +97,7 @@ export class BotRuntime {
       `google: ${googleLinked ? "linked" : "not linked"}`,
       `busy: ${busy}`,
       `cancel_requested: ${persistedRunStatus.cancelRequested ? "yes" : "no"}`,
+      `stopped: ${persistedRunStatus.stoppedAt ? "yes" : "no"}`,
       `running_for: ${isRunStatusActive(persistedRunStatus) ? formatDurationSince(persistedRunStatus.startedAt) : "-"}`,
       `last_heartbeat: ${formatElapsedSince(persistedRunStatus.lastHeartbeatAt)}`,
       `verbose: ${(controls?.verbose ?? state.verbose) ? "on" : "off"}`,
@@ -261,16 +262,22 @@ export class BotRuntime {
     } catch (error) {
       if (isRunCancelledError(error)) {
         heartbeat.stop();
-      state = markRunFinished(state);
-      await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
-      try {
-        await thread.post("Stopped.");
-      } catch {
-        // noop
+        const persisted = await getPersistedRunStatus(this.env.DRECLAW_DB, thread.id);
+        state = markRunFinished(state);
+        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, {
+          ...state.runStatus,
+          stoppedAt: persisted?.stoppedAt ?? new Date().toISOString(),
+        });
+        if (!persisted?.stoppedAt) {
+          try {
+            await thread.post("Stopped.");
+          } catch {
+            // noop
+          }
+        }
+        state = await this.mergeAsyncControls(thread.id, state);
+        return stripEphemeralState(state);
       }
-      state = await this.mergeAsyncControls(thread.id, state);
-      return stripEphemeralState(state);
-    }
       finalText = await this.recoverTimedOutRun({
         model,
         userText: userText || "[image]",
@@ -367,7 +374,7 @@ export class BotRuntime {
 
   private async throwIfCancelled(threadId: string): Promise<void> {
     const status = await getPersistedRunStatus(this.env.DRECLAW_DB, threadId);
-    if (status?.cancelRequested) throw new RunCancelledError();
+    if (status?.cancelRequested || status?.stoppedAt) throw new RunCancelledError();
   }
 
   private async mergeAsyncControls(threadId: string, state: BotThreadState): Promise<BotThreadState> {
@@ -982,6 +989,7 @@ function idleRunStatus() {
     lastHeartbeatAt: null,
     cancelRequested: false,
     cancelRequestedAt: null,
+    stoppedAt: null,
   };
 }
 
@@ -995,6 +1003,7 @@ function markRunStarted(state: BotThreadState): BotThreadState {
       lastHeartbeatAt: nowIso,
       cancelRequested: false,
       cancelRequestedAt: null,
+      stoppedAt: null,
     },
   };
 }

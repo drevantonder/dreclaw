@@ -22,7 +22,7 @@ export default {
       const update = (await request.clone().json().catch(() => null)) as TelegramUpdate | null;
       const firstSeen = update?.update_id ? await markUpdateSeen(env.DRECLAW_DB, update.update_id) : true;
       if (!firstSeen) return new Response("ok");
-      if (update && await maybeHandleAsyncTelegramCommand(env, update)) {
+      if (update && await maybeHandleAsyncTelegramCommand(env, update, (task) => ctx.waitUntil(task))) {
         return new Response("ok");
       }
       const bot = createBot(env);

@@ -88,6 +88,7 @@ export interface PersistedRunStatus {
   lastHeartbeatAt: string | null;
   cancelRequested: boolean;
   cancelRequestedAt: string | null;
+  stoppedAt: string | null;
 }
 
 export interface PersistedThreadControls {
@@ -132,6 +133,21 @@ export async function requestPersistedRunStop(db: D1Database, threadId: string):
     ...current,
     cancelRequested: true,
     cancelRequestedAt: nowIso,
+  };
+  await setPersistedRunStatus(db, threadId, next);
+  return next;
+}
+
+export async function finalizePersistedRunStop(db: D1Database, threadId: string): Promise<PersistedRunStatus | null> {
+  const current = await getPersistedRunStatus(db, threadId);
+  if (!current) return null;
+  const nowIso = new Date().toISOString();
+  const next: PersistedRunStatus = {
+    ...current,
+    running: false,
+    cancelRequested: false,
+    cancelRequestedAt: current.cancelRequestedAt,
+    stoppedAt: nowIso,
   };
   await setPersistedRunStatus(db, threadId, next);
   return next;

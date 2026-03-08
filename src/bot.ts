@@ -4,6 +4,7 @@ import { BotRuntime } from "./app/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "./app/state";
 import { createD1StateAdapter } from "./chat-state";
 import {
+  finalizePersistedRunStop,
   getPersistedRunStatus,
   getPersistedThreadControls,
   getThreadStateSnapshot,
@@ -63,7 +64,11 @@ export function createBot(env: Env) {
   return bot;
 }
 
-export async function maybeHandleAsyncTelegramCommand(env: Env, update: TelegramUpdate): Promise<boolean> {
+export async function maybeHandleAsyncTelegramCommand(
+  env: Env,
+  update: TelegramUpdate,
+  schedule?: (promise: Promise<unknown>) => void,
+): Promise<boolean> {
   const message = update.message;
   const text = message?.text?.trim() ?? "";
   if (!message || !text.startsWith("/")) return false;
@@ -77,6 +82,7 @@ export async function maybeHandleAsyncTelegramCommand(env: Env, update: Telegram
     chatId: message.chat.id,
     telegramUserId: Number(message.from?.id ?? 0),
     text,
+    schedule,
   });
   return true;
 }
@@ -88,8 +94,9 @@ async function handleAsyncCommand(params: {
   chatId: number;
   telegramUserId: number;
   text: string;
+  schedule?: (promise: Promise<unknown>) => void;
 }): Promise<void> {
-  const { env, runtime, threadId, chatId, telegramUserId, text } = params;
+  const { env, runtime, threadId, chatId, telegramUserId, text, schedule } = params;
   const [command, value] = text.split(/\s+/, 2);
   const lowered = command.toLowerCase();
   const state = normalizeBotThreadState(await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId));
@@ -122,6 +129,7 @@ async function handleAsyncCommand(params: {
     }
     await requestPersistedRunStop(env.DRECLAW_DB, threadId);
     await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Stopping current run...");
+    schedule?.(watchForStoppedRun(env, threadId, chatId));
     return;
   }
 
@@ -198,4 +206,30 @@ function isRunBusy(runStatus: BotThreadState["runStatus"]): boolean {
 
 function busyMessage(command: string): string {
   return `Currently busy. Not executed. Run ${command} again when not busy.`;
+}
+
+async function watchForStoppedRun(env: Env, threadId: string, chatId: number): Promise<void> {
+  await sleep(12_000);
+  const status = await getPersistedRunStatus(env.DRECLAW_DB, threadId);
+  if (!status?.running && status?.stoppedAt) return;
+  if (!status?.cancelRequested || !status.lastHeartbeatAt || isRunBusy(status)) return;
+  const finalized = await finalizePersistedRunStop(env.DRECLAW_DB, threadId);
+  if (!finalized?.stoppedAt) return;
+  const state = normalizeBotThreadState(await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId));
+  await setThreadStateSnapshot(env.DRECLAW_DB, threadId, {
+    ...state,
+    runStatus: {
+      running: false,
+      startedAt: null,
+      lastHeartbeatAt: null,
+      cancelRequested: false,
+      cancelRequestedAt: null,
+      stoppedAt: finalized.stoppedAt,
+    },
+  });
+  await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Stopped.");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
