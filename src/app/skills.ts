@@ -53,6 +53,7 @@ Rules:
 - Prefer reusable helpers under /scripts/google/... for repeatable workflows.
 - For multi-step flows, write a helper module with export async function run(input) { ... }.
 - For inbox summaries, fetch the list first, then fetch each message with format: 'metadata' and metadataHeaders: ['From', 'Subject', 'Date'].
+- For user-facing summaries, return one final formatted string instead of a raw array when possible.
 
 Shapes:
 - Gmail list: list.result?.messages
@@ -87,6 +88,10 @@ return {
   headers: msg.result?.payload?.headers || [],
   snippet: msg.result?.snippet || '',
 };
+~~~
+
+~~~js
+return items.map((item, index) => String(index + 1) + '. ' + item.subject + ' - ' + item.snippet).join('\\n');
 ~~~
 
 ~~~js

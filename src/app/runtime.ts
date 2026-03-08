@@ -315,7 +315,7 @@ export class BotRuntime {
       }),
       execute: tool({
         description:
-          "Run JavaScript in QuickJS runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, built-in global `google`, and imports from vfs:/... . Return the final value explicitly. Load relevant skills first for specialized guidance.",
+          "Run JavaScript in QuickJS runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, built-in global `google`, and imports from vfs:/... . Return the final value explicitly. For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
         inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
         execute: async (input) => {
           const writes: string[] = [];
@@ -693,6 +693,9 @@ function renderFailureHints(history: BotThreadState["history"]): string {
   if (/endpoint/i.test(recent)) hints.push("- `google.execute` accepts only `service`, `version`, `method`, `params`, and `body`.");
   if (/return not in a function/i.test(recent)) hints.push("- In execute scripts, explicitly `return` the final value from top-level async code.");
   if (/expecting '\}'|expecting "\}"/i.test(recent)) hints.push("- When writing module source, prefer small strings or array joins over fragile nested template literals.");
+  if (/tool=execute[\s\S]*output=.*"result":null/i.test(recent) || /Tool result: execute ok[\s\S]*"result":null/i.test(recent)) {
+    hints.push("- If an execute run returns null, retry with a plain JSON-safe result; for summaries, return one final string.");
+  }
   return hints.join("\n");
 }
 
