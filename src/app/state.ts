@@ -5,12 +5,19 @@ export type ConversationEntry = {
   content: string;
 };
 
+export interface RunStatus {
+  running: boolean;
+  startedAt: string | null;
+  lastHeartbeatAt: string | null;
+}
+
 export interface BotThreadState {
   history: ConversationEntry[];
   memoryTurns: number;
   verbose: boolean;
   codeRuntime: CodeRuntimeState;
   loadedSkills: string[];
+  runStatus: RunStatus;
 }
 
 export function normalizeBotThreadState(input: BotThreadState | null | undefined): BotThreadState {
@@ -32,6 +39,14 @@ export function normalizeBotThreadState(input: BotThreadState | null | undefined
     loadedSkills: Array.isArray(source?.loadedSkills)
       ? source.loadedSkills.filter((skill): skill is string => typeof skill === "string" && skill.trim().length > 0).slice(-12)
       : [],
+    runStatus: {
+      running: Boolean(source?.runStatus?.running),
+      startedAt: typeof source?.runStatus?.startedAt === "string" && source.runStatus.startedAt.trim() ? source.runStatus.startedAt : null,
+      lastHeartbeatAt:
+        typeof source?.runStatus?.lastHeartbeatAt === "string" && source.runStatus.lastHeartbeatAt.trim()
+          ? source.runStatus.lastHeartbeatAt
+          : null,
+    },
   };
 }
 

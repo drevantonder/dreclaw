@@ -3,6 +3,7 @@ import type { Env } from "../../src/types";
 type SqlResult = { meta: { changes?: number } };
 
 export class FakeD1 {
+  readonly telegramUpdates = new Set<number>();
   readonly oauthStates = new Map<string, Record<string, unknown>>();
   readonly oauthTokens = new Map<string, Record<string, unknown>>();
   readonly vfsEntries = new Map<string, Record<string, unknown>>();
@@ -42,6 +43,12 @@ export class FakeD1 {
         used_at: null,
         created_at: String(args[4]),
       });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT OR IGNORE INTO telegram_updates")) {
+      const updateId = Number(args[0]);
+      if (this.telegramUpdates.has(updateId)) return { meta: { changes: 0 } };
+      this.telegramUpdates.add(updateId);
       return { meta: { changes: 1 } };
     }
     if (sql.includes("UPDATE google_oauth_states SET used_at")) {

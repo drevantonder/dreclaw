@@ -1,9 +1,9 @@
 import { decodeEncryptionKey, encryptSecret } from "./crypto";
-import { getGoogleOAuthState, markGoogleOAuthStateUsed, upsertGoogleOAuthToken } from "./db";
-import { createBot } from "./bot";
+import { getGoogleOAuthState, markGoogleOAuthStateUsed, markUpdateSeen, upsertGoogleOAuthToken } from "./db";
+import { createBot, maybeHandleAsyncTelegramCommand } from "./bot";
 import { exchangeGoogleOAuthCode, getGoogleOAuthConfig } from "./google-oauth";
 import { sendTelegramTextMessage } from "./telegram-api";
-import type { Env } from "./types";
+import type { Env, TelegramUpdate } from "./types";
 
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 
@@ -16,6 +16,15 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/telegram/webhook") {
+      if (request.headers.get("x-telegram-bot-api-secret-token") !== env.TELEGRAM_WEBHOOK_SECRET) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const update = (await request.clone().json().catch(() => null)) as TelegramUpdate | null;
+      const firstSeen = update?.update_id ? await markUpdateSeen(env.DRECLAW_DB, update.update_id) : true;
+      if (!firstSeen) return new Response("ok");
+      if (update && await maybeHandleAsyncTelegramCommand(env, update)) {
+        return new Response("ok");
+      }
       const bot = createBot(env);
       return bot.webhooks.telegram(request, {
         waitUntil: (task) => ctx.waitUntil(task),

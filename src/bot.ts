@@ -3,7 +3,9 @@ import { Chat, type Message, type Thread } from "chat";
 import { BotRuntime } from "./app/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "./app/state";
 import { createD1StateAdapter } from "./chat-state";
-import type { Env } from "./types";
+import { getPersistedRunStatus, getThreadStateSnapshot, setThreadStateSnapshot } from "./db";
+import { sendTelegramTextMessage } from "./telegram-api";
+import type { Env, TelegramUpdate } from "./types";
 
 export function createBot(env: Env) {
   const adapters = {
@@ -26,17 +28,23 @@ export function createBot(env: Env) {
   const handleIncoming = async (thread: Thread<BotThreadState>, message: Message, subscribe: boolean) => {
     if (!isTelegramPrivateMessage(message.raw)) return;
     if (!isAllowedUser(env, message)) return;
-    if (subscribe) await thread.subscribe();
-
-    const currentState = normalizeBotThreadState(await thread.state);
     const text = message.text.trim();
 
     if (text.startsWith("/")) {
-      const nextState = await handleCommand(runtime, thread, message, currentState, text);
-      await thread.setState(nextState, { replace: true });
+      await handleAsyncCommand({
+        env,
+        runtime,
+        threadId: thread.id,
+        chatId: getTelegramUserChatId(message.raw, thread.id),
+        telegramUserId: Number(message.author.userId || 0),
+        text,
+      });
       return;
     }
 
+    if (subscribe) await thread.subscribe();
+
+    const currentState = normalizeBotThreadState(await thread.state);
     const nextState = await runtime.runConversation({ thread, message, state: currentState });
     await thread.setState(nextState, { replace: true });
   };
@@ -46,50 +54,100 @@ export function createBot(env: Env) {
   return bot;
 }
 
-async function handleCommand(
-  runtime: BotRuntime,
-  thread: Thread<BotThreadState>,
-  message: Message,
-  state: BotThreadState,
-  text: string,
-): Promise<BotThreadState> {
+export async function maybeHandleAsyncTelegramCommand(env: Env, update: TelegramUpdate): Promise<boolean> {
+  const message = update.message;
+  const text = message?.text?.trim() ?? "";
+  if (!message || !text.startsWith("/")) return false;
+  if (message.chat.type !== "private") return false;
+  if (String(message.from?.id ?? "") !== String(env.TELEGRAM_ALLOWED_USER_ID).trim()) return false;
+
+  await handleAsyncCommand({
+    env,
+    runtime: new BotRuntime(env),
+    threadId: `telegram:${message.chat.id}`,
+    chatId: message.chat.id,
+    telegramUserId: Number(message.from?.id ?? 0),
+    text,
+  });
+  return true;
+}
+
+async function handleAsyncCommand(params: {
+  env: Env;
+  runtime: BotRuntime;
+  threadId: string;
+  chatId: number;
+  telegramUserId: number;
+  text: string;
+}): Promise<void> {
+  const { env, runtime, threadId, chatId, telegramUserId, text } = params;
   const [command, value] = text.split(/\s+/, 2);
   const lowered = command.toLowerCase();
+  const state = normalizeBotThreadState(await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId));
+  const runStatus = (await getPersistedRunStatus(env.DRECLAW_DB, threadId)) ?? state.runStatus;
+  const busy = isRunBusy(runStatus);
 
   if (lowered === "/help") {
-    await thread.post(runtime.help());
-    return state;
-  }
-  if (lowered === "/status") {
-    await thread.post(await runtime.status(thread.id, state));
-    return state;
-  }
-  if (lowered === "/reset") {
-    const next = runtime.reset(state);
-    await thread.post("Session reset. Conversation context cleared.");
-    return next;
-  }
-  if (lowered === "/factory-reset") {
-    const next = await runtime.factoryReset(getTelegramUserChatId(message.raw, thread.id));
-    await thread.post("Factory reset complete. Conversation, memory, runtime state, and VFS cleared.");
-    return next;
-  }
-  if (lowered === "/verbose") {
-    if (value !== "on" && value !== "off") {
-      await thread.post(`verbose: ${state.verbose ? "on" : "off"}\nusage: /verbose on|off`);
-      return state;
-    }
-    const next = runtime.setVerbose(state, value === "on");
-    await thread.post(`verbose ${value === "on" ? "enabled" : "disabled"}.`);
-    return next;
-  }
-  if (lowered === "/google") {
-    await thread.post(await runtime.handleGoogleCommand(text, getTelegramUserChatId(message.raw, thread.id), Number(message.author.userId || 0)));
-    return state;
+    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, runtime.help());
+    return;
   }
 
-  await thread.post(runtime.help());
-  return state;
+  if (lowered === "/status") {
+    await sendTelegramTextMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      chatId,
+      await runtime.status(threadId, {
+        ...state,
+        runStatus,
+      }),
+    );
+    return;
+  }
+
+  if (lowered === "/reset") {
+    if (busy) {
+      await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, busyMessage(lowered));
+      return;
+    }
+    const next = runtime.reset(state);
+    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
+    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Session reset. Conversation context cleared.");
+    return;
+  }
+
+  if (lowered === "/factory-reset") {
+    if (busy) {
+      await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, busyMessage(lowered));
+      return;
+    }
+    const next = await runtime.factoryReset(chatId);
+    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
+    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Factory reset complete. Conversation, memory, runtime state, and VFS cleared.");
+    return;
+  }
+
+  if (lowered === "/verbose") {
+    if (value !== "on" && value !== "off") {
+      await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, `verbose: ${state.verbose ? "on" : "off"}\nusage: /verbose on|off`);
+      return;
+    }
+    const next = runtime.setVerbose(state, value === "on");
+    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
+    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, `verbose ${value === "on" ? "enabled" : "disabled"}.`);
+    return;
+  }
+
+  if (lowered === "/google") {
+    const action = text.split(/\s+/, 3)[1]?.toLowerCase() ?? "";
+    if (busy && (action === "connect" || action === "disconnect")) {
+      await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, busyMessage(`/google ${action}`));
+      return;
+    }
+    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, await runtime.handleGoogleCommand(text, chatId, telegramUserId));
+    return;
+  }
+
+  await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, runtime.help());
 }
 
 function isAllowedUser(env: Env, message: Message): boolean {
@@ -106,4 +164,14 @@ function getTelegramUserChatId(raw: unknown, threadId: string): number {
   const fromThread = Number(threadId.split(":").at(-1));
   if (Number.isFinite(fromThread)) return fromThread;
   throw new Error("Missing Telegram chat id");
+}
+
+function isRunBusy(runStatus: BotThreadState["runStatus"]): boolean {
+  if (!runStatus.running || !runStatus.lastHeartbeatAt) return false;
+  const deltaMs = Date.now() - Date.parse(runStatus.lastHeartbeatAt);
+  return Number.isFinite(deltaMs) && deltaMs >= 0 && deltaMs <= 15_000;
+}
+
+function busyMessage(command: string): string {
+  return `Currently busy. Not executed. Run ${command} again when not busy.`;
 }

@@ -82,6 +82,12 @@ export interface MemoryFactRecord {
   supersededBy: string | null;
 }
 
+export interface PersistedRunStatus {
+  running: boolean;
+  startedAt: string | null;
+  lastHeartbeatAt: string | null;
+}
+
 export async function markUpdateSeen(db: D1Database, updateId: number): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
@@ -90,6 +96,26 @@ export async function markUpdateSeen(db: D1Database, updateId: number): Promise<
       .run();
     return Boolean(result.meta.changes && result.meta.changes > 0);
   }, 150);
+}
+
+export async function getThreadStateSnapshot<T>(db: D1Database, threadId: string): Promise<T | null> {
+  return getChatStateValue<T>(db, threadStateKey(threadId));
+}
+
+export async function setThreadStateSnapshot<T>(db: D1Database, threadId: string, value: T): Promise<void> {
+  await setChatStateValue(db, threadStateKey(threadId), value);
+}
+
+export async function getPersistedRunStatus(db: D1Database, threadId: string): Promise<PersistedRunStatus | null> {
+  return getChatStateValue<PersistedRunStatus>(db, runStatusKey(threadId));
+}
+
+export async function setPersistedRunStatus(db: D1Database, threadId: string, value: PersistedRunStatus): Promise<void> {
+  await setChatStateValue(db, runStatusKey(threadId), value);
+}
+
+export async function clearPersistedRunStatus(db: D1Database, threadId: string): Promise<void> {
+  await deleteChatStateValue(db, runStatusKey(threadId));
 }
 
 export async function createGoogleOAuthState(
@@ -462,6 +488,40 @@ function mapGoogleOAuthStateRecord(row: Record<string, unknown>): GoogleOAuthSta
     usedAt: row.used_at === null || row.used_at === undefined ? null : String(row.used_at),
     createdAt: String(row.created_at ?? ""),
   };
+}
+
+async function getChatStateValue<T>(db: D1Database, key: string): Promise<T | null> {
+  return retryOnce(async () => {
+    const row = await db.prepare("SELECT value_json FROM chat_state_kv WHERE key = ?").bind(key).first<Record<string, unknown>>();
+    if (!row?.value_json || typeof row.value_json !== "string") return null;
+    return JSON.parse(row.value_json) as T;
+  }, 150);
+}
+
+async function setChatStateValue<T>(db: D1Database, key: string, value: T): Promise<void> {
+  const nowIso = new Date().toISOString();
+  await retryOnce(async () => {
+    await db
+      .prepare(
+        "INSERT INTO chat_state_kv (key, value_json, expires_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, expires_at = NULL, updated_at = excluded.updated_at",
+      )
+      .bind(key, JSON.stringify(value), null, nowIso)
+      .run();
+  }, 150);
+}
+
+async function deleteChatStateValue(db: D1Database, key: string): Promise<void> {
+  await retryOnce(async () => {
+    await db.prepare("DELETE FROM chat_state_kv WHERE key = ?").bind(key).run();
+  }, 150);
+}
+
+function threadStateKey(threadId: string): string {
+  return `thread-state:${threadId}`;
+}
+
+function runStatusKey(threadId: string): string {
+  return `run-status:${threadId}`;
 }
 
 function mapGoogleOAuthTokenRecord(row: Record<string, unknown>): GoogleOAuthTokenRecord {

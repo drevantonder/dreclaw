@@ -12,12 +12,14 @@ import {
   deleteOldMemoryEpisodes,
   deleteVfsEntry,
   getGoogleOAuthToken,
+  getPersistedRunStatus,
   getVfsEntry,
   getVfsRevision,
   insertMemoryEpisode,
   listActiveMemoryFacts,
   listVfsEntries,
   putVfsEntry,
+  setPersistedRunStatus,
   upsertSimilarMemoryFact,
 } from "../db";
 import {
@@ -73,6 +75,7 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 25_000;
+const RUN_HEARTBEAT_INTERVAL_MS = 4_000;
 const SYSTEM_PROMPT =
   "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. If an execute script fails, simplify it immediately instead of retrying the same shape. search is only for local runtime/package introspection, not web search.";
 
@@ -83,11 +86,16 @@ export class BotRuntime {
     const runtime = this.getRuntimeConfig();
     const memory = this.getMemoryConfigSafe();
     const googleLinked = Boolean(await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL));
+    const persistedRunStatus = (await getPersistedRunStatus(this.env.DRECLAW_DB, threadId)) ?? state.runStatus;
+    const busy = formatBusyState(persistedRunStatus);
     return [
       `model: ${runtime.model}`,
       `provider: ${runtime.provider}`,
       `memory: ${memory.enabled ? "on" : "off"}`,
       `google: ${googleLinked ? "linked" : "not linked"}`,
+      `busy: ${busy}`,
+      `running_for: ${isRunStatusActive(persistedRunStatus) ? formatDurationSince(persistedRunStatus.startedAt) : "-"}`,
+      `last_heartbeat: ${formatElapsedSince(persistedRunStatus.lastHeartbeatAt)}`,
       `verbose: ${state.verbose ? "on" : "off"}`,
       `history: ${state.history.length}`,
       `thread: ${threadId}`,
@@ -112,6 +120,7 @@ export class BotRuntime {
     return {
       ...state,
       history: [],
+      runStatus: idleRunStatus(),
     };
   }
 
@@ -195,6 +204,9 @@ export class BotRuntime {
     const memoryContext = await this.renderMemoryContext(chatId, userText || "[image message]");
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
     const messages = buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks);
+    state = markRunStarted(state);
+    await thread.setState(stripEphemeralState(state), { replace: true });
+    await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
 
     const agent = new ToolLoopAgent({
       model,
@@ -211,11 +223,16 @@ export class BotRuntime {
       }),
     });
 
+    const heartbeat = this.createRunHeartbeat(thread, () => state, (nextState) => {
+      state = nextState;
+    });
+
     try {
       await thread.startTyping();
     } catch {
       // noop
     }
+    heartbeat.start();
 
     let finalText = "";
     const runTimeoutMs = getRunTimeoutMs(userText);
@@ -246,7 +263,10 @@ export class BotRuntime {
       for (const trace of toolTraces) {
         state = pushHistory(state, "tool", renderToolTranscript(trace));
       }
+      state = markRunFinished(state);
       state = pushHistory(state, "assistant", finalText);
+      heartbeat.stop();
+      await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
       return stripEphemeralState(state);
     }
 
@@ -255,6 +275,9 @@ export class BotRuntime {
       state = pushHistory(state, "tool", renderToolTranscript(trace));
     }
     if (finalText) state = pushHistory(state, "assistant", finalText);
+    state = markRunFinished(state);
+    heartbeat.stop();
+    await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
 
     await this.persistMemoryTurn({
       chatId,
@@ -265,6 +288,47 @@ export class BotRuntime {
     });
     state.memoryTurns += 1;
     return stripEphemeralState(state);
+  }
+
+  private createRunHeartbeat(
+    thread: Thread<BotThreadState>,
+    getState: () => BotThreadState,
+    setState: (state: BotThreadState) => void,
+  ) {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        await thread.startTyping();
+      } catch {
+        // noop
+      }
+      const nextState = touchRunHeartbeat(getState());
+      setState(nextState);
+      try {
+        await thread.setState(stripEphemeralState(nextState), { replace: true });
+      } catch {
+        // noop
+      }
+      try {
+        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, nextState.runStatus);
+      } catch {
+        // noop
+      }
+      if (!stopped) timer = setTimeout(() => void tick(), RUN_HEARTBEAT_INTERVAL_MS);
+    };
+
+    return {
+      start() {
+        if (!timer) timer = setTimeout(() => void tick(), RUN_HEARTBEAT_INTERVAL_MS);
+      },
+      stop() {
+        stopped = true;
+        if (timer) clearTimeout(timer);
+      },
+    };
   }
 
   private createAgentTools(params: {
@@ -844,6 +908,44 @@ function stripEphemeralState(state: BotThreadState): BotThreadState {
   };
 }
 
+function idleRunStatus() {
+  return {
+    running: false,
+    startedAt: null,
+    lastHeartbeatAt: null,
+  };
+}
+
+function markRunStarted(state: BotThreadState): BotThreadState {
+  const nowIso = new Date().toISOString();
+  return {
+    ...state,
+    runStatus: {
+      running: true,
+      startedAt: nowIso,
+      lastHeartbeatAt: nowIso,
+    },
+  };
+}
+
+function touchRunHeartbeat(state: BotThreadState): BotThreadState {
+  if (!state.runStatus.running) return state;
+  return {
+    ...state,
+    runStatus: {
+      ...state.runStatus,
+      lastHeartbeatAt: new Date().toISOString(),
+    },
+  };
+}
+
+function markRunFinished(state: BotThreadState): BotThreadState {
+  return {
+    ...state,
+    runStatus: idleRunStatus(),
+  };
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -876,6 +978,41 @@ function getRunTimeoutMs(userText: string): number {
     return 22_000;
   }
   return DEFAULT_RUN_TIMEOUT_MS;
+}
+
+function formatElapsedSince(iso: string | null): string {
+  if (!iso) return "-";
+  const deltaMs = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "-";
+  const seconds = Math.floor(deltaMs / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  return remSeconds ? `${minutes}m ${remSeconds}s ago` : `${minutes}m ago`;
+}
+
+function formatBusyState(runStatus: BotThreadState["runStatus"]): string {
+  if (isRunStatusActive(runStatus)) return "yes";
+  if (runStatus.running) return "stale";
+  return "no";
+}
+
+function isRunStatusActive(runStatus: BotThreadState["runStatus"]): boolean {
+  if (!runStatus.running) return false;
+  if (!runStatus.lastHeartbeatAt) return false;
+  const deltaMs = Date.now() - Date.parse(runStatus.lastHeartbeatAt);
+  return Number.isFinite(deltaMs) && deltaMs >= 0 && deltaMs <= 15_000;
+}
+
+function formatDurationSince(iso: string | null): string {
+  if (!iso) return "-";
+  const deltaMs = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "-";
+  const seconds = Math.floor(deltaMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
 }
 
 function inferImplicitSkillNames(userText: string): string[] {
