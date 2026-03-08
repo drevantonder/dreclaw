@@ -199,7 +199,7 @@ export class BotRuntime {
 
     const agent = new ToolLoopAgent({
       model,
-      stopWhen: stepCountIs(8),
+      stopWhen: stepCountIs(12),
       providerOptions: this.getAgentProviderOptions(runtime),
       tools: this.createAgentTools({
         chatId,
