@@ -56,7 +56,7 @@ Rules:
 - For inbox summaries, fetch the list first, then fetch each message with format: 'metadata' and metadataHeaders: ['From', 'Subject', 'Date'].
 - For user-facing summaries, return one final formatted string instead of a raw array when possible.
 - For final formatting, prefer building lines with string concatenation and join('\n') rather than complex template literals.
-- Keep Google execute runs small. Prefer one list call or one detail call per execute run, then summarize outside the script if needed.
+- Keep Google execute runs very small. Use at most one google.execute call per execute run. For summaries, chain several short execute runs instead of looping over many Google calls in one script.
 
 Shapes:
 - Gmail list: list.result?.messages

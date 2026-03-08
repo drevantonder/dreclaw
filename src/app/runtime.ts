@@ -692,8 +692,8 @@ function renderTaskGuidance(userText: string): string {
   const text = String(userText ?? "").toLowerCase();
   const lines: string[] = [];
   if (/gmail|email|inbox/.test(text)) {
-    lines.push("- For Gmail summaries, prefer multiple small execute runs over one long loop with many google.execute calls.");
-    lines.push("- Good pattern: one execute run to list ids, one or more execute runs to fetch details, one final execute run to format a string summary.");
+    lines.push("- For Gmail summaries, use at most one google.execute call per execute run.");
+    lines.push("- Good pattern: one execute run to list ids, one execute run per message detail, one final execute run to format a string summary.");
   }
   if (/calendar/.test(text)) {
     lines.push("- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.");
@@ -710,8 +710,9 @@ function renderFailureHints(history: BotThreadState["history"]): string {
   if (/expecting '\}'|expecting "\}"/i.test(recent)) hints.push("- When writing module source, prefer small strings or array joins over fragile nested template literals.");
   if (/expecting ','/i.test(recent)) hints.push("- Avoid large template literals in execute scripts; build summary lines with string concatenation and join().");
   if (/"result":null/i.test(recent) && /googleCalls":2/i.test(recent)) {
-    hints.push("- Keep Google execute runs small: fetch ids in one execute run, then fetch details in separate execute runs.");
+    hints.push("- Use at most one google.execute call per execute run; fetch ids first, then fetch each detail in its own execute run.");
   }
+  if (/function signature mismatch/i.test(recent)) hints.push("- In this runtime, avoid multiple google.execute calls in one execute run.");
   if (/tool=execute[\s\S]*output=.*"result":null/i.test(recent) || /Tool result: execute ok[\s\S]*"result":null/i.test(recent)) {
     hints.push("- If an execute run returns null, retry with a plain JSON-safe result; for summaries, return one final string.");
   }
