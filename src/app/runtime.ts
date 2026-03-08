@@ -694,6 +694,9 @@ function renderFailureHints(history: BotThreadState["history"]): string {
   if (/return not in a function/i.test(recent)) hints.push("- In execute scripts, explicitly `return` the final value from top-level async code.");
   if (/expecting '\}'|expecting "\}"/i.test(recent)) hints.push("- When writing module source, prefer small strings or array joins over fragile nested template literals.");
   if (/expecting ','/i.test(recent)) hints.push("- Avoid large template literals in execute scripts; build summary lines with string concatenation and join().");
+  if (/"result":null/i.test(recent) && /googleCalls":2/i.test(recent)) {
+    hints.push("- Keep Google execute runs small: fetch ids in one execute run, then fetch details in separate execute runs.");
+  }
   if (/tool=execute[\s\S]*output=.*"result":null/i.test(recent) || /Tool result: execute ok[\s\S]*"result":null/i.test(recent)) {
     hints.push("- If an execute run returns null, retry with a plain JSON-safe result; for summaries, return one final string.");
   }
