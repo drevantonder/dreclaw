@@ -694,6 +694,7 @@ function renderTaskGuidance(userText: string): string {
   if (/gmail|email|inbox/.test(text)) {
     lines.push("- For Gmail summaries, use at most one google.execute call per execute run.");
     lines.push("- Good pattern: one execute run to list ids, one execute run per message detail, one final execute run to format a string summary.");
+    lines.push("- For detail fetch runs, return a JSON string or plain string, not a raw object literal.");
   }
   if (/calendar/.test(text)) {
     lines.push("- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.");
@@ -713,6 +714,7 @@ function renderFailureHints(history: BotThreadState["history"]): string {
     hints.push("- Use at most one google.execute call per execute run; fetch ids first, then fetch each detail in its own execute run.");
   }
   if (/function signature mismatch/i.test(recent)) hints.push("- In this runtime, avoid multiple google.execute calls in one execute run.");
+  if (/expecting ':'/i.test(recent)) hints.push("- Avoid returning raw object literals from execute scripts; assign to a const and return JSON.stringify(value) or a plain string.");
   if (/tool=execute[\s\S]*output=.*"result":null/i.test(recent) || /Tool result: execute ok[\s\S]*"result":null/i.test(recent)) {
     hints.push("- If an execute run returns null, retry with a plain JSON-safe result; for summaries, return one final string.");
   }
