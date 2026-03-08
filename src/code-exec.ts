@@ -328,9 +328,24 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
 
     const settleResult = await vm.evalCodeAsync(`
       globalThis.__exec_error = null;
+      globalThis.__exec_result_json = null;
       Promise.resolve(globalThis.__last_eval_result)
         .then((value) => {
-          globalThis.__exec_result = value;
+          try {
+            if (value === undefined) {
+              globalThis.__exec_result_json = JSON.stringify({ __dreclaw_type: "undefined" });
+              return;
+            }
+            const json = JSON.stringify(value);
+            globalThis.__exec_result_json = json === undefined
+              ? JSON.stringify({ __dreclaw_type: "undefined" })
+              : json;
+          } catch (_error) {
+            globalThis.__exec_result_json = JSON.stringify({
+              __dreclaw_type: "string",
+              value: String(value ?? ""),
+            });
+          }
         })
         .catch((error) => {
           const message = error && typeof error === "object" && "message" in error ? error.message : error;
@@ -347,7 +362,7 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
       throw new Error(errorText);
     }
 
-    const result = readGlobalJson(vm, "__exec_result");
+    const result = parseSerializedExecResult(readGlobalString(vm, "__exec_result_json"));
     valueHandle.dispose();
     return {
       ok: true,
@@ -1461,6 +1476,27 @@ function readGlobalJson(vm: QuickJsContext, key: string): unknown {
   } finally {
     resultHandle.dispose();
   }
+}
+
+function readGlobalString(vm: QuickJsContext, key: string): string | null {
+  const resultHandle = vm.getProp(vm.global, key);
+  try {
+    const value = vm.dump(resultHandle);
+    return typeof value === "string" ? value : value == null ? null : String(value);
+  } finally {
+    resultHandle.dispose();
+  }
+}
+
+function parseSerializedExecResult(text: string | null): unknown {
+  if (!text) return null;
+  const parsed = safeJsonParse(text);
+  if (parsed && typeof parsed === "object" && "__dreclaw_type" in parsed) {
+    const tag = String((parsed as Record<string, unknown>).__dreclaw_type ?? "");
+    if (tag === "undefined") return null;
+    if (tag === "string") return (parsed as Record<string, unknown>).value ?? "";
+  }
+  return parsed;
 }
 
 
