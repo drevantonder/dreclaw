@@ -73,7 +73,7 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Reuse VFS helpers when useful. Load relevant skills before specialized work. Do not narrate plans. search is only for local runtime/package introspection, not web search.";
+  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Reuse VFS helpers when useful. Trust relevant loaded skills over stale conversation patterns. Do not narrate plans. search is only for local runtime/package introspection, not web search.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -183,7 +183,7 @@ export class BotRuntime {
     const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
     const skillCatalog = await this.listSkills();
     promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
-    const loadedSkills = await this.getLoadedSkills(state.loadedSkills);
+    const loadedSkills = await this.getLoadedSkills([...state.loadedSkills, ...inferImplicitSkillNames(userText)]);
     if (loadedSkills.length) {
       promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
     }
@@ -670,6 +670,22 @@ function renderHistoryContext(history: BotThreadState["history"]): string {
   return history.map((entry) => `${entry.role}: ${entry.content}`).join("\n");
 }
 
+function inferImplicitSkillNames(userText: string): string[] {
+  const text = String(userText ?? "").toLowerCase();
+  const names = new Set<string>();
+  if (/gmail|email|inbox|calendar|drive|docs|sheets|google/.test(text)) {
+    names.add("google");
+    names.add("quickjs");
+  }
+  if (/script|helper|vfs|module|import/.test(text)) {
+    names.add("vfs");
+    names.add("quickjs");
+  }
+  if (/memory|remember|label/.test(text)) names.add("memory");
+  if (/skill|workflow/.test(text)) names.add("skill-authoring");
+  return [...names];
+}
+
 function renderFailureHints(history: BotThreadState["history"]): string {
   const recent = history.slice(-6).map((entry) => entry.content).join("\n");
   const hints: string[] = [];
@@ -695,6 +711,8 @@ function renderToolTranscript(trace: ToolTrace): string {
 }
 
 function renderTraceStart(name: string, args: Record<string, unknown>): string {
+  if (name === "load_skill") return `Tool: ${name}\nname: ${String(args.name ?? "")}`;
+  if (name === "list_skills") return `Tool: ${name}`;
   if (name === "execute") {
     const code = typeof args.code === "string" ? args.code : "";
     const input = Object.prototype.hasOwnProperty.call(args, "input") ? `\ninput: ${redactSensitiveText(serializeUnknown(args.input))}` : "";
@@ -710,6 +728,19 @@ function renderTraceResult(trace: ToolTrace): string {
       : trace.ok;
   const lines = [`Tool result: ${trace.name} ${trace.ok ? "ok" : "failed"}`];
   lines[0] = `Tool result: ${trace.name} ${executeOk ? "ok" : "failed"}`;
+  if (trace.ok && trace.name === "load_skill" && trace.output && typeof trace.output === "object") {
+    const output = trace.output as Record<string, unknown>;
+    lines.push(`loaded: ${String(output.name ?? "")}`);
+    lines.push(`scope: ${String(output.scope ?? "")}`);
+    lines.push(`path: ${String(output.path ?? "")}`);
+    return lines.join("\n");
+  }
+  if (trace.ok && trace.name === "list_skills" && trace.output && typeof trace.output === "object") {
+    const skills = Array.isArray((trace.output as { skills?: unknown[] }).skills) ? ((trace.output as { skills: unknown[] }).skills as unknown[]) : [];
+    lines.push(`skills: ${skills.length}`);
+    lines.push(`result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 600))}`);
+    return lines.join("\n");
+  }
   if (trace.writes?.length) lines.push(`writes: ${trace.writes.join(", ")}`);
   if (trace.ok) lines.push(`result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 1200))}`);
   else lines.push(`error: ${trace.error || "tool failed"}`);

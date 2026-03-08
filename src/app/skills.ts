@@ -23,12 +23,12 @@ Rules:
 
 Patterns:
 
-\
+~~~js
 const result = await fetch('https://example.com').then((r) => r.text());
 return result;
-\
+~~~
 
-\
+~~~js
 await fs.write({
   path: '/scripts/example.js',
   content: 'export async function run(input) { return input; }',
@@ -36,7 +36,7 @@ await fs.write({
 });
 const { run } = await import('vfs:/scripts/example.js');
 return await run({ ok: true });
-\
+~~~
 `,
   },
   {
@@ -52,6 +52,7 @@ Rules:
 - Never use endpoint.
 - Prefer reusable helpers under /scripts/google/... for repeatable workflows.
 - For multi-step flows, write a helper module with export async function run(input) { ... }.
+- For inbox summaries, fetch the list first, then fetch each message with format: 'metadata' and metadataHeaders: ['From', 'Subject', 'Date'].
 
 Shapes:
 - Gmail list: list.result?.messages
@@ -60,7 +61,7 @@ Shapes:
 
 Examples:
 
-\
+~~~js
 const list = await google.execute({
   service: 'gmail',
   version: 'v1',
@@ -68,9 +69,27 @@ const list = await google.execute({
   params: { userId: 'me', maxResults: 5 },
 });
 return list.result?.messages || [];
-\
+~~~
 
-\
+~~~js
+const msg = await google.execute({
+  service: 'gmail',
+  version: 'v1',
+  method: 'users.messages.get',
+  params: {
+    userId: 'me',
+    id,
+    format: 'metadata',
+    metadataHeaders: ['From', 'Subject', 'Date'],
+  },
+});
+return {
+  headers: msg.result?.payload?.headers || [],
+  snippet: msg.result?.snippet || '',
+};
+~~~
+
+~~~js
 const events = await google.execute({
   service: 'calendar',
   version: 'v3',
@@ -78,7 +97,7 @@ const events = await google.execute({
   params: { calendarId: 'primary', singleEvents: true },
 });
 return events.result?.items || [];
-\
+~~~
 `,
   },
   {
@@ -97,18 +116,18 @@ Rules:
 
 Examples:
 
-\
+~~~js
 await fs.write({
   path: '/scripts/google/gmail.js',
   content: "export async function run(input) { return input; }",
   overwrite: true,
 });
-\
+~~~
 
-\
+~~~js
 const files = await fs.list({ prefix: '/scripts/google' });
 return files;
-\
+~~~
 `,
   },
   {
@@ -125,14 +144,14 @@ Rules:
 
 Examples:
 
-\
+~~~js
 await memory.save({ text: 'User labels inbox summary tasks as WIZ-EMAIL', kind: 'preference' });
 return { ok: true };
-\
+~~~
 
-\
+~~~js
 return await memory.find({ query: 'recent inbox summary labels' });
-\
+~~~
 `,
   },
   {
@@ -152,7 +171,7 @@ Rules:
 
 Template:
 
-\
+~~~md
 ---
 name: inbox-summary
 description: Summarize recent Gmail messages with concise bullets. Use when the task asks for inbox summaries.
@@ -163,7 +182,7 @@ description: Summarize recent Gmail messages with concise bullets. Use when the 
 1. Load the google skill if needed.
 2. Fetch the relevant messages.
 3. Return a concise summary.
-\
+~~~
 `,
   },
 ] as const;

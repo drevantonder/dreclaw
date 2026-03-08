@@ -441,7 +441,7 @@ describe("chat sdk bot", () => {
     const output = [...sent, ...edited].join("\n");
     expect(output).toContain("Tool: list\\_skills");
     expect(output).toContain("Tool: load\\_skill");
-    expect(output).toContain('"name":"google"');
+    expect(output).toContain("loaded: google");
     expect(output).toContain("Loaded the google skill.");
   });
 });
