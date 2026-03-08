@@ -120,6 +120,7 @@ type HostStats = {
   packageInstalls: number;
   discoveryFetches: number;
   googleCalls: number;
+  activeHostOps: number;
   activeFetches: number;
   fetchWaiters: Array<() => void>;
 };
@@ -271,6 +272,7 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     packageInstalls: 0,
     discoveryFetches: 0,
     googleCalls: 0,
+    activeHostOps: 0,
     activeFetches: 0,
     fetchWaiters: [],
   };
@@ -604,37 +606,47 @@ function registerHostApi(
 
   const googleSchemaFn = vm.newAsyncifiedFunction("__host_google_schema", async (argsHandle) => {
     bumpHostCall(stats, limits.execMaxHostCalls);
-    const args = safeJsonParse(vm.getString(argsHandle));
-    if (!args || typeof args !== "object") {
-      throw new Error("google.schema requires payload object");
+    stats.activeHostOps += 1;
+    try {
+      const args = safeJsonParse(vm.getString(argsHandle));
+      if (!args || typeof args !== "object") {
+        throw new Error("google.schema requires payload object");
+      }
+      const payload = args as Record<string, unknown>;
+      const service = String(payload.service ?? "").trim();
+      const version = String(payload.version ?? "").trim();
+      const method = String(payload.method ?? "").trim();
+      const schema = await getGoogleMethodSchema(service, version, method, ctx, stats);
+      return vm.newString(JSON.stringify(schema));
+    } finally {
+      stats.activeHostOps -= 1;
     }
-    const payload = args as Record<string, unknown>;
-    const service = String(payload.service ?? "").trim();
-    const version = String(payload.version ?? "").trim();
-    const method = String(payload.method ?? "").trim();
-    const schema = await getGoogleMethodSchema(service, version, method, ctx, stats);
-    return vm.newString(JSON.stringify(schema));
   });
   vm.setProp(vm.global, "__host_google_schema", googleSchemaFn);
   googleSchemaFn.dispose();
 
   const googleCallFn = vm.newAsyncifiedFunction("__host_google_call", async (argsHandle) => {
     bumpHostCall(stats, limits.execMaxHostCalls);
-    const args = safeJsonParse(vm.getString(argsHandle));
-    if (!args || typeof args !== "object") {
-      throw new Error("google.execute requires payload object");
+    stats.activeHostOps += 1;
+    try {
+      const args = safeJsonParse(vm.getString(argsHandle));
+      if (!args || typeof args !== "object") {
+        throw new Error("google.execute requires payload object");
+      }
+      const payload = args as Record<string, unknown>;
+      const service = String(payload.service ?? "").trim();
+      const version = String(payload.version ?? "").trim();
+      const method = String(payload.method ?? "").trim();
+      const params =
+        payload.params && typeof payload.params === "object" && !Array.isArray(payload.params)
+          ? (payload.params as Record<string, unknown>)
+          : {};
+      const body = Object.prototype.hasOwnProperty.call(payload, "body") ? payload.body : undefined;
+      const result = await executeGoogleMethod({ service, version, method, params, body }, ctx, stats, googleAuthSession);
+      return vm.newString(JSON.stringify(result));
+    } finally {
+      stats.activeHostOps -= 1;
     }
-    const payload = args as Record<string, unknown>;
-    const service = String(payload.service ?? "").trim();
-    const version = String(payload.version ?? "").trim();
-    const method = String(payload.method ?? "").trim();
-    const params =
-      payload.params && typeof payload.params === "object" && !Array.isArray(payload.params)
-        ? (payload.params as Record<string, unknown>)
-        : {};
-    const body = Object.prototype.hasOwnProperty.call(payload, "body") ? payload.body : undefined;
-    const result = await executeGoogleMethod({ service, version, method, params, body }, ctx, stats, googleAuthSession);
-    return vm.newString(JSON.stringify(result));
   });
   vm.setProp(vm.global, "__host_google_call", googleCallFn);
   googleCallFn.dispose();
@@ -1310,7 +1322,7 @@ async function flushAsyncWork(
       throw new Error("Execution timed out");
     }
     runPendingJobs(runtime, maxJobs);
-    if (runtime.hasPendingJob() || stats.activeFetches > 0 || stats.fetchWaiters.length > 0) {
+    if (runtime.hasPendingJob() || stats.activeHostOps > 0 || stats.activeFetches > 0 || stats.fetchWaiters.length > 0) {
       idlePasses = 0;
     } else {
       idlePasses += 1;
