@@ -325,7 +325,6 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
 
     const valueHandle = await evalUserCodeWithAwaitFallback(vm, code);
     vm.setProp(vm.global, "__last_eval_result", valueHandle);
-    valueHandle.dispose();
 
     const settleResult = await vm.evalCodeAsync(`
       globalThis.__exec_error = null;
@@ -349,6 +348,7 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
     }
 
     const result = readGlobalJson(vm, "__exec_result");
+    valueHandle.dispose();
     return {
       ok: true,
       result: clampOutput(result, limits.execMaxOutputBytes),
@@ -403,9 +403,15 @@ function shouldWrapUserCode(code: string): boolean {
 }
 
 function hasStaticModuleSyntax(code: string): boolean {
-  const trimmed = code.trim();
-  if (!trimmed) return false;
-  return /(^|\n)\s*import\s|(^|\n)\s*export\s/m.test(trimmed);
+  const lines = code.split("\n");
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("//")) continue;
+    if (line.startsWith("/*") || line.startsWith("*")) continue;
+    return /^(import|export)\b/.test(line);
+  }
+  return false;
 }
 
 function shouldRetryTopLevelAwait(error: unknown, code: string): boolean {
