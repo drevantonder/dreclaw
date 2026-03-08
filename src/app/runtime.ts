@@ -13,7 +13,7 @@ import {
   deleteVfsEntry,
   getGoogleOAuthToken,
   getPersistedRunStatus,
-  getThreadStateSnapshot,
+  getPersistedThreadControls,
   getVfsEntry,
   getVfsRevision,
   insertMemoryEpisode,
@@ -87,6 +87,7 @@ export class BotRuntime {
     const runtime = this.getRuntimeConfig();
     const memory = this.getMemoryConfigSafe();
     const googleLinked = Boolean(await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL));
+    const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
     const persistedRunStatus = (await getPersistedRunStatus(this.env.DRECLAW_DB, threadId)) ?? state.runStatus;
     const busy = formatBusyState(persistedRunStatus);
     return [
@@ -98,7 +99,7 @@ export class BotRuntime {
       `cancel_requested: ${persistedRunStatus.cancelRequested ? "yes" : "no"}`,
       `running_for: ${isRunStatusActive(persistedRunStatus) ? formatDurationSince(persistedRunStatus.startedAt) : "-"}`,
       `last_heartbeat: ${formatElapsedSince(persistedRunStatus.lastHeartbeatAt)}`,
-      `verbose: ${state.verbose ? "on" : "off"}`,
+      `verbose: ${(controls?.verbose ?? state.verbose) ? "on" : "off"}`,
       `history: ${state.history.length}`,
       `thread: ${threadId}`,
     ].join("\n");
@@ -208,6 +209,7 @@ export class BotRuntime {
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
     const messages = buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks);
     state = markRunStarted(state);
+    state = await this.mergeAsyncControls(thread.id, state);
     await thread.setState(stripEphemeralState(state), { replace: true });
     await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
 
@@ -259,15 +261,16 @@ export class BotRuntime {
     } catch (error) {
       if (isRunCancelledError(error)) {
         heartbeat.stop();
-        state = markRunFinished(state);
-        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
-        try {
-          await thread.post("Stopped.");
-        } catch {
-          // noop
-        }
-        return stripEphemeralState(state);
+      state = markRunFinished(state);
+      await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+      try {
+        await thread.post("Stopped.");
+      } catch {
+        // noop
       }
+      state = await this.mergeAsyncControls(thread.id, state);
+      return stripEphemeralState(state);
+    }
       finalText = await this.recoverTimedOutRun({
         model,
         userText: userText || "[image]",
@@ -286,6 +289,7 @@ export class BotRuntime {
       state = pushHistory(state, "assistant", finalText);
       heartbeat.stop();
       await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+      state = await this.mergeAsyncControls(thread.id, state);
       return stripEphemeralState(state);
     }
 
@@ -297,6 +301,7 @@ export class BotRuntime {
     state = markRunFinished(state);
     heartbeat.stop();
     await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+    state = await this.mergeAsyncControls(thread.id, state);
 
     await this.persistMemoryTurn({
       chatId,
@@ -334,14 +339,15 @@ export class BotRuntime {
         // noop
       }
       const nextState = touchRunHeartbeat(getState());
-      setState(nextState);
+      const mergedState = await this.mergeAsyncControls(thread.id, nextState);
+      setState(mergedState);
       try {
-        await thread.setState(stripEphemeralState(nextState), { replace: true });
+        await thread.setState(stripEphemeralState(mergedState), { replace: true });
       } catch {
         // noop
       }
       try {
-        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, nextState.runStatus);
+        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, mergedState.runStatus);
       } catch {
         // noop
       }
@@ -362,6 +368,15 @@ export class BotRuntime {
   private async throwIfCancelled(threadId: string): Promise<void> {
     const status = await getPersistedRunStatus(this.env.DRECLAW_DB, threadId);
     if (status?.cancelRequested) throw new RunCancelledError();
+  }
+
+  private async mergeAsyncControls(threadId: string, state: BotThreadState): Promise<BotThreadState> {
+    const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
+    if (!controls) return state;
+    return {
+      ...state,
+      verbose: controls.verbose,
+    };
   }
 
   private createAgentTools(params: {
@@ -865,8 +880,8 @@ class VerboseTracer {
   constructor(private readonly db: D1Database, private readonly thread: Thread<BotThreadState>) {}
 
   private async isEnabled(): Promise<boolean> {
-    const state = await getThreadStateSnapshot<BotThreadState>(this.db, this.thread.id);
-    return Boolean(state?.verbose);
+    const controls = await getPersistedThreadControls(this.db, this.thread.id);
+    return Boolean(controls?.verbose);
   }
 
   async onToolStart(name: string, args: Record<string, unknown>): Promise<void> {

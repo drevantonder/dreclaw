@@ -90,6 +90,10 @@ export interface PersistedRunStatus {
   cancelRequestedAt: string | null;
 }
 
+export interface PersistedThreadControls {
+  verbose: boolean;
+}
+
 export async function markUpdateSeen(db: D1Database, updateId: number): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
@@ -131,6 +135,14 @@ export async function requestPersistedRunStop(db: D1Database, threadId: string):
   };
   await setPersistedRunStatus(db, threadId, next);
   return next;
+}
+
+export async function getPersistedThreadControls(db: D1Database, threadId: string): Promise<PersistedThreadControls | null> {
+  return getChatStateValue<PersistedThreadControls>(db, threadControlsKey(threadId));
+}
+
+export async function setPersistedThreadControls(db: D1Database, threadId: string, value: PersistedThreadControls): Promise<void> {
+  await setChatStateValue(db, threadControlsKey(threadId), value);
 }
 
 export async function createGoogleOAuthState(
@@ -537,6 +549,10 @@ function threadStateKey(threadId: string): string {
 
 function runStatusKey(threadId: string): string {
   return `run-status:${threadId}`;
+}
+
+function threadControlsKey(threadId: string): string {
+  return `thread-controls:${threadId}`;
 }
 
 function mapGoogleOAuthTokenRecord(row: Record<string, unknown>): GoogleOAuthTokenRecord {

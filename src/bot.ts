@@ -3,7 +3,14 @@ import { Chat, type Message, type Thread } from "chat";
 import { BotRuntime } from "./app/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "./app/state";
 import { createD1StateAdapter } from "./chat-state";
-import { getPersistedRunStatus, getThreadStateSnapshot, requestPersistedRunStop, setThreadStateSnapshot } from "./db";
+import {
+  getPersistedRunStatus,
+  getPersistedThreadControls,
+  getThreadStateSnapshot,
+  requestPersistedRunStop,
+  setPersistedThreadControls,
+  setThreadStateSnapshot,
+} from "./db";
 import { sendTelegramTextMessage } from "./telegram-api";
 import type { Env, TelegramUpdate } from "./types";
 
@@ -44,7 +51,9 @@ export function createBot(env: Env) {
 
     if (subscribe) await thread.subscribe();
 
-    const currentState = normalizeBotThreadState(await thread.state);
+    let currentState = normalizeBotThreadState(await thread.state);
+    const controls = await getPersistedThreadControls(env.DRECLAW_DB, thread.id);
+    if (controls) currentState = { ...currentState, verbose: controls.verbose };
     const nextState = await runtime.runConversation({ thread, message, state: currentState });
     await thread.setState(nextState, { replace: true });
   };
@@ -84,7 +93,9 @@ async function handleAsyncCommand(params: {
   const [command, value] = text.split(/\s+/, 2);
   const lowered = command.toLowerCase();
   const state = normalizeBotThreadState(await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId));
-  const runStatus = (await getPersistedRunStatus(env.DRECLAW_DB, threadId)) ?? state.runStatus;
+  const controls = await getPersistedThreadControls(env.DRECLAW_DB, threadId);
+  const controlledState = controls ? { ...state, verbose: controls.verbose } : state;
+  const runStatus = (await getPersistedRunStatus(env.DRECLAW_DB, threadId)) ?? controlledState.runStatus;
   const busy = isRunBusy(runStatus);
 
   if (lowered === "/help") {
@@ -97,7 +108,7 @@ async function handleAsyncCommand(params: {
       env.TELEGRAM_BOT_TOKEN,
       chatId,
       await runtime.status(threadId, {
-        ...state,
+        ...controlledState,
         runStatus,
       }),
     );
@@ -119,7 +130,8 @@ async function handleAsyncCommand(params: {
       await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, busyMessage(lowered));
       return;
     }
-    const next = runtime.reset(state);
+    const next = runtime.reset(controlledState);
+    await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: false });
     await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
     await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Session reset. Conversation context cleared.");
     return;
@@ -131,6 +143,7 @@ async function handleAsyncCommand(params: {
       return;
     }
     const next = await runtime.factoryReset(chatId);
+    await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: false });
     await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
     await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Factory reset complete. Conversation, memory, runtime state, and VFS cleared.");
     return;
@@ -141,7 +154,8 @@ async function handleAsyncCommand(params: {
       await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, `verbose: ${state.verbose ? "on" : "off"}\nusage: /verbose on|off`);
       return;
     }
-    const next = runtime.setVerbose(state, value === "on");
+    const next = runtime.setVerbose(controlledState, value === "on");
+    await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: value === "on" });
     await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
     await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, `verbose ${value === "on" ? "enabled" : "disabled"}.`);
     return;
