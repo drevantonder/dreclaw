@@ -8,6 +8,7 @@
     "deploy": "pnpm dlx wrangler deploy",
     "dev": "pnpm dlx wrangler dev",
     "d1:migrate": "pnpm dlx wrangler d1 migrations apply DRECLAW_DB",
+    "live:telegram": "node scripts/telegram-live.mjs",
     "secrets:sync": "set -a && source .env && set +a && node scripts/secrets-sync.mjs | pnpm dlx wrangler secret bulk",
     "smoke:live": "node scripts/smoke-live.mjs",
     "verify:predeploy": "pnpm check && pnpm test && pnpm smoke:live",
@@ -25,6 +26,7 @@
     "ai": "^6.0.98",
     "chat": "^4.18.0",
     "quickjs-emscripten-core": "^0.32.0",
+    "telegram": "^2.26.22",
     "workers-ai-provider": "^3.1.2",
     "zod": "^4.3.6"
   },

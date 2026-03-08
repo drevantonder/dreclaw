@@ -72,8 +72,9 @@ type ToolTrace = {
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
+const DEFAULT_RUN_TIMEOUT_MS = 25_000;
 const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. search is only for local runtime/package introspection, not web search.";
+  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. If an execute script fails, simplify it immediately instead of retrying the same shape. search is only for local runtime/package introspection, not web search.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -217,12 +218,19 @@ export class BotRuntime {
     }
 
     let finalText = "";
+    const runTimeoutMs = getRunTimeoutMs(userText);
     try {
-      const stream = await withTimeout(agent.stream({ messages }), 45_000, "Agent stream timed out");
-      await withTimeout(thread.post(stream.textStream), 45_000, "Assistant response timed out");
-      const response = await withTimeout(Promise.resolve(stream.response), 45_000, "Assistant response timed out");
-      const generatedText = await withTimeout(Promise.resolve(stream.text), 45_000, "Assistant text timed out");
-      finalText = (typeof generatedText === "string" ? generatedText : "").trim() || extractAssistantText(response.messages as ModelMessage[]);
+      finalText = await withTimeout(
+        (async () => {
+          const stream = await withTimeout(agent.stream({ messages }), runTimeoutMs, "Agent stream timed out");
+          await withTimeout(thread.post(stream.textStream), runTimeoutMs, "Assistant response timed out");
+          const response = await withTimeout(Promise.resolve(stream.response), runTimeoutMs, "Assistant response timed out");
+          const generatedText = await withTimeout(Promise.resolve(stream.text), runTimeoutMs, "Assistant text timed out");
+          return (typeof generatedText === "string" ? generatedText : "").trim() || extractAssistantText(response.messages as ModelMessage[]);
+        })(),
+        runTimeoutMs,
+        "Conversation timed out",
+      );
     } catch (error) {
       finalText = "I hit a timeout while working on that. Please retry and I will continue from the conversation context.";
       try {
@@ -815,13 +823,24 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 function getStepLimit(userText: string): number {
   const text = String(userText ?? "").toLowerCase();
-  if (/gmail|email|inbox|calendar|drive|docs|sheets|google|script|skill|workflow|library|merge|update/.test(text)) {
-    return 16;
+  if (/gmail|email|inbox/.test(text)) {
+    return 10;
+  }
+  if (/calendar|drive|docs|sheets|google|script|skill|workflow|library|merge|update/.test(text)) {
+    return 12;
   }
   if (/compare|research|investigate|debug/.test(text)) {
     return 14;
   }
   return 8;
+}
+
+function getRunTimeoutMs(userText: string): number {
+  const text = String(userText ?? "").toLowerCase();
+  if (/gmail|email|inbox|calendar|drive|docs|sheets|google/.test(text)) {
+    return 22_000;
+  }
+  return DEFAULT_RUN_TIMEOUT_MS;
 }
 
 function inferImplicitSkillNames(userText: string): string[] {
@@ -846,7 +865,8 @@ function renderTaskGuidance(userText: string): string {
   if (/gmail|email|inbox/.test(text)) {
     lines.push("- For Gmail summaries, use at most one google.execute call per execute run.");
     lines.push("- Good pattern: one execute run to list ids, one execute run per message detail, one final execute run to format a string summary.");
-    lines.push("- For detail fetch runs, return a JSON string or plain string, not a raw object literal.");
+    lines.push("- For detail fetch runs, do not use return JSON.stringify({ ... }). Assign fields to const vars and return a plain string.");
+    lines.push("- If one execute script fails, rewrite it to the simplest plain-string form on the next try.");
   }
   if (/calendar/.test(text)) {
     lines.push("- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.");

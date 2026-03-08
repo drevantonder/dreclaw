@@ -89,7 +89,16 @@ Normal messages stream a single assistant reply.
 - Run full tests: `pnpm test`
 - Type-check: `pnpm check`
 - Run live model smoke test (real OpenCode Go + tool loop): `set -a; source .env; set +a && pnpm smoke:live -- --prompt "hey"`
+- Run Telegram live test via GramJS: `pnpm live:telegram -- --prompt "hey"`
 - Run pre-deploy gate: `pnpm verify:predeploy`
+
+### Telegram live harness
+
+- Uses a real Telegram user account via GramJS, not Telegram Web.
+- Add local-only env vars: `TELEGRAM_TEST_API_ID`, `TELEGRAM_TEST_API_HASH`, `TELEGRAM_TEST_BOT_USERNAME`, `TELEGRAM_TEST_SESSION`.
+- Get `TELEGRAM_TEST_API_ID` and `TELEGRAM_TEST_API_HASH` from `https://my.telegram.org/apps`.
+- First-time login: `pnpm live:telegram -- --login` and save the printed session string into `.env` as `TELEGRAM_TEST_SESSION`.
+- Keep these values local only; do not sync them as Worker secrets.
 
 ## Persistence model
 

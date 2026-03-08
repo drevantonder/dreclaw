@@ -57,7 +57,8 @@ Rules:
 - For user-facing summaries, return one final formatted string instead of a raw array when possible.
 - For final formatting, prefer building lines with string concatenation and join('\n') rather than complex template literals.
 - Keep Google execute runs very small. Use at most one google.execute call per execute run. For summaries, chain several short execute runs instead of looping over many Google calls in one script.
-- For detail fetch runs, assign the result to a const and return a JSON string or a plain string, not a raw object literal.
+- For detail fetch runs, assign the result to const vars and return a plain string.
+- Avoid return JSON.stringify({ ... }) for Gmail detail fetches in this runtime.
 
 Shapes:
 - Gmail list: list.result?.messages
