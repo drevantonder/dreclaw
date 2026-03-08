@@ -1524,9 +1524,18 @@ function parseSerializedExecResult(text: string | null): unknown {
   if (parsed && typeof parsed === "object" && "__dreclaw_type" in parsed) {
     const tag = String((parsed as Record<string, unknown>).__dreclaw_type ?? "");
     if (tag === "undefined") return null;
-    if (tag === "string") return (parsed as Record<string, unknown>).value ?? "";
+    if (tag === "string") return maybeParseJsonString((parsed as Record<string, unknown>).value ?? "");
   }
   return parsed;
+}
+
+function maybeParseJsonString(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return value;
+  const reparsed = safeJsonParse(trimmed);
+  return reparsed === null ? value : reparsed;
 }
 
 
