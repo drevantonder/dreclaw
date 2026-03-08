@@ -30,6 +30,7 @@ import {
   searchCodeRuntime,
   type CodeRuntimeState,
 } from "../code-exec";
+import { executeBash } from "../bash-exec";
 import {
   buildGoogleOAuthUrl,
   createOAuthStateToken,
@@ -521,6 +522,33 @@ export class BotRuntime {
               },
             ),
           ),
+      }),
+      bash: tool({
+        description:
+          "Run bash commands in a sandboxed shell with core Unix tools, VFS-backed files, and full network access via curl. Use this for shell/text/file/network tasks. Use execute instead for JavaScript, google.execute, memory.*, or vfs:/ imports.",
+        inputSchema: z.object({ command: z.string(), cwd: z.string().optional(), stdin: z.string().optional() }),
+        execute: async (input) => {
+          const writes: string[] = [];
+          return runTool(
+            "bash",
+            input as Record<string, unknown>,
+            async () =>
+              executeBash(
+                { command: input.command, cwd: input.cwd, stdin: input.stdin },
+                {
+                  config: {
+                    execMaxOutputBytes: this.getCodeExecutionConfig().limits.execMaxOutputBytes,
+                    netRequestTimeoutMs: this.getCodeExecutionConfig().limits.netRequestTimeoutMs,
+                    netMaxResponseBytes: this.getCodeExecutionConfig().limits.netMaxResponseBytes,
+                    netMaxRedirects: this.getCodeExecutionConfig().limits.netMaxRedirects,
+                    vfsMaxFiles: this.getCodeExecutionConfig().limits.vfsMaxFiles,
+                  },
+                  vfs: this.createVfsAdapter(writes),
+                },
+              ),
+            writes,
+          );
+        },
       }),
       execute: tool({
         description:
@@ -1043,6 +1071,9 @@ function getStepLimit(userText: string): number {
   if (/gmail|email|inbox/.test(text)) {
     return 10;
   }
+  if (/bash|shell|curl|grep|sed|awk|jq|yq|find|xargs|pipe|regex/.test(text)) {
+    return 10;
+  }
   if (/calendar|drive|docs|sheets|google|script|skill|workflow|library|merge|update/.test(text)) {
     return 12;
   }
@@ -1114,6 +1145,10 @@ function inferImplicitSkillNames(userText: string): string[] {
 function renderTaskGuidance(userText: string): string {
   const text = String(userText ?? "").toLowerCase();
   const lines: string[] = [];
+  if (/bash|shell|curl|grep|sed|awk|jq|yq|find|xargs|pipe|regex/.test(text)) {
+    lines.push("- Prefer bash for shell pipelines, curl, jq/yq, grep/sed/awk, and file-oriented text processing.");
+    lines.push("- Prefer execute only when the task needs JavaScript, google.execute, memory.*, or vfs:/ imports.");
+  }
   if (/gmail|email|inbox/.test(text)) {
     lines.push("- For Gmail summaries, use at most one google.execute call per execute run.");
     lines.push("- Good pattern: one execute run to list ids, one execute run per message detail, one final execute run to format a string summary.");
@@ -1148,6 +1183,12 @@ function renderTraceStart(name: string, args: Record<string, unknown>): string {
     const path = typeof args.path === "string" ? `\npath: ${args.path}` : "";
     const prefix = typeof args.prefix === "string" ? `\nprefix: ${args.prefix}` : "";
     return `Tool: ${name}\naction: ${action}${path}${prefix}`;
+  }
+  if (name === "bash") {
+    const command = typeof args.command === "string" ? args.command : "";
+    const cwd = typeof args.cwd === "string" ? `\ncwd: ${args.cwd}` : "";
+    const stdin = typeof args.stdin === "string" && args.stdin ? `\nstdin: ${redactSensitiveText(args.stdin)}` : "";
+    return `Tool: ${name}\n\n\`\`\`bash\n${command}\n\`\`\`${cwd}${stdin}`;
   }
   if (name === "execute") {
     const code = typeof args.code === "string" ? args.code : "";
