@@ -362,7 +362,15 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
       throw new Error(errorText);
     }
 
-    const result = parseSerializedExecResult(readGlobalString(vm, "__exec_result_json"));
+    let serializedResult = readGlobalString(vm, "__exec_result_json");
+    for (let attempt = 0; serializedResult === null && attempt < 20; attempt += 1) {
+      if (Date.now() > deadline) break;
+      runPendingJobs(vm.runtime, limits.execMaxHostCalls);
+      await sleep(5);
+      serializedResult = readGlobalString(vm, "__exec_result_json");
+    }
+
+    const result = parseSerializedExecResult(serializedResult);
     valueHandle.dispose();
     return {
       ok: true,
