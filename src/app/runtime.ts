@@ -73,7 +73,7 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Reuse VFS helpers when useful. Trust relevant loaded skills over stale conversation patterns. Do not narrate plans. search is only for local runtime/package introspection, not web search.";
+  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Maintain a tidy VFS library: inspect existing scripts and skills before creating new ones, update or merge overlapping helpers, and delete superseded drafts. Prefer the vfs tool for library maintenance and execute for running code. Trust relevant loaded skills over stale conversation patterns. Do not narrate plans. search is only for local runtime/package introspection, not web search.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -199,7 +199,7 @@ export class BotRuntime {
 
     const agent = new ToolLoopAgent({
       model,
-      stopWhen: stepCountIs(12),
+      stopWhen: stepCountIs(getStepLimit(userText)),
       providerOptions: this.getAgentProviderOptions(runtime),
       tools: this.createAgentTools({
         chatId,
@@ -272,6 +272,72 @@ export class BotRuntime {
     };
 
     return {
+      vfs: tool({
+        description:
+          "Manage VFS files for scripts and user skills. Use this for library maintenance: list, read, write, patch, and delete files. Prefer patching/updating existing helpers over creating duplicates.",
+        inputSchema: z.discriminatedUnion("action", [
+          z.object({ action: z.literal("list"), prefix: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }),
+          z.object({
+            action: z.literal("read"),
+            path: z.string(),
+            startLine: z.number().int().min(1).optional(),
+            endLine: z.number().int().min(1).optional(),
+          }),
+          z.object({ action: z.literal("write"), path: z.string(), content: z.string(), mode: z.enum(["create", "overwrite"]).default("overwrite") }),
+          z.object({ action: z.literal("patch"), path: z.string(), search: z.string(), replace: z.string(), replaceAll: z.boolean().optional() }),
+          z.object({ action: z.literal("delete"), path: z.string() }),
+        ]),
+        execute: async (input) => {
+          const writes: string[] = [];
+          return runTool(
+            "vfs",
+            input as Record<string, unknown>,
+            async () => {
+              switch (input.action) {
+                case "list": {
+                  const prefix = input.prefix || "/";
+                  const limit = input.limit ?? 50;
+                  const paths = await this.listVfsPaths(prefix, limit);
+                  return { prefix: this.normalizeVfsPath(prefix), paths };
+                }
+                case "read": {
+                  const content = await this.readVfsContent(input.path);
+                  if (content === null) throw new Error(`ENOENT: ${input.path}`);
+                  return { path: this.normalizeVfsPath(input.path), ...sliceVfsContent(content, input.startLine, input.endLine) };
+                }
+                case "write": {
+                  const result = await this.writeVfsContent(input.path, input.content, input.mode === "overwrite", writes);
+                  if (!result.ok) throw new Error(result.code);
+                  return {
+                    path: result.path,
+                    mode: input.mode,
+                    sizeBytes: new TextEncoder().encode(input.content).byteLength,
+                    lines: countLines(input.content),
+                  };
+                }
+                case "patch": {
+                  const current = await this.readVfsContent(input.path);
+                  if (current === null) throw new Error(`ENOENT: ${input.path}`);
+                  const patched = patchVfsContent(current, input.search, input.replace, Boolean(input.replaceAll));
+                  const result = await this.writeVfsContent(input.path, patched.content, true, writes);
+                  if (!result.ok) throw new Error(result.code);
+                  return {
+                    path: result.path,
+                    replacements: patched.replacements,
+                    ...sliceVfsContent(patched.content),
+                  };
+                }
+                case "delete": {
+                  const deleted = await this.deleteVfsContent(input.path, writes);
+                  if (!deleted) throw new Error(`ENOENT: ${input.path}`);
+                  return { path: this.normalizeVfsPath(input.path), deleted: true };
+                }
+              }
+            },
+            writes,
+          );
+        },
+      }),
       list_skills: tool({
         description: "List available built-in and user skills by name and description",
         inputSchema: z.object({}),
@@ -402,45 +468,57 @@ export class BotRuntime {
     return loaded;
   }
 
+  private normalizeVfsPath(path: string): string {
+    return normalizeSessionVfsPath(path);
+  }
+
+  private async readVfsContent(path: string): Promise<string | null> {
+    const normalized = this.normalizeVfsPath(path);
+    const builtin = getBuiltinSkillByPath(normalized);
+    if (builtin) return builtin.content;
+    const row = await getVfsEntry(this.env.DRECLAW_DB, normalized);
+    return row ? row.content : null;
+  }
+
+  private async listVfsPaths(prefix: string, limit: number): Promise<string[]> {
+    const normalized = this.normalizeVfsPath(prefix || "/");
+    const rows = await listVfsEntries(this.env.DRECLAW_DB, normalized, Math.max(1, limit));
+    const dynamic = listBuiltinSkills().map((item) => item.path).filter((path) => path.startsWith(normalized));
+    return [...new Set([...dynamic, ...rows.map((item) => item.path)])].sort().slice(0, Math.max(1, limit));
+  }
+
+  private async writeVfsContent(path: string, content: string, overwrite: boolean, writes?: string[]) {
+    const normalized = this.normalizeVfsPath(path);
+    if (normalized.startsWith("/skills/system/")) return { ok: false as const, code: "VFS_READ_ONLY" as const };
+    if (normalized.startsWith("/skills/user/")) this.validateUserSkillWrite(normalized, content);
+    writes?.push(`write ${normalized}`);
+    const config = this.getCodeExecutionConfig();
+    const sizeBytes = new TextEncoder().encode(content).byteLength;
+    if (sizeBytes > config.limits.vfsMaxFileBytes) return { ok: false as const, code: "VFS_LIMIT_EXCEEDED" as const };
+    const result = await putVfsEntry(this.env.DRECLAW_DB, {
+      path: normalized,
+      content,
+      sizeBytes,
+      sha256: await sha256Hex(content),
+      nowIso: new Date().toISOString(),
+      overwrite,
+    });
+    return result.ok ? { ok: true as const, path: normalized } : { ok: false as const, code: result.code };
+  }
+
+  private async deleteVfsContent(path: string, writes?: string[]): Promise<boolean> {
+    const normalized = this.normalizeVfsPath(path);
+    if (normalized.startsWith("/skills/system/")) return false;
+    writes?.push(`remove ${normalized}`);
+    return deleteVfsEntry(this.env.DRECLAW_DB, normalized, new Date().toISOString());
+  }
+
   private createVfsAdapter(writes: string[]) {
     return {
-      readFile: async (path: string) => {
-        const normalized = normalizeSessionVfsPath(path);
-        const builtin = getBuiltinSkillByPath(normalized);
-        if (builtin) return builtin.content;
-        const row = await getVfsEntry(this.env.DRECLAW_DB, normalized);
-        return row ? row.content : null;
-      },
-      writeFile: async (path: string, content: string, overwrite: boolean) => {
-        const normalized = normalizeSessionVfsPath(path);
-        if (normalized.startsWith("/skills/system/")) return { ok: false as const, code: "VFS_READ_ONLY" };
-        if (normalized.startsWith("/skills/user/")) this.validateUserSkillWrite(normalized, content);
-        writes.push(`write ${normalized}`);
-        const config = this.getCodeExecutionConfig();
-        const sizeBytes = new TextEncoder().encode(content).byteLength;
-        if (sizeBytes > config.limits.vfsMaxFileBytes) return { ok: false as const, code: "VFS_LIMIT_EXCEEDED" };
-        const result = await putVfsEntry(this.env.DRECLAW_DB, {
-          path: normalized,
-          content,
-          sizeBytes,
-          sha256: await sha256Hex(content),
-          nowIso: new Date().toISOString(),
-          overwrite,
-        });
-        return result.ok ? { ok: true as const } : { ok: false as const, code: result.code };
-      },
-      listFiles: async (prefix: string, limit: number) => {
-        const normalized = normalizeSessionVfsPath(prefix || "/");
-        const rows = await listVfsEntries(this.env.DRECLAW_DB, normalized, Math.max(1, limit));
-        const dynamic = listBuiltinSkills().map((item) => item.path).filter((path) => path.startsWith(normalized));
-        return [...new Set([...dynamic, ...rows.map((item) => item.path)])].sort().slice(0, Math.max(1, limit));
-      },
-      removeFile: async (path: string) => {
-        const normalized = normalizeSessionVfsPath(path);
-        if (normalized.startsWith("/skills/system/")) return false;
-        writes.push(`remove ${normalized}`);
-        return deleteVfsEntry(this.env.DRECLAW_DB, normalized, new Date().toISOString());
-      },
+      readFile: async (path: string) => this.readVfsContent(path),
+      writeFile: async (path: string, content: string, overwrite: boolean) => this.writeVfsContent(path, content, overwrite, writes),
+      listFiles: async (prefix: string, limit: number) => this.listVfsPaths(prefix, limit),
+      removeFile: async (path: string) => this.deleteVfsContent(path, writes),
       revision: async () => getVfsRevision(this.env.DRECLAW_DB),
     };
   }
@@ -672,12 +750,62 @@ function renderHistoryContext(history: BotThreadState["history"]): string {
   return history.map((entry) => `${entry.role}: ${entry.content}`).join("\n");
 }
 
+function sliceVfsContent(content: string, startLine?: number, endLine?: number) {
+  const lines = content.split("\n");
+  const start = Math.max(1, Math.min(lines.length || 1, startLine ?? 1));
+  const end = Math.max(start, Math.min(lines.length || start, endLine ?? lines.length));
+  return {
+    content: lines.slice(start - 1, end).join("\n"),
+    totalLines: lines.length,
+    startLine: start,
+    endLine: end,
+  };
+}
+
+function patchVfsContent(content: string, search: string, replace: string, replaceAll: boolean) {
+  if (!search) throw new Error("PATCH_INVALID: search must be non-empty");
+  const occurrences = countOccurrences(content, search);
+  if (occurrences === 0) throw new Error("PATCH_NOT_FOUND");
+  if (!replaceAll && occurrences > 1) throw new Error("PATCH_AMBIGUOUS");
+  return {
+    content: replaceAll ? content.split(search).join(replace) : content.replace(search, replace),
+    replacements: replaceAll ? occurrences : 1,
+  };
+}
+
+function countOccurrences(content: string, search: string): number {
+  let count = 0;
+  let index = 0;
+  while (true) {
+    index = content.indexOf(search, index);
+    if (index === -1) return count;
+    count += 1;
+    index += Math.max(1, search.length);
+  }
+}
+
+function countLines(content: string): number {
+  return content ? content.split("\n").length : 0;
+}
+
+function getStepLimit(userText: string): number {
+  const text = String(userText ?? "").toLowerCase();
+  if (/gmail|email|inbox|calendar|drive|docs|sheets|google|script|skill|workflow|library|merge|update/.test(text)) {
+    return 16;
+  }
+  if (/compare|research|investigate|debug/.test(text)) {
+    return 14;
+  }
+  return 8;
+}
+
 function inferImplicitSkillNames(userText: string): string[] {
   const text = String(userText ?? "").toLowerCase();
   const names = new Set<string>();
   if (/gmail|email|inbox|calendar|drive|docs|sheets|google/.test(text)) {
     names.add("google");
     names.add("quickjs");
+    names.add("vfs");
   }
   if (/script|helper|vfs|module|import/.test(text)) {
     names.add("vfs");
@@ -698,6 +826,11 @@ function renderTaskGuidance(userText: string): string {
   }
   if (/calendar/.test(text)) {
     lines.push("- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.");
+  }
+  if (/script|skill|workflow|library|reuse|helper/.test(text)) {
+    lines.push("- Use the vfs tool to inspect /scripts and /skills/user before creating anything new.");
+    lines.push("- Patch or merge overlapping helpers instead of creating near-duplicates.");
+    lines.push("- Delete superseded drafts to keep the library tidy.");
   }
   return lines.join("\n");
 }
@@ -738,6 +871,12 @@ function renderToolTranscript(trace: ToolTrace): string {
 function renderTraceStart(name: string, args: Record<string, unknown>): string {
   if (name === "load_skill") return `Tool: ${name}\nname: ${String(args.name ?? "")}`;
   if (name === "list_skills") return `Tool: ${name}`;
+  if (name === "vfs") {
+    const action = String(args.action ?? "");
+    const path = typeof args.path === "string" ? `\npath: ${args.path}` : "";
+    const prefix = typeof args.prefix === "string" ? `\nprefix: ${args.prefix}` : "";
+    return `Tool: ${name}\naction: ${action}${path}${prefix}`;
+  }
   if (name === "execute") {
     const code = typeof args.code === "string" ? args.code : "";
     const input = Object.prototype.hasOwnProperty.call(args, "input") ? `\ninput: ${redactSensitiveText(serializeUnknown(args.input))}` : "";
@@ -764,6 +903,10 @@ function renderTraceResult(trace: ToolTrace): string {
     const skills = Array.isArray((trace.output as { skills?: unknown[] }).skills) ? ((trace.output as { skills: unknown[] }).skills as unknown[]) : [];
     lines.push(`skills: ${skills.length}`);
     lines.push(`result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 600))}`);
+    return lines.join("\n");
+  }
+  if (trace.ok && trace.name === "vfs") {
+    lines.push(`result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 1200))}`);
     return lines.join("\n");
   }
   if (trace.writes?.length) lines.push(`writes: ${trace.writes.join(", ")}`);

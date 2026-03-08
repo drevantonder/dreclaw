@@ -118,10 +118,14 @@ Use this skill when reading, writing, listing, or deleting runtime files.
 
 Rules:
 - VFS paths must be absolute, like /scripts/google/gmail.js.
+- Prefer the vfs tool for library maintenance; use fs.* inside execute only when the running script itself needs file access.
 - Use fs.write with an object payload: path, content, overwrite.
 - Imports use vfs:/absolute/path.js.
 - System skills under /skills/system/... are read-only.
 - User-created skills belong under /skills/user/<name>/SKILL.md.
+- Before creating a new helper, list the relevant directory and read the closest existing file.
+- If overlap is high, patch/merge the existing helper instead of creating a duplicate.
+- Delete superseded drafts after replacing them.
 
 Examples:
 
@@ -177,6 +181,9 @@ Rules:
 - Description must say what the skill does and when to use it.
 - Prefer short instructions. Move bulky examples into separate resources only if needed.
 - Never try to override built-in system skill names.
+- Before creating a new skill, inspect /skills/user/ for overlap.
+- If an older skill already covers most of the job, patch or merge it instead of creating another near-duplicate.
+- Keep the library tidy: stable names, one skill per job, delete superseded drafts.
 
 Template:
 

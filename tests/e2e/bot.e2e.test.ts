@@ -444,4 +444,93 @@ describe("chat sdk bot", () => {
     expect(output).toContain("loaded: google");
     expect(output).toContain("Loaded the google skill.");
   });
+
+  it("manages VFS files and loads a user skill", async () => {
+    const { env } = createEnv();
+    const sent: string[] = [];
+    const edited: string[] = [];
+    const tracker = createExecutionTracker();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/getMe")) {
+          return new Response(JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }), { status: 200 });
+        }
+        if (url.includes("/getWebhookInfo")) {
+          return new Response(JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }), { status: 200 });
+        }
+        if (url.includes("/sendChatAction")) {
+          return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+        }
+        if (url.includes("/sendMessage")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          sent.push(body.text ?? "");
+          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)), { status: 200 });
+        }
+        if (url.includes("/editMessageText")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          edited.push(body.text ?? "");
+          return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }),
+    );
+
+    const headers = {
+      "content-type": "application/json",
+      "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+    };
+
+    await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(makeUpdate(8, "/verbose on")),
+      }) as unknown as Request,
+      env,
+      tracker.ctx,
+    );
+    await tracker.wait();
+
+    modelQueue.push(
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "tool-4",
+            name: "vfs",
+            arguments: {
+              action: "write",
+              path: "/skills/user/inbox-summary/SKILL.md",
+              mode: "create",
+              content: "---\nname: inbox-summary\ndescription: Summarize inbox messages when asked for email summaries.\n---\n\n# Inbox Summary\n\n1. Load google if needed.\n2. Summarize messages.\n",
+            },
+          },
+          { type: "toolCall", id: "tool-5", name: "vfs", arguments: { action: "read", path: "/skills/user/inbox-summary/SKILL.md" } },
+          { type: "toolCall", id: "tool-6", name: "load_skill", arguments: { name: "inbox-summary" } },
+        ],
+      },
+      { stopReason: "endTurn", content: [{ type: "text", text: "Updated the inbox-summary skill." }] },
+    );
+
+    await app.fetch(
+      new Request("https://test.local/telegram/webhook", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(makeUpdate(9, "organize the library")),
+      }) as unknown as Request,
+      env,
+      tracker.ctx,
+    );
+    await tracker.wait();
+
+    const output = [...sent, ...edited].join("\n");
+    expect(output).toContain("Tool: vfs");
+    expect(output).toContain("/skills/user/inbox-summary/SKILL.md");
+    expect(output).toContain("loaded: inbox-summary");
+    expect(output).toContain("Updated the inbox-summary skill.");
+  });
 });
