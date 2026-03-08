@@ -10,6 +10,7 @@ export interface BotThreadState {
   memoryTurns: number;
   verbose: boolean;
   codeRuntime: CodeRuntimeState;
+  loadedSkills: string[];
 }
 
 export function normalizeBotThreadState(input: BotThreadState | null | undefined): BotThreadState {
@@ -28,6 +29,9 @@ export function normalizeBotThreadState(input: BotThreadState | null | undefined
     memoryTurns: Number.isFinite(source?.memoryTurns) ? Math.max(0, Math.trunc(source?.memoryTurns ?? 0)) : 0,
     verbose: Boolean(source?.verbose),
     codeRuntime: normalizeCodeRuntimeState(source?.codeRuntime),
+    loadedSkills: Array.isArray(source?.loadedSkills)
+      ? source.loadedSkills.filter((skill): skill is string => typeof skill === "string" && skill.trim().length > 0).slice(-12)
+      : [],
   };
 }
 

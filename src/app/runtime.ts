@@ -44,6 +44,16 @@ import { extractFacts, scoreSalience } from "../memory/salience";
 import { deleteFactVectors, upsertFactVector } from "../memory/vectorize";
 import { fetchTelegramImageAsDataUrl } from "../telegram-api";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../types";
+import {
+  getBuiltinSkillByName,
+  getBuiltinSkillByPath,
+  isSystemSkillName,
+  listBuiltinSkills,
+  parseSkillDocument,
+  renderLoadedSkill,
+  renderSkillCatalog,
+  type SkillRecord,
+} from "./skills";
 import { normalizeBotThreadState, pushHistory, type BotThreadState } from "./state";
 
 type RuntimeConfig =
@@ -63,7 +73,7 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const SYSTEM_PROMPT =
-  "Memory is persistent and managed automatically by the runtime. Treat retrieved memory as high-signal context and keep replies grounded. Be a scripting wizard: solve tasks with short, accurate QuickJS scripts, save reusable helpers to VFS when they may help again, and reuse saved scripts before reinventing them. Good pattern: write `export async function run(input) { ... }` to `/scripts/...`, then `const { run } = await import('vfs:/scripts/...'); return await run(input);`. execute runs inside QuickJS, not Node.js: use only fetch, fs.read/fs.write/fs.list/fs.remove, memory.find/save/remove, pkg.install/pkg.list, and google.execute. Do not use require() or Node built-ins. google.execute returns { ok, status, statusText, url, method, result }; Gmail list data is in `list.result?.messages`, Gmail message data is in `msg.result?.payload?.headers` and `msg.result?.snippet`, Calendar events are in `calendar.result?.items`. If a script has multiple statements or await, explicitly return the final value. Prefer one focused script over debug loops, and only inspect raw payloads when a previous attempt actually failed. search is only for local runtime/package introspection, not web search.";
+  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Reuse VFS helpers when useful. Load relevant skills before specialized work. Do not narrate plans. search is only for local runtime/package introspection, not web search.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -171,10 +181,18 @@ export class BotRuntime {
     const tracer = new VerboseTracer(thread, state.verbose);
     const model = this.createModel(runtime);
     const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
+    const skillCatalog = await this.listSkills();
+    promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
+    const loadedSkills = await this.getLoadedSkills(state.loadedSkills);
+    if (loadedSkills.length) {
+      promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
+    }
     const historyContext = renderHistoryContext(state.history);
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
     const memoryContext = await this.renderMemoryContext(chatId, userText || "[image message]");
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
+    const repairHints = renderFailureHints(state.history);
+    if (repairHints) promptSections.push(`Repair hints:\n${repairHints}`);
     const messages = buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks);
 
     const agent = new ToolLoopAgent({
@@ -252,6 +270,34 @@ export class BotRuntime {
     };
 
     return {
+      list_skills: tool({
+        description: "List available built-in and user skills by name and description",
+        inputSchema: z.object({}),
+        execute: async () => runTool("list_skills", {}, async () => ({ skills: await this.listSkills() })),
+      }),
+      load_skill: tool({
+        description: "Load full instructions for a named skill and keep it available in session context",
+        inputSchema: z.object({ name: z.string() }),
+        execute: async (input) =>
+          runTool("load_skill", input as Record<string, unknown>, async () => {
+            const skill = await this.getSkillByName(input.name);
+            if (!skill) throw new Error(`SKILL_NOT_FOUND: ${input.name}`);
+            if (!params.state.loadedSkills.includes(skill.name)) {
+              params.state = {
+                ...params.state,
+                loadedSkills: [...params.state.loadedSkills, skill.name].slice(-12),
+              };
+              await params.saveState(params.state);
+            }
+            return {
+              name: skill.name,
+              description: skill.description,
+              scope: skill.scope,
+              path: skill.path,
+              content: skill.content,
+            };
+          }),
+      }),
       search: tool({
         description: "Inspect local QuickJS runtime capabilities and installed packages (not web search)",
         inputSchema: z.object({ query: z.string().optional() }),
@@ -269,7 +315,7 @@ export class BotRuntime {
       }),
       execute: tool({
         description:
-          "Run JavaScript in QuickJS runtime (supports async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, google.execute, and imports from vfs:/...). Save reusable helpers to VFS when useful. Return the final value you want back; console.log only adds logs. If you use await or multiple statements, explicitly `return` the final value.",
+          "Run JavaScript in QuickJS runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, built-in global `google`, and imports from vfs:/... . Return the final value explicitly. Load relevant skills first for specialized guidance.",
         inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
         execute: async (input) => {
           const writes: string[] = [];
@@ -289,38 +335,7 @@ export class BotRuntime {
                     };
                     await params.saveState(params.state);
                   },
-                  vfs: {
-                    readFile: async (path) => {
-                      const row = await getVfsEntry(this.env.DRECLAW_DB, normalizeSessionVfsPath(path));
-                      return row ? row.content : null;
-                    },
-                    writeFile: async (path, content, overwrite) => {
-                      const normalized = normalizeSessionVfsPath(path);
-                      writes.push(`write ${normalized}`);
-                      const config = this.getCodeExecutionConfig();
-                      const sizeBytes = new TextEncoder().encode(content).byteLength;
-                      if (sizeBytes > config.limits.vfsMaxFileBytes) return { ok: false as const, code: "VFS_LIMIT_EXCEEDED" };
-                      const result = await putVfsEntry(this.env.DRECLAW_DB, {
-                        path: normalized,
-                        content,
-                        sizeBytes,
-                        sha256: await sha256Hex(content),
-                        nowIso: new Date().toISOString(),
-                        overwrite,
-                      });
-                      return result.ok ? { ok: true as const } : { ok: false as const, code: result.code };
-                    },
-                    listFiles: async (prefix, limit) => {
-                      const rows = await listVfsEntries(this.env.DRECLAW_DB, normalizeSessionVfsPath(prefix || "/"), Math.max(1, limit));
-                      return rows.map((item) => item.path);
-                    },
-                    removeFile: async (path) => {
-                      const normalized = normalizeSessionVfsPath(path);
-                      writes.push(`remove ${normalized}`);
-                      return deleteVfsEntry(this.env.DRECLAW_DB, normalized, new Date().toISOString());
-                    },
-                    revision: async () => getVfsRevision(this.env.DRECLAW_DB),
-                  },
+                  vfs: this.createVfsAdapter(writes),
                   memory: {
                     find: async (payload) => this.executeMemoryFindPayload(params.chatId, payload),
                     save: async (payload) => this.executeMemorySavePayload(params.chatId, payload),
@@ -338,6 +353,107 @@ export class BotRuntime {
         },
       }),
     };
+  }
+
+  private async listSkills(): Promise<Array<Pick<SkillRecord, "name" | "description" | "scope">>> {
+    const builtin = listBuiltinSkills().map(({ name, description, scope }) => ({ name, description, scope }));
+    const userRows = await listVfsEntries(this.env.DRECLAW_DB, "/skills/user/", 200);
+    const userSkills = userRows
+      .filter((row) => row.path.endsWith("/SKILL.md"))
+      .map((row) => {
+        try {
+          const parsed = parseSkillDocument(row.content);
+          return { name: parsed.name, description: parsed.description, scope: "user" as const };
+        } catch {
+          return null;
+        }
+      })
+      .filter((skill): skill is { name: string; description: string; scope: "user" } => Boolean(skill))
+      .filter((skill) => !isSystemSkillName(skill.name));
+    return [...builtin, ...userSkills].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private async getSkillByName(name: string): Promise<SkillRecord | null> {
+    const normalized = String(name ?? "").trim();
+    if (!normalized) return null;
+    const builtin = getBuiltinSkillByName(normalized);
+    if (builtin) return builtin;
+    const row = await getVfsEntry(this.env.DRECLAW_DB, `/skills/user/${normalized}/SKILL.md`);
+    if (!row) return null;
+    const parsed = parseSkillDocument(row.content);
+    if (parsed.name !== normalized) throw new Error(`SKILL_INVALID: name mismatch for ${normalized}`);
+    return {
+      name: parsed.name,
+      description: parsed.description,
+      scope: "user",
+      path: row.path,
+      content: row.content,
+    };
+  }
+
+  private async getLoadedSkills(names: string[]): Promise<SkillRecord[]> {
+    const loaded: SkillRecord[] = [];
+    for (const name of names) {
+      const skill = await this.getSkillByName(name);
+      if (skill) loaded.push(skill);
+    }
+    return loaded;
+  }
+
+  private createVfsAdapter(writes: string[]) {
+    return {
+      readFile: async (path: string) => {
+        const normalized = normalizeSessionVfsPath(path);
+        const builtin = getBuiltinSkillByPath(normalized);
+        if (builtin) return builtin.content;
+        const row = await getVfsEntry(this.env.DRECLAW_DB, normalized);
+        return row ? row.content : null;
+      },
+      writeFile: async (path: string, content: string, overwrite: boolean) => {
+        const normalized = normalizeSessionVfsPath(path);
+        if (normalized.startsWith("/skills/system/")) return { ok: false as const, code: "VFS_READ_ONLY" };
+        if (normalized.startsWith("/skills/user/")) this.validateUserSkillWrite(normalized, content);
+        writes.push(`write ${normalized}`);
+        const config = this.getCodeExecutionConfig();
+        const sizeBytes = new TextEncoder().encode(content).byteLength;
+        if (sizeBytes > config.limits.vfsMaxFileBytes) return { ok: false as const, code: "VFS_LIMIT_EXCEEDED" };
+        const result = await putVfsEntry(this.env.DRECLAW_DB, {
+          path: normalized,
+          content,
+          sizeBytes,
+          sha256: await sha256Hex(content),
+          nowIso: new Date().toISOString(),
+          overwrite,
+        });
+        return result.ok ? { ok: true as const } : { ok: false as const, code: result.code };
+      },
+      listFiles: async (prefix: string, limit: number) => {
+        const normalized = normalizeSessionVfsPath(prefix || "/");
+        const rows = await listVfsEntries(this.env.DRECLAW_DB, normalized, Math.max(1, limit));
+        const dynamic = listBuiltinSkills().map((item) => item.path).filter((path) => path.startsWith(normalized));
+        return [...new Set([...dynamic, ...rows.map((item) => item.path)])].sort().slice(0, Math.max(1, limit));
+      },
+      removeFile: async (path: string) => {
+        const normalized = normalizeSessionVfsPath(path);
+        if (normalized.startsWith("/skills/system/")) return false;
+        writes.push(`remove ${normalized}`);
+        return deleteVfsEntry(this.env.DRECLAW_DB, normalized, new Date().toISOString());
+      },
+      revision: async () => getVfsRevision(this.env.DRECLAW_DB),
+    };
+  }
+
+  private validateUserSkillWrite(path: string, content: string): void {
+    if (!path.startsWith("/skills/user/")) return;
+    const parts = path.split("/").filter(Boolean);
+    if (parts.length >= 3 && parts[2] && isSystemSkillName(parts[2])) {
+      throw new Error(`SKILL_RESERVED: ${parts[2]}`);
+    }
+    if (!path.endsWith("/SKILL.md")) return;
+    const parsed = parseSkillDocument(content);
+    const dirName = parts[2] ?? "";
+    if (parsed.name !== dirName) throw new Error(`SKILL_INVALID: name must match directory (${dirName})`);
+    if (isSystemSkillName(parsed.name)) throw new Error(`SKILL_RESERVED: ${parsed.name}`);
   }
 
   private getCodeExecutionConfig() {
@@ -552,6 +668,16 @@ async function loadImages(env: Env, rawMessage: unknown): Promise<string[]> {
 function renderHistoryContext(history: BotThreadState["history"]): string {
   if (!history.length) return "";
   return history.map((entry) => `${entry.role}: ${entry.content}`).join("\n");
+}
+
+function renderFailureHints(history: BotThreadState["history"]): string {
+  const recent = history.slice(-6).map((entry) => entry.content).join("\n");
+  const hints: string[] = [];
+  if (/googleapis|import \{ google \}/i.test(recent)) hints.push("- Use the built-in global `google`; do not import `googleapis`.");
+  if (/endpoint/i.test(recent)) hints.push("- `google.execute` accepts only `service`, `version`, `method`, `params`, and `body`.");
+  if (/return not in a function/i.test(recent)) hints.push("- In execute scripts, explicitly `return` the final value from top-level async code.");
+  if (/expecting '\}'|expecting "\}"/i.test(recent)) hints.push("- When writing module source, prefer small strings or array joins over fragile nested template literals.");
+  return hints.join("\n");
 }
 
 function renderToolTranscript(trace: ToolTrace): string {
