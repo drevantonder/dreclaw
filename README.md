@@ -7,7 +7,7 @@
 - Telegram private chat-only, single-user (me)
 - Chat SDK + Telegram adapter runtime
 - Commands: `/help`, `/status`, `/reset`, `/factory-reset`, `/verbose`, `/google ...`
-- Core tools: `search`, `execute`
+- Core tools: `search`, `execute`, `bash`
 - Persistent memory: D1 episodic/fact memory + Vectorize semantic recall
 - Hybrid memory pipeline: D1 episodic/fact memory + Vectorize semantic recall (Workers AI embeddings)
 - AI SDK provider switch: `opencode`, `opencode-go`, or `workers` (Workers AI)
@@ -30,7 +30,7 @@ flowchart TD
 - Agent loop runs on AI SDK `ToolLoopAgent` with runtime-managed memory persistence.
 - OpenCode uses `AI_PROVIDER=opencode` (Zen default URL) or `AI_PROVIDER=opencode-go` (Go default URL).
 - Workers AI runs via `workers-ai-provider` binding (`env.AI`) when `AI_PROVIDER=workers`.
-- Agent can run sandboxed JS with `execute`; `search` lists runtime limits/capabilities and installed packages.
+- Agent can run sandboxed JS with `execute`, and shell commands with `bash`; `search` lists runtime limits/capabilities and installed packages.
 
 ## Setup
 
@@ -106,6 +106,8 @@ Normal messages stream a single assistant reply.
 - Long-term memory facts/episodes live in D1 + Vectorize (`VECTORIZE_MEMORY`) with Workers AI embeddings (`env.AI`).
 - Memory writes are salience-gated and consolidated through reflection.
 - `search` returns QuickJS runtime capabilities/limits and package inventory.
+- `bash` runs a sandboxed shell with core Unix text/file tools, VFS-backed file persistence, and full `curl` network access.
+- `bash` currently excludes Python and SQLite workflows; use `execute` for JavaScript-native tasks.
 - `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, `fetch`, and `fs.read/fs.write/fs.list/fs.remove` inside the runtime.
 - `execute` also exposes `memory.find(query, opts?)`, `memory.save(text, opts?)`, and `memory.remove(target)` for direct memory control.
 - `execute` exposes `google.execute({...})` for Google API calls.
