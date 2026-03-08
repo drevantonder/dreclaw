@@ -73,7 +73,7 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Maintain a tidy VFS library: inspect existing scripts and skills before creating new ones, update or merge overlapping helpers, and delete superseded drafts. Prefer the vfs tool for library maintenance and execute for running code. Trust relevant loaded skills over stale conversation patterns. Do not narrate plans. search is only for local runtime/package introspection, not web search.";
+  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. search is only for local runtime/package introspection, not web search.";
 
 export class BotRuntime {
   constructor(private readonly env: Env) {}
@@ -183,7 +183,7 @@ export class BotRuntime {
     const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
     const skillCatalog = await this.listSkills();
     promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
-    const loadedSkills = await this.getLoadedSkills([...state.loadedSkills, ...inferImplicitSkillNames(userText)]);
+    const loadedSkills = await this.getLoadedSkills(inferImplicitSkillNames(userText));
     if (loadedSkills.length) {
       promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
     }
@@ -193,8 +193,6 @@ export class BotRuntime {
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
     const memoryContext = await this.renderMemoryContext(chatId, userText || "[image message]");
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
-    const repairHints = renderFailureHints(state.history);
-    if (repairHints) promptSections.push(`Repair hints:\n${repairHints}`);
     const messages = buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks);
 
     const agent = new ToolLoopAgent({
@@ -206,7 +204,6 @@ export class BotRuntime {
         state,
         saveState: async (next) => {
           state = next;
-          await thread.setState(state, { replace: true });
         },
         tracer,
         toolTraces,
@@ -227,7 +224,7 @@ export class BotRuntime {
       const generatedText = await withTimeout(Promise.resolve(stream.text), 45_000, "Assistant text timed out");
       finalText = (typeof generatedText === "string" ? generatedText : "").trim() || extractAssistantText(response.messages as ModelMessage[]);
     } catch (error) {
-      finalText = "I hit a timeout while working on that. I may have updated the library; retry the task and I will continue from there.";
+      finalText = "I hit a timeout while working on that. Please retry and I will continue from the conversation context.";
       try {
         await thread.post(finalText);
       } catch {
@@ -238,7 +235,7 @@ export class BotRuntime {
         state = pushHistory(state, "tool", renderToolTranscript(trace));
       }
       state = pushHistory(state, "assistant", `${finalText} (${compactErrorMessage(error)})`);
-      return state;
+      return stripEphemeralState(state);
     }
 
     state = pushHistory(state, "user", userText || "[image]");
@@ -255,7 +252,7 @@ export class BotRuntime {
       memoryTurns: state.memoryTurns,
     });
     state.memoryTurns += 1;
-    return state;
+    return stripEphemeralState(state);
   }
 
   private createAgentTools(params: {
@@ -290,7 +287,7 @@ export class BotRuntime {
     return {
       vfs: tool({
         description:
-          "Manage VFS files for scripts and user skills. Use this for library maintenance: list, read, write, patch, and delete files. Prefer patching/updating existing helpers over creating duplicates.",
+          "Manage VFS files for scripts and user skills. Use this to list, read, write, patch, and delete files when file access is needed.",
         inputSchema: z.discriminatedUnion("action", [
           z.object({ action: z.literal("list"), prefix: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }),
           z.object({
@@ -360,19 +357,12 @@ export class BotRuntime {
         execute: async () => runTool("list_skills", {}, async () => ({ skills: await this.listSkills() })),
       }),
       load_skill: tool({
-        description: "Load full instructions for a named skill and keep it available in session context",
+        description: "Load full instructions for a named skill for the current turn",
         inputSchema: z.object({ name: z.string() }),
         execute: async (input) =>
           runTool("load_skill", input as Record<string, unknown>, async () => {
             const skill = await this.getSkillByName(input.name);
             if (!skill) throw new Error(`SKILL_NOT_FOUND: ${input.name}`);
-            if (!params.state.loadedSkills.includes(skill.name)) {
-              params.state = {
-                ...params.state,
-                loadedSkills: [...params.state.loadedSkills, skill.name].slice(-12),
-              };
-              await params.saveState(params.state);
-            }
             return {
               name: skill.name,
               description: skill.description,
@@ -417,7 +407,6 @@ export class BotRuntime {
                       ...params.state,
                       codeRuntime: normalizeCodeRuntimeState(next),
                     };
-                    await params.saveState(params.state);
                   },
                   vfs: this.createVfsAdapter(writes),
                   memory: {
@@ -804,6 +793,14 @@ function countLines(content: string): number {
   return content ? content.split("\n").length : 0;
 }
 
+function stripEphemeralState(state: BotThreadState): BotThreadState {
+  return {
+    ...state,
+    codeRuntime: normalizeCodeRuntimeState(undefined),
+    loadedSkills: [],
+  };
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -833,7 +830,6 @@ function inferImplicitSkillNames(userText: string): string[] {
   if (/gmail|email|inbox|calendar|drive|docs|sheets|google/.test(text)) {
     names.add("google");
     names.add("quickjs");
-    names.add("vfs");
   }
   if (/script|helper|vfs|module|import/.test(text)) {
     names.add("vfs");
@@ -855,32 +851,7 @@ function renderTaskGuidance(userText: string): string {
   if (/calendar/.test(text)) {
     lines.push("- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.");
   }
-  if (/script|skill|workflow|library|reuse|helper/.test(text)) {
-    lines.push("- Use the vfs tool to inspect /scripts and /skills/user before creating anything new.");
-    lines.push("- Patch or merge overlapping helpers instead of creating near-duplicates.");
-    lines.push("- Delete superseded drafts to keep the library tidy.");
-    lines.push("- If asked to update the library and solve a task, do both before stopping.");
-  }
   return lines.join("\n");
-}
-
-function renderFailureHints(history: BotThreadState["history"]): string {
-  const recent = history.slice(-6).map((entry) => entry.content).join("\n");
-  const hints: string[] = [];
-  if (/googleapis|import \{ google \}/i.test(recent)) hints.push("- Use the built-in global `google`; do not import `googleapis`.");
-  if (/endpoint/i.test(recent)) hints.push("- `google.execute` accepts only `service`, `version`, `method`, `params`, and `body`.");
-  if (/return not in a function/i.test(recent)) hints.push("- In execute scripts, explicitly `return` the final value from top-level async code.");
-  if (/expecting '\}'|expecting "\}"/i.test(recent)) hints.push("- When writing module source, prefer small strings or array joins over fragile nested template literals.");
-  if (/expecting ','/i.test(recent)) hints.push("- Avoid large template literals in execute scripts; build summary lines with string concatenation and join().");
-  if (/"result":null/i.test(recent) && /googleCalls":2/i.test(recent)) {
-    hints.push("- Use at most one google.execute call per execute run; fetch ids first, then fetch each detail in its own execute run.");
-  }
-  if (/function signature mismatch/i.test(recent)) hints.push("- In this runtime, avoid multiple google.execute calls in one execute run.");
-  if (/expecting ':'/i.test(recent)) hints.push("- Avoid returning raw object literals from execute scripts; assign to a const and return JSON.stringify(value) or a plain string.");
-  if (/tool=execute[\s\S]*output=.*"result":null/i.test(recent) || /Tool result: execute ok[\s\S]*"result":null/i.test(recent)) {
-    hints.push("- If an execute run returns null, retry with a plain JSON-safe result; for summaries, return one final string.");
-  }
-  return hints.join("\n");
 }
 
 function renderToolTranscript(trace: ToolTrace): string {
