@@ -13,6 +13,7 @@ import {
   deleteVfsEntry,
   getGoogleOAuthToken,
   getPersistedRunStatus,
+  getThreadStateSnapshot,
   getVfsEntry,
   getVfsRevision,
   insertMemoryEpisode,
@@ -94,6 +95,7 @@ export class BotRuntime {
       `memory: ${memory.enabled ? "on" : "off"}`,
       `google: ${googleLinked ? "linked" : "not linked"}`,
       `busy: ${busy}`,
+      `cancel_requested: ${persistedRunStatus.cancelRequested ? "yes" : "no"}`,
       `running_for: ${isRunStatusActive(persistedRunStatus) ? formatDurationSince(persistedRunStatus.startedAt) : "-"}`,
       `last_heartbeat: ${formatElapsedSince(persistedRunStatus.lastHeartbeatAt)}`,
       `verbose: ${state.verbose ? "on" : "off"}`,
@@ -109,6 +111,7 @@ export class BotRuntime {
       "/status - show current bot status",
       "/reset - clear conversation context",
       "/factory-reset - clear conversation, memory, runtime state, and VFS",
+      "/stop - cooperatively stop the current run",
       "/verbose on|off - show tool traces",
       "/google connect - link your Google account",
       "/google status - show Google link status",
@@ -188,7 +191,7 @@ export class BotRuntime {
     const imageBlocks = await loadImages(this.env, message.raw);
     const runtime = this.getRuntimeConfig();
     const toolTraces: ToolTrace[] = [];
-    const tracer = new VerboseTracer(thread, state.verbose);
+    const tracer = new VerboseTracer(this.env.DRECLAW_DB, thread);
     const model = this.createModel(runtime);
     const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
     const skillCatalog = await this.listSkills();
@@ -214,6 +217,7 @@ export class BotRuntime {
       providerOptions: this.getAgentProviderOptions(runtime),
       tools: this.createAgentTools({
         chatId,
+        threadId: thread.id,
         state,
         saveState: async (next) => {
           state = next;
@@ -237,18 +241,33 @@ export class BotRuntime {
     let finalText = "";
     const runTimeoutMs = getRunTimeoutMs(userText);
     try {
+      await this.throwIfCancelled(thread.id);
       finalText = await withTimeout(
         (async () => {
+          await this.throwIfCancelled(thread.id);
           const stream = await withTimeout(agent.stream({ messages }), runTimeoutMs, "Agent stream timed out");
           await withTimeout(thread.post(stream.textStream), runTimeoutMs, "Assistant response timed out");
+          await this.throwIfCancelled(thread.id);
           const response = await withTimeout(Promise.resolve(stream.response), runTimeoutMs, "Assistant response timed out");
           const generatedText = await withTimeout(Promise.resolve(stream.text), runTimeoutMs, "Assistant text timed out");
+          await this.throwIfCancelled(thread.id);
           return (typeof generatedText === "string" ? generatedText : "").trim() || extractAssistantText(response.messages as ModelMessage[]);
         })(),
         runTimeoutMs,
         "Conversation timed out",
       );
     } catch (error) {
+      if (isRunCancelledError(error)) {
+        heartbeat.stop();
+        state = markRunFinished(state);
+        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+        try {
+          await thread.post("Stopped.");
+        } catch {
+          // noop
+        }
+        return stripEphemeralState(state);
+      }
       finalText = await this.recoverTimedOutRun({
         model,
         userText: userText || "[image]",
@@ -301,6 +320,15 @@ export class BotRuntime {
     const tick = async () => {
       if (stopped) return;
       try {
+        await this.throwIfCancelled(thread.id);
+      } catch (error) {
+        if (isRunCancelledError(error)) {
+          stopped = true;
+          if (timer) clearTimeout(timer);
+          return;
+        }
+      }
+      try {
         await thread.startTyping();
       } catch {
         // noop
@@ -331,22 +359,31 @@ export class BotRuntime {
     };
   }
 
+  private async throwIfCancelled(threadId: string): Promise<void> {
+    const status = await getPersistedRunStatus(this.env.DRECLAW_DB, threadId);
+    if (status?.cancelRequested) throw new RunCancelledError();
+  }
+
   private createAgentTools(params: {
     chatId: number;
+    threadId: string;
     state: BotThreadState;
     saveState: (state: BotThreadState) => Promise<void>;
     tracer: VerboseTracer;
     toolTraces: ToolTrace[];
   }) {
     const runTool = async <T>(name: string, args: Record<string, unknown>, execute: () => Promise<T>, writes?: string[]) => {
+      await this.throwIfCancelled(params.threadId);
       await params.tracer.onToolStart(name, args);
       try {
         const result = await execute();
+        await this.throwIfCancelled(params.threadId);
         const trace: ToolTrace = { name, args, ok: true, output: result, writes };
         params.toolTraces.push(trace);
         await params.tracer.onToolResult(trace);
         return result;
       } catch (error) {
+        if (isRunCancelledError(error)) throw error;
         const trace: ToolTrace = {
           name,
           args,
@@ -825,17 +862,32 @@ export class BotRuntime {
 }
 
 class VerboseTracer {
-  constructor(private readonly thread: Thread<BotThreadState>, private readonly enabled: boolean) {}
+  constructor(private readonly db: D1Database, private readonly thread: Thread<BotThreadState>) {}
+
+  private async isEnabled(): Promise<boolean> {
+    const state = await getThreadStateSnapshot<BotThreadState>(this.db, this.thread.id);
+    return Boolean(state?.verbose);
+  }
 
   async onToolStart(name: string, args: Record<string, unknown>): Promise<void> {
-    if (!this.enabled) return;
+    if (!(await this.isEnabled())) return;
     await this.thread.post({ markdown: renderTraceStart(name, args) });
   }
 
   async onToolResult(trace: ToolTrace): Promise<void> {
-    if (!this.enabled) return;
+    if (!(await this.isEnabled())) return;
     await this.thread.post({ markdown: renderTraceResult(trace) });
   }
+}
+
+class RunCancelledError extends Error {
+  constructor() {
+    super("Run cancelled");
+  }
+}
+
+function isRunCancelledError(error: unknown): error is RunCancelledError {
+  return error instanceof RunCancelledError;
 }
 
 function buildAgentMessages(systemPrompt: string, userText: string, imageBlocks: string[]): ModelMessage[] {
@@ -913,6 +965,8 @@ function idleRunStatus() {
     running: false,
     startedAt: null,
     lastHeartbeatAt: null,
+    cancelRequested: false,
+    cancelRequestedAt: null,
   };
 }
 
@@ -924,6 +978,8 @@ function markRunStarted(state: BotThreadState): BotThreadState {
       running: true,
       startedAt: nowIso,
       lastHeartbeatAt: nowIso,
+      cancelRequested: false,
+      cancelRequestedAt: null,
     },
   };
 }

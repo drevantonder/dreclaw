@@ -9,6 +9,8 @@ export interface RunStatus {
   running: boolean;
   startedAt: string | null;
   lastHeartbeatAt: string | null;
+  cancelRequested: boolean;
+  cancelRequestedAt: string | null;
 }
 
 export interface BotThreadState {
@@ -45,6 +47,11 @@ export function normalizeBotThreadState(input: BotThreadState | null | undefined
       lastHeartbeatAt:
         typeof source?.runStatus?.lastHeartbeatAt === "string" && source.runStatus.lastHeartbeatAt.trim()
           ? source.runStatus.lastHeartbeatAt
+          : null,
+      cancelRequested: Boolean(source?.runStatus?.cancelRequested),
+      cancelRequestedAt:
+        typeof source?.runStatus?.cancelRequestedAt === "string" && source.runStatus.cancelRequestedAt.trim()
+          ? source.runStatus.cancelRequestedAt
           : null,
     },
   };

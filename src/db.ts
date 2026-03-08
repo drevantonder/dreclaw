@@ -86,6 +86,8 @@ export interface PersistedRunStatus {
   running: boolean;
   startedAt: string | null;
   lastHeartbeatAt: string | null;
+  cancelRequested: boolean;
+  cancelRequestedAt: string | null;
 }
 
 export async function markUpdateSeen(db: D1Database, updateId: number): Promise<boolean> {
@@ -116,6 +118,19 @@ export async function setPersistedRunStatus(db: D1Database, threadId: string, va
 
 export async function clearPersistedRunStatus(db: D1Database, threadId: string): Promise<void> {
   await deleteChatStateValue(db, runStatusKey(threadId));
+}
+
+export async function requestPersistedRunStop(db: D1Database, threadId: string): Promise<PersistedRunStatus | null> {
+  const current = await getPersistedRunStatus(db, threadId);
+  if (!current) return null;
+  const nowIso = new Date().toISOString();
+  const next: PersistedRunStatus = {
+    ...current,
+    cancelRequested: true,
+    cancelRequestedAt: nowIso,
+  };
+  await setPersistedRunStatus(db, threadId, next);
+  return next;
 }
 
 export async function createGoogleOAuthState(

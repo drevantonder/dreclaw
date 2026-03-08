@@ -3,7 +3,7 @@ import { Chat, type Message, type Thread } from "chat";
 import { BotRuntime } from "./app/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "./app/state";
 import { createD1StateAdapter } from "./chat-state";
-import { getPersistedRunStatus, getThreadStateSnapshot, setThreadStateSnapshot } from "./db";
+import { getPersistedRunStatus, getThreadStateSnapshot, requestPersistedRunStop, setThreadStateSnapshot } from "./db";
 import { sendTelegramTextMessage } from "./telegram-api";
 import type { Env, TelegramUpdate } from "./types";
 
@@ -101,6 +101,16 @@ async function handleAsyncCommand(params: {
         runStatus,
       }),
     );
+    return;
+  }
+
+  if (lowered === "/stop") {
+    if (!runStatus.running) {
+      await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Nothing is running.");
+      return;
+    }
+    await requestPersistedRunStop(env.DRECLAW_DB, threadId);
+    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Stopping current run...");
     return;
   }
 
