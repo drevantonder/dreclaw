@@ -199,7 +199,9 @@ async function buildModules(
 
 function buildMainModule(code: string, vfsSpecifiers: Map<string, string>): string {
   const preparedCode = rewriteVfsImports(maybeInjectImplicitReturn(code), vfsSpecifiers);
+  const staticImports = extractStaticVfsImports(preparedCode, vfsSpecifiers);
   return [
+    ...staticImports.imports,
     "",
     "function formatValue(value) {",
     "  if (typeof value === 'string') return value;",
@@ -282,7 +284,7 @@ function buildMainModule(code: string, vfsSpecifiers: Map<string, string>): stri
     "    };",
     "    try {",
     "      const result = await (async (input, fs, memory, google, fetch, console) => {",
-    indentCode(preparedCode, 8),
+    indentCode(staticImports.code, 8),
     "      })(payload.input, fs, memory, google, fetchShim, consoleShim);",
     "      stats.durationMs = Date.now() - startedAt;",
     "      return Response.json({ ok: true, result: sanitizeResult(result, env.EXEC_LIMITS.execMaxOutputBytes), logs, stats });",
@@ -300,6 +302,27 @@ function buildMainModule(code: string, vfsSpecifiers: Map<string, string>): stri
     "};",
     "",
   ].join("\n");
+}
+
+function extractStaticVfsImports(
+  source: string,
+  vfsSpecifiers: Map<string, string>,
+): { imports: string[]; code: string } {
+  const imports: string[] = [];
+  let index = 0;
+  const code = source.replace(
+    /import\((['"])(vfs:\/[^'"]+)\1\)/g,
+    (_match, _quote: string, path: string) => {
+      const normalizedPath = path.slice(4);
+      const specifier = vfsSpecifiers.get(normalizedPath);
+      if (!specifier) return _match;
+      const localName = `__vfs_import_${index}`;
+      imports.push(`import * as ${localName} from ${JSON.stringify(specifier)};`);
+      index += 1;
+      return `Promise.resolve(${localName})`;
+    },
+  );
+  return { imports, code };
 }
 
 function maybeInjectImplicitReturn(code: string): string {
