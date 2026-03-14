@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   buildGoogleOAuthUrl,
   createOAuthStateToken,
@@ -55,17 +55,18 @@ describe("google-oauth", () => {
   it("exchanges auth code for tokens", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            access_token: "access",
-            refresh_token: "refresh",
-            scope: "scopeA scopeB",
-            expires_in: 3600,
-            token_type: "Bearer",
-          }),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "access",
+              refresh_token: "refresh",
+              scope: "scopeA scopeB",
+              expires_in: 3600,
+              token_type: "Bearer",
+            }),
+            { status: 200 },
+          ),
       ),
     );
     const config = getGoogleOAuthConfig(createEnv());
@@ -77,16 +78,17 @@ describe("google-oauth", () => {
   it("refreshes access token", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            access_token: "access-2",
-            scope: "scopeA scopeB",
-            expires_in: 3500,
-            token_type: "Bearer",
-          }),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "access-2",
+              scope: "scopeA scopeB",
+              expires_in: 3500,
+              token_type: "Bearer",
+            }),
+            { status: 200 },
+          ),
       ),
     );
     const config = getGoogleOAuthConfig(createEnv());

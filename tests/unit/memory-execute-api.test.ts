@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const {
   retrieveMemoryContext,
@@ -30,7 +30,11 @@ vi.mock("../../src/db", () => ({
   deleteMemoryFactById,
 }));
 
-import { executeMemoryFind, executeMemoryRemove, executeMemorySave } from "../../src/memory/execute-api";
+import {
+  executeMemoryFind,
+  executeMemoryRemove,
+  executeMemorySave,
+} from "../../src/memory/execute-api";
 
 describe("memory execute api", () => {
   beforeEach(() => {

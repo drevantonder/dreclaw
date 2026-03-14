@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getMemoryConfig } from "../../src/memory/config";
 import type { Env } from "../../src/types";
 
@@ -21,6 +21,8 @@ describe("memory config", () => {
   });
 
   it("requires AI and vectorize when enabled", () => {
-    expect(() => getMemoryConfig(baseEnv({ MEMORY_ENABLED: "true" }))).toThrow(/requires AI binding/);
+    expect(() => getMemoryConfig(baseEnv({ MEMORY_ENABLED: "true" }))).toThrow(
+      /requires AI binding/,
+    );
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { executeBash } from "../../src/bash-exec";
 
 afterEach(() => {
@@ -15,7 +15,11 @@ function createVfs(initialFiles: Record<string, string> = {}) {
         files.set(path, content);
         return { ok: true as const };
       },
-      listFiles: async (prefix: string, limit: number) => [...files.keys()].filter((path) => path.startsWith(prefix)).sort().slice(0, limit),
+      listFiles: async (prefix: string, limit: number) =>
+        [...files.keys()]
+          .filter((path) => path.startsWith(prefix))
+          .sort()
+          .slice(0, limit),
       removeFile: async (path: string) => files.delete(path),
     },
   };
@@ -47,7 +51,10 @@ describe("bash-exec", () => {
   it("persists deletions back to vfs", async () => {
     const { adapter, files } = createVfs({ "/remove.txt": "gone\n" });
 
-    const result = await executeBash({ command: "rm /remove.txt && printf done" }, { config, vfs: adapter });
+    const result = await executeBash(
+      { command: "rm /remove.txt && printf done" },
+      { config, vfs: adapter },
+    );
 
     expect(result.ok).toBe(true);
     expect(result.stdout).toBe("done");
@@ -57,10 +64,16 @@ describe("bash-exec", () => {
 
   it("supports curl with full network access", async () => {
     const { adapter } = createVfs();
-    const fetchMock = vi.fn(async () => new Response("network-ok", { status: 200, headers: { "content-type": "text/plain" } }));
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("network-ok", { status: 200, headers: { "content-type": "text/plain" } }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await executeBash({ command: "curl -s https://example.com/demo" }, { config, vfs: adapter });
+    const result = await executeBash(
+      { command: "curl -s https://example.com/demo" },
+      { config, vfs: adapter },
+    );
 
     expect(result.ok).toBe(true);
     expect(result.stdout).toBe("network-ok");
@@ -70,7 +83,10 @@ describe("bash-exec", () => {
   it("does not enable sqlite3", async () => {
     const { adapter } = createVfs();
 
-    const result = await executeBash({ command: 'sqlite3 :memory: "SELECT 1"' }, { config, vfs: adapter });
+    const result = await executeBash(
+      { command: 'sqlite3 :memory: "SELECT 1"' },
+      { config, vfs: adapter },
+    );
 
     expect(result.ok).toBe(false);
     expect(result.exitCode).toBe(127);

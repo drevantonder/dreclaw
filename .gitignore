@@ -6,3 +6,4 @@ node_modules/
 dist/
 .worktrees/
 .telegram-test-auth.json
+.DS_Store

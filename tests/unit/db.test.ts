@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   countVfsEntries,
   createGoogleOAuthState,
@@ -38,7 +38,7 @@ function createMockDb(options?: {
     },
     run: async () => ({ meta: { changes: options?.runChanges ?? 1 } }),
     first: async <T>() => (options?.firstRow ?? null) as T | null,
-    all: async <T>() => ({ results: ((options?.allRows ?? []) as T[]) }),
+    all: async <T>() => ({ results: (options?.allRows ?? []) as T[] }),
   };
 
   return {
@@ -72,7 +72,13 @@ describe("db", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
     });
     expect(inserts[0]).toContain("INSERT INTO google_oauth_states");
-    expect(insertBinds[0]).toEqual(["abc", 777, 42, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"]);
+    expect(insertBinds[0]).toEqual([
+      "abc",
+      777,
+      42,
+      "2026-01-01T00:00:00.000Z",
+      "2026-01-01T00:00:00.000Z",
+    ]);
 
     const selectDb = createMockDb({
       firstRow: {
@@ -118,7 +124,14 @@ describe("db", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     expect(sql[0]).toContain("INSERT INTO google_oauth_tokens");
-    expect(binds[0]).toEqual(["default", 42, "cipher", "nonce", "gmail.readonly", "2026-01-01T00:00:00.000Z"]);
+    expect(binds[0]).toEqual([
+      "default",
+      42,
+      "cipher",
+      "nonce",
+      "gmail.readonly",
+      "2026-01-01T00:00:00.000Z",
+    ]);
 
     const readDb = createMockDb({
       firstRow: {

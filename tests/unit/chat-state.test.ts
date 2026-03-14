@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createD1StateAdapter } from "../../src/chat-state";
 import { FakeD1 } from "../helpers/fakes";
 

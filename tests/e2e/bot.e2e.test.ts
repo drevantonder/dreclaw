@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import worker from "../../src/index";
 import { createEnv } from "../helpers/fakes";
 
@@ -45,7 +45,10 @@ function telegramMessageResult(text: string, messageId: number) {
 
 type MockContext = {
   messages?: Array<Record<string, unknown>>;
-  tools: Array<{ name: string; execute: (toolCallId: string, params: unknown) => Promise<unknown> }>;
+  tools: Array<{
+    name: string;
+    execute: (toolCallId: string, params: unknown) => Promise<unknown>;
+  }>;
 };
 
 type MockAssistant = {
@@ -60,10 +63,19 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
 }));
 
 vi.mock("../../src/code-exec", () => ({
-  executeCode: vi.fn(async (_input: { code: string }, ctx: { vfs?: { writeFile: (path: string, content: string, overwrite: boolean) => Promise<unknown> } }) => {
-    await ctx.vfs?.writeFile("/tmp/output.txt", "hello", true);
-    return { ok: true, result: "done", logs: [], stats: {} };
-  }),
+  executeCode: vi.fn(
+    async (
+      _input: { code: string },
+      ctx: {
+        vfs?: {
+          writeFile: (path: string, content: string, overwrite: boolean) => Promise<unknown>;
+        };
+      },
+    ) => {
+      await ctx.vfs?.writeFile("/tmp/output.txt", "hello", true);
+      return { ok: true, result: "done", logs: [], stats: {} };
+    },
+  ),
   getCodeExecutionConfig: vi.fn(() => ({
     codeExecEnabled: true,
     netFetchEnabled: true,
@@ -92,29 +104,43 @@ vi.mock("../../src/code-exec", () => ({
       vfsListLimit: 100,
     },
   })),
-  normalizeCodeRuntimeState: vi.fn((state?: { installedPackages?: unknown[] }) => ({ installedPackages: state?.installedPackages ?? [] })),
-  searchCodeRuntime: vi.fn(({ query }: { query?: string }) => ({ runtime: { engine: "quickjs-emscripten", apis: [], limits: {} }, packages: query ? [{ spec: query }] : [] })),
+  normalizeCodeRuntimeState: vi.fn((state?: { installedPackages?: unknown[] }) => ({
+    installedPackages: state?.installedPackages ?? [],
+  })),
+  searchCodeRuntime: vi.fn(({ query }: { query?: string }) => ({
+    runtime: { engine: "quickjs-emscripten", apis: [], limits: {} },
+    packages: query ? [{ spec: query }] : [],
+  })),
 }));
 
 vi.mock("../../src/bash-exec", () => ({
-  executeBash: vi.fn(async (_input: { command: string }, ctx: { vfs: { writeFile: (path: string, content: string, overwrite: boolean) => Promise<unknown> } }) => {
-    await ctx.vfs.writeFile("/tmp/bash-output.txt", "hello from bash\n", true);
-    return {
-      ok: true,
-      stdout: "hello from bash\n",
-      stderr: "",
-      exitCode: 0,
-      cwd: "/",
-      writes: ["write /tmp/bash-output.txt"],
-    };
-  }),
+  executeBash: vi.fn(
+    async (
+      _input: { command: string },
+      ctx: {
+        vfs: { writeFile: (path: string, content: string, overwrite: boolean) => Promise<unknown> };
+      },
+    ) => {
+      await ctx.vfs.writeFile("/tmp/bash-output.txt", "hello from bash\n", true);
+      return {
+        ok: true,
+        stdout: "hello from bash\n",
+        stderr: "",
+        exitCode: 0,
+        cwd: "/",
+        writes: ["write /tmp/bash-output.txt"],
+      };
+    },
+  ),
 }));
 
 vi.mock("ai", () => {
   class MockToolLoopAgent {
     private readonly tools: Record<string, { execute?: (args: unknown) => Promise<unknown> }>;
 
-    constructor(options?: { tools?: Record<string, { execute?: (args: unknown) => Promise<unknown> }> }) {
+    constructor(options?: {
+      tools?: Record<string, { execute?: (args: unknown) => Promise<unknown> }>;
+    }) {
       this.tools = options?.tools ?? {};
     }
 
@@ -139,7 +165,10 @@ vi.mock("ai", () => {
           await tool?.execute(String(toolCall.id ?? ""), toolCall.arguments ?? {});
         }
 
-        const text = textBlocks.map((block) => String(block.text ?? "")).join("\n").trim();
+        const text = textBlocks
+          .map((block) => String(block.text ?? ""))
+          .join("\n")
+          .trim();
         messages.push({ role: "assistant", content: text });
 
         if (next.stopReason === "toolUse") continue;
@@ -207,10 +236,16 @@ describe("chat sdk bot", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/getMe")) {
-          return new Response(JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/getWebhookInfo")) {
-          return new Response(JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/sendChatAction")) {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
@@ -218,7 +253,9 @@ describe("chat sdk bot", () => {
         if (url.includes("/sendMessage")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
           sent.push(body.text ?? "");
-          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", 100)), { status: 200 });
+          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", 100)), {
+            status: 200,
+          });
         }
         if (url.includes("/editMessageText")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
@@ -229,14 +266,25 @@ describe("chat sdk bot", () => {
       }),
     );
 
-    modelQueue.push({ stopReason: "endTurn", content: [{ type: "text", text: "Hello from Chat SDK." }] });
+    modelQueue.push({
+      stopReason: "endTurn",
+      content: [{ type: "text", text: "Hello from Chat SDK." }],
+    });
 
-    const first = await app.fetch(makeWebhookRequest(env.TELEGRAM_WEBHOOK_SECRET, 1, "hello") as unknown as Request, env, tracker.ctx);
+    const first = await app.fetch(
+      makeWebhookRequest(env.TELEGRAM_WEBHOOK_SECRET, 1, "hello") as unknown as Request,
+      env,
+      tracker.ctx,
+    );
     await tracker.wait();
     expect(first.status).toBe(200);
     expect([...sent, ...edited].join("\n")).toContain("Hello from Chat SDK.");
 
-    const second = await app.fetch(makeWebhookRequest(env.TELEGRAM_WEBHOOK_SECRET, 1, "hello") as unknown as Request, env, tracker.ctx);
+    const second = await app.fetch(
+      makeWebhookRequest(env.TELEGRAM_WEBHOOK_SECRET, 1, "hello") as unknown as Request,
+      env,
+      tracker.ctx,
+    );
     await tracker.wait();
     expect(second.status).toBe(200);
     expect([...sent, ...edited].join("\n").match(/Hello from Chat SDK\./g)?.length).toBe(1);
@@ -253,10 +301,16 @@ describe("chat sdk bot", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/getMe")) {
-          return new Response(JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/getWebhookInfo")) {
-          return new Response(JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/sendChatAction")) {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
@@ -264,7 +318,10 @@ describe("chat sdk bot", () => {
         if (url.includes("/sendMessage")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
           sent.push(body.text ?? "");
-          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)), { status: 200 });
+          return new Response(
+            JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)),
+            { status: 200 },
+          );
         }
         if (url.includes("/editMessageText")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
@@ -295,7 +352,12 @@ describe("chat sdk bot", () => {
       {
         stopReason: "toolUse",
         content: [
-          { type: "toolCall", id: "tool-1", name: "execute", arguments: { code: 'await fs.write("/tmp/output.txt", "hello")' } },
+          {
+            type: "toolCall",
+            id: "tool-1",
+            name: "execute",
+            arguments: { code: 'await fs.write("/tmp/output.txt", "hello")' },
+          },
         ],
       },
       { stopReason: "endTurn", content: [{ type: "text", text: "Done running code." }] },
@@ -317,7 +379,7 @@ describe("chat sdk bot", () => {
     expect(output).toContain("Tool: execute");
     expect(output).toContain("await fs.write");
     expect(output).toContain("writes: write /tmp/output.txt");
-    expect(output).toContain("result: {\"ok\":true");
+    expect(output).toContain('result: {"ok":true');
     expect(output).toContain("Done running code.");
   });
 
@@ -332,10 +394,16 @@ describe("chat sdk bot", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/getMe")) {
-          return new Response(JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/getWebhookInfo")) {
-          return new Response(JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/sendChatAction")) {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
@@ -343,7 +411,10 @@ describe("chat sdk bot", () => {
         if (url.includes("/sendMessage")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
           sent.push(body.text ?? "");
-          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)), { status: 200 });
+          return new Response(
+            JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)),
+            { status: 200 },
+          );
         }
         if (url.includes("/editMessageText")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
@@ -378,7 +449,9 @@ describe("chat sdk bot", () => {
             type: "toolCall",
             id: "tool-bash-1",
             name: "bash",
-            arguments: { command: 'printf "hello" > /tmp/bash-output.txt && cat /tmp/bash-output.txt' },
+            arguments: {
+              command: 'printf "hello" > /tmp/bash-output.txt && cat /tmp/bash-output.txt',
+            },
           },
         ],
       },
@@ -399,7 +472,7 @@ describe("chat sdk bot", () => {
     const output = [...sent, ...edited].join("\n");
     expect(output).toContain("verbose enabled");
     expect(output).toContain("Tool: bash");
-    expect(output).toContain("printf \"hello\"");
+    expect(output).toContain('printf "hello"');
     expect(output).toContain("writes: write /tmp/bash-output.txt");
     expect(output).toContain('result: {"ok":true');
     expect(output).toContain("Done running bash.");
@@ -415,10 +488,16 @@ describe("chat sdk bot", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/getMe")) {
-          return new Response(JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/getWebhookInfo")) {
-          return new Response(JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/sendChatAction")) {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
@@ -426,7 +505,9 @@ describe("chat sdk bot", () => {
         if (url.includes("/sendMessage")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
           sent.push(body.text ?? "");
-          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", 100)), { status: 200 });
+          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", 100)), {
+            status: 200,
+          });
         }
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }),
@@ -476,10 +557,16 @@ describe("chat sdk bot", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/getMe")) {
-          return new Response(JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/getWebhookInfo")) {
-          return new Response(JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/sendChatAction")) {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
@@ -487,7 +574,10 @@ describe("chat sdk bot", () => {
         if (url.includes("/sendMessage")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
           sent.push(body.text ?? "");
-          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)), { status: 200 });
+          return new Response(
+            JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)),
+            { status: 200 },
+          );
         }
         if (url.includes("/editMessageText")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
@@ -554,10 +644,16 @@ describe("chat sdk bot", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/getMe")) {
-          return new Response(JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/getWebhookInfo")) {
-          return new Response(JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "https://test.local/telegram/webhook" } }),
+            { status: 200 },
+          );
         }
         if (url.includes("/sendChatAction")) {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
@@ -565,7 +661,10 @@ describe("chat sdk bot", () => {
         if (url.includes("/sendMessage")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
           sent.push(body.text ?? "");
-          return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)), { status: 200 });
+          return new Response(
+            JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)),
+            { status: 200 },
+          );
         }
         if (url.includes("/editMessageText")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
@@ -604,14 +703,28 @@ describe("chat sdk bot", () => {
               action: "write",
               path: "/skills/user/inbox-summary/SKILL.md",
               mode: "create",
-              content: "---\nname: inbox-summary\ndescription: Summarize inbox messages when asked for email summaries.\n---\n\n# Inbox Summary\n\n1. Load google if needed.\n2. Summarize messages.\n",
+              content:
+                "---\nname: inbox-summary\ndescription: Summarize inbox messages when asked for email summaries.\n---\n\n# Inbox Summary\n\n1. Load google if needed.\n2. Summarize messages.\n",
             },
           },
-          { type: "toolCall", id: "tool-5", name: "vfs", arguments: { action: "read", path: "/skills/user/inbox-summary/SKILL.md" } },
-          { type: "toolCall", id: "tool-6", name: "load_skill", arguments: { name: "inbox-summary" } },
+          {
+            type: "toolCall",
+            id: "tool-5",
+            name: "vfs",
+            arguments: { action: "read", path: "/skills/user/inbox-summary/SKILL.md" },
+          },
+          {
+            type: "toolCall",
+            id: "tool-6",
+            name: "load_skill",
+            arguments: { name: "inbox-summary" },
+          },
         ],
       },
-      { stopReason: "endTurn", content: [{ type: "text", text: "Updated the inbox-summary skill." }] },
+      {
+        stopReason: "endTurn",
+        content: [{ type: "text", text: "Updated the inbox-summary skill." }],
+      },
     );
 
     await app.fetch(

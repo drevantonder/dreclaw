@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { extractFacts, scoreSalience } from "../../src/memory/salience";
 
 describe("memory salience", () => {
