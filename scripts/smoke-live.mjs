@@ -30,7 +30,7 @@ function parseArgs(argv) {
     else if (part === "--api-key") args.apiKey = argv[++i] ?? args.apiKey;
     else if (part === "--help" || part === "-h") {
       process.stdout.write(
-        "Usage: pnpm smoke:live -- --prompt \"hey\" [--model kimi-k2.5] [--base-url https://opencode.ai/zen/go/v1] [--api-key <opencode-key>]\n",
+        'Usage: vp run smoke:live -- --prompt "hey" [--model kimi-k2.5] [--base-url https://opencode.ai/zen/go/v1] [--api-key <opencode-key>]\n',
       );
       process.exit(0);
     }
@@ -78,16 +78,24 @@ async function main() {
     }),
     custom_context_set: tool({
       description: "Create or update one custom context entry by id",
-      inputSchema: z.object({ id: z.string(), text: z.string(), expected_version: z.number().optional() }),
+      inputSchema: z.object({
+        id: z.string(),
+        text: z.string(),
+        expected_version: z.number().optional(),
+      }),
       execute: async ({ id, text, expected_version }) => {
         if (typeof expected_version === "number" && expected_version !== version) {
-          return { ok: false, error: `Version conflict: expected ${expected_version}, current ${version}` };
+          return {
+            ok: false,
+            error: `Version conflict: expected ${expected_version}, current ${version}`,
+          };
         }
         const normalizedId = id.trim().toLowerCase();
         if (!normalizedId) return { ok: false, error: "id is required" };
         if (!text.trim()) return { ok: false, error: "text is required" };
         const existingIndex = customContext.findIndex((item) => item.id === normalizedId);
-        if (existingIndex >= 0) customContext[existingIndex] = { id: normalizedId, text: text.trim() };
+        if (existingIndex >= 0)
+          customContext[existingIndex] = { id: normalizedId, text: text.trim() };
         else customContext.push({ id: normalizedId, text: text.trim() });
         version += 1;
         return { ok: true, version };
@@ -98,12 +106,18 @@ async function main() {
       inputSchema: z.object({ id: z.string(), expected_version: z.number().optional() }),
       execute: async ({ id, expected_version }) => {
         if (typeof expected_version === "number" && expected_version !== version) {
-          return { ok: false, error: `Version conflict: expected ${expected_version}, current ${version}` };
+          return {
+            ok: false,
+            error: `Version conflict: expected ${expected_version}, current ${version}`,
+          };
         }
         const normalizedId = id.trim().toLowerCase();
         const existingIndex = customContext.findIndex((item) => item.id === normalizedId);
         if (!normalizedId || existingIndex < 0) {
-          return { ok: false, error: `custom_context entry not found: ${normalizedId || "(empty)"}` };
+          return {
+            ok: false,
+            error: `custom_context entry not found: ${normalizedId || "(empty)"}`,
+          };
         }
         customContext.splice(existingIndex, 1);
         version += 1;

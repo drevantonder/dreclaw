@@ -38,7 +38,7 @@ flowchart TD
 
 - Cloudflare account
 - Telegram bot
-- Node.js and Wrangler CLI
+- `vp` and a Node.js runtime managed by Vite+
 
 ### Environment
 
@@ -57,7 +57,7 @@ Set Worker secret:
 
 ```bash
 set -a; source .env; set +a
-pnpm secrets:sync
+vp run cf:secrets:sync
 ```
 
 This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPENCODE_API_KEY`, `GOOGLE_OAUTH_*`, `MODEL`, `BASE_URL`).
@@ -67,7 +67,7 @@ This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPEN
 Route is read from `wrangler.toml`:
 
 ```bash
-pnpm deploy
+vp run cf:deploy
 ```
 
 ## Usage
@@ -86,18 +86,18 @@ Normal messages stream a single assistant reply.
 
 ## Testing
 
-- Run full tests: `pnpm test`
-- Type-check: `pnpm check`
-- Run live model smoke test (real OpenCode Go + tool loop): `set -a; source .env; set +a && pnpm smoke:live -- --prompt "hey"`
-- Run Telegram live test via GramJS: `pnpm live:telegram -- --prompt "hey"`
-- Run pre-deploy gate: `pnpm verify:predeploy`
+- Run full tests: `vp test`
+- Check format, lint, and types: `vp check`
+- Run live model smoke test (real OpenCode Go + tool loop): `set -a; source .env; set +a && vp run smoke:live -- --prompt "hey"`
+- Run Telegram live test via GramJS: `vp run live:telegram -- --prompt "hey"`
+- Run pre-deploy gate: `vp run cf:verify:predeploy`
 
 ### Telegram live harness
 
 - Uses a real Telegram user account via GramJS, not Telegram Web.
 - Add local-only env vars: `TELEGRAM_TEST_API_ID`, `TELEGRAM_TEST_API_HASH`, `TELEGRAM_TEST_BOT_USERNAME`, `TELEGRAM_TEST_SESSION`.
 - Get `TELEGRAM_TEST_API_ID` and `TELEGRAM_TEST_API_HASH` from `https://my.telegram.org/apps`.
-- First-time login: `pnpm live:telegram -- --login` and save the printed session string into `.env` as `TELEGRAM_TEST_SESSION`.
+- First-time login: `vp run live:telegram -- --login` and save the printed session string into `.env` as `TELEGRAM_TEST_SESSION`.
 - Keep these values local only; do not sync them as Worker secrets.
 
 ## Persistence model
@@ -129,8 +129,8 @@ const messages = await google.execute({
   version: "v1",
   method: "users.messages.list",
   params: { userId: "me", maxResults: 5, q: "is:unread" },
-})
-messages
+});
+messages;
 ```
 
 ```js
@@ -143,8 +143,13 @@ await google.execute({
     range: "Sheet1!A1:B2",
     valueInputOption: "RAW",
   },
-  body: { values: [["name", "value"], ["demo", "1"]] },
-})
+  body: {
+    values: [
+      ["name", "value"],
+      ["demo", "1"],
+    ],
+  },
+});
 ```
 
 ## Auth model

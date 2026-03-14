@@ -21,7 +21,10 @@ function loadDotEnv(filePath) {
     const [, key, rest] = match;
     if (process.env[key] != null && process.env[key] !== "") continue;
     let value = rest;
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
       value = value.slice(1, -1);
     }
     process.env[key] = value;
@@ -71,7 +74,7 @@ function parseArgs(argv) {
 function printHelp() {
   process.stdout.write(
     [
-      "Usage: pnpm live:telegram -- --prompt \"hello\"",
+      'Usage: vp run live:telegram -- --prompt "hello"',
       "",
       "Options:",
       "  --prompt <text>",
@@ -108,7 +111,9 @@ function sleep(ms) {
 }
 
 function normalizeUsername(value) {
-  return String(value ?? "").trim().replace(/^@+/, "");
+  return String(value ?? "")
+    .trim()
+    .replace(/^@+/, "");
 }
 
 function readAuthState() {
@@ -136,7 +141,9 @@ function getRequiredEnv(name) {
 
 function getMessageText(message) {
   const value = message?.message ?? message?.text ?? "";
-  return String(value ?? "").replace(/\s+/g, " ").trim();
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function formatMessage(message) {
@@ -203,18 +210,33 @@ async function connectClient(args) {
     if (!pending?.phone || !pending?.phoneCodeHash) {
       fail("No pending Telegram auth state. Run --login without --code first to send a code.");
     }
-    if (Number.isFinite(Number(pending.dcId)) && Number(pending.dcId) > 0 && client.session.dcId !== Number(pending.dcId)) {
+    if (
+      Number.isFinite(Number(pending.dcId)) &&
+      Number(pending.dcId) > 0 &&
+      client.session.dcId !== Number(pending.dcId)
+    ) {
       await client._switchDC(Number(pending.dcId));
     }
     try {
-      await client.invoke(new Api.auth.SignIn({
-        phoneNumber: String(pending.phone),
-        phoneCodeHash: String(pending.phoneCodeHash),
-        phoneCode: code,
-      }));
+      await client.invoke(
+        new Api.auth.SignIn({
+          phoneNumber: String(pending.phone),
+          phoneCodeHash: String(pending.phoneCodeHash),
+          phoneCode: code,
+        }),
+      );
     } catch (error) {
-      if ((error && typeof error === "object" && "errorMessage" in error && error.errorMessage === "SESSION_PASSWORD_NEEDED") || String(error).includes("SESSION_PASSWORD_NEEDED")) {
-        if (!password) fail("Telegram 2FA password required. Re-run with --password or set TELEGRAM_TEST_PASSWORD.");
+      if (
+        (error &&
+          typeof error === "object" &&
+          "errorMessage" in error &&
+          error.errorMessage === "SESSION_PASSWORD_NEEDED") ||
+        String(error).includes("SESSION_PASSWORD_NEEDED")
+      ) {
+        if (!password)
+          fail(
+            "Telegram 2FA password required. Re-run with --password or set TELEGRAM_TEST_PASSWORD.",
+          );
         await client.signInWithPassword(apiCredentials, {
           password: async () => password,
           onError: (err) => {
@@ -226,7 +248,7 @@ async function connectClient(args) {
       }
     }
     clearAuthState();
-    const saved = client.session.save();
+    const saved = String(client.session.save());
     process.stdout.write(`Save this in .env as TELEGRAM_TEST_SESSION:\n${saved}\n`);
   }
 
@@ -240,7 +262,10 @@ async function runPrompt(client, args) {
 
   const entity = await client.getEntity(bot);
   const beforeMessages = await client.getMessages(entity, { limit: 10 });
-  const baselineId = beforeMessages.reduce((max, message) => Math.max(max, Number(message?.id ?? 0)), 0);
+  const baselineId = beforeMessages.reduce(
+    (max, message) => Math.max(max, Number(message?.id ?? 0)),
+    0,
+  );
 
   await client.sendMessage(entity, { message: args.prompt });
 
@@ -253,12 +278,16 @@ async function runPrompt(client, args) {
     transcript = pickReply(messages, baselineId);
 
     const botReplies = transcript.filter((message) => message.direction === "bot");
-    const nonThinkingReplies = botReplies.filter((message) => message.text && message.text !== "Thinking...");
+    const nonThinkingReplies = botReplies.filter(
+      (message) => message.text && message.text !== "Thinking...",
+    );
 
     if (nonThinkingReplies.length) {
       if (!lastNonThinkingAt) lastNonThinkingAt = Date.now();
       const latest = nonThinkingReplies[nonThinkingReplies.length - 1];
-      const hasThinkingAfterLatest = botReplies.some((message) => message.id > latest.id && message.text === "Thinking...");
+      const hasThinkingAfterLatest = botReplies.some(
+        (message) => message.id > latest.id && message.text === "Thinking...",
+      );
       if (!hasThinkingAfterLatest && Date.now() - lastNonThinkingAt >= 1200) {
         assertTranscript(botReplies, args.expect, args.reject);
         return { ok: true, bot, prompt: args.prompt, transcript };
