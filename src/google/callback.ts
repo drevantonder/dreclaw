@@ -1,5 +1,5 @@
 import { decodeEncryptionKey, encryptSecret } from "../crypto";
-import { sendTelegramTextMessage } from "../telegram/api";
+import { sendTelegramTextMessage } from "../chat-adapters/telegram/api";
 import type { Env } from "../types";
 import { htmlResponse } from "../cloudflare/http/response";
 import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig } from "./config";

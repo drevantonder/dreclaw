@@ -1,10 +1,10 @@
 import { createTelegramAdapter } from "@chat-adapter/telegram";
 import { Chat, type Message, type SerializedThread, type Thread } from "chat";
-import { BotRuntime } from "../app/runtime";
-import { normalizeBotThreadState, type BotThreadState } from "../app/state";
-import { createD1StateAdapter } from "../chat-state";
-import { createRunCoordinator } from "../run";
-import type { Env } from "../types";
+import { BotRuntime } from "../../app/runtime";
+import { normalizeBotThreadState, type BotThreadState } from "../../app/state";
+import { createD1StateAdapter } from "../../chat-state";
+import { createRunCoordinator } from "../../run";
+import type { Env } from "../../types";
 import { isAllowedTelegramMessage } from "./auth";
 import { handleAsyncCommand } from "./commands";
 import {

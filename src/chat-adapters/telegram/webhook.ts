@@ -1,5 +1,5 @@
-import { markUpdateSeen } from "../db";
-import type { Env, TelegramUpdate } from "../types";
+import { markUpdateSeen } from "../../db";
+import type { Env, TelegramUpdate } from "../../types";
 import { hasValidTelegramWebhookSecret } from "./auth";
 import { maybeHandleAsyncTelegramCommand } from "./commands";
 import { createBot } from "./gateway";

@@ -32,7 +32,7 @@ vi.mock("../../src/google/config", () => ({
   getGoogleOAuthConfig: mocks.getGoogleOAuthConfig,
 }));
 
-vi.mock("../../src/telegram/api", () => ({
+vi.mock("../../src/chat-adapters/telegram/api", () => ({
   sendTelegramTextMessage: mocks.sendTelegramTextMessage,
 }));
 

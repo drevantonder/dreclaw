@@ -1,4 +1,4 @@
-import { handleTelegramWebhookRequest } from "../telegram/webhook";
+import { handleTelegramWebhookRequest } from "../chat-adapters/telegram/webhook";
 import type { Env } from "../types";
 import { ConversationWorkflow } from "./conversation-workflow";
 import { ExecuteHost } from "./execute-host";

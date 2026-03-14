@@ -35,7 +35,7 @@ vi.mock("../../src/app/runtime", () => ({
   BotRuntime: mocks.BotRuntime,
 }));
 
-vi.mock("../../src/telegram/api", () => ({
+vi.mock("../../src/chat-adapters/telegram/api", () => ({
   sendTelegramTextMessage: mocks.sendTelegramTextMessage,
 }));
 
@@ -49,7 +49,10 @@ vi.mock("../../src/run", () => ({
   createRunCoordinator: mocks.createRunCoordinator,
 }));
 
-import { handleAsyncCommand, maybeHandleAsyncTelegramCommand } from "../../src/telegram/commands";
+import {
+  handleAsyncCommand,
+  maybeHandleAsyncTelegramCommand,
+} from "../../src/chat-adapters/telegram/commands";
 
 describe("telegram commands", () => {
   beforeEach(() => {

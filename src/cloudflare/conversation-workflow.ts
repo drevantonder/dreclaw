@@ -4,8 +4,8 @@ import type { ModelMessage } from "ai";
 import { BotRuntime } from "../app/runtime";
 import type { BotThreadState } from "../app/state";
 import { createRunCoordinator } from "../run";
-import { createChat } from "../telegram/gateway";
-import { getTelegramUserChatId, loadTelegramImageBlocks } from "../telegram/message";
+import { createChat } from "../chat-adapters/telegram/gateway";
+import { getTelegramUserChatId, loadTelegramImageBlocks } from "../chat-adapters/telegram/message";
 import type { ConversationWorkflowPayload, Env } from "../types";
 
 export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWorkflowPayload> {
