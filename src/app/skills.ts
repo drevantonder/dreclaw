@@ -20,8 +20,8 @@ Rules:
 - Use only built-in runtime globals and host APIs.
 - Do not use require(), fs from Node, process, Buffer, or googleapis imports.
 - If a script uses await or multiple statements, explicitly return the final value.
-- VFS is available through fs.read/fs.write/fs.list/fs.remove only, not imports.
-- For reusable helpers, keep code inline or save data in VFS and read it explicitly when needed.
+- VFS is file storage exposed through fs.read/fs.write/fs.list/fs.remove only.
+- For repeated logic, keep code inline or save data in VFS and read it explicitly when needed.
 - When formatting user-facing summaries, prefer simple string concatenation over large template literals.
 
 Patterns:
@@ -124,7 +124,7 @@ Rules:
 - VFS paths must be absolute, like /scripts/google/gmail.js.
 - Prefer the vfs tool for direct file access; use fs.* inside execute only when the running script itself needs file access.
 - Use fs.write with an object payload: path, content, overwrite.
-- Files stored in VFS are not importable modules inside execute.
+- Files stored in VFS are data/files, not runtime modules.
 - System skills under /skills/system/... are read-only.
 - User-created skills belong under /skills/user/<name>/SKILL.md.
 

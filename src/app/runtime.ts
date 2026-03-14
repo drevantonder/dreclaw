@@ -772,7 +772,7 @@ export class BotRuntime {
       }),
       execute: tool({
         description:
-          "Run JavaScript in a sandboxed Worker runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, and built-in global `google`. Return the final value explicitly. VFS is available through fs.* only, not imports. For reusable helpers, keep code inline or read files from VFS manually. For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
+          "Run JavaScript in a sandboxed Worker runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, and built-in global `google`. Return the final value explicitly. VFS is file storage exposed through fs.* only. For repeated logic, keep code inline or copy in the small helper you need. For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
         inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
         execute: async (input) => {
           const writes: string[] = [];
@@ -1447,7 +1447,7 @@ function inferImplicitSkillNames(userText: string): string[] {
     names.add("google");
     names.add("execute-runtime");
   }
-  if (/script|helper|vfs|module|import/.test(text)) {
+  if (/script|helper|vfs|file/.test(text)) {
     names.add("vfs");
     names.add("execute-runtime");
   }
