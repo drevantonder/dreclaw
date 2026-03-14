@@ -23,7 +23,7 @@ const {
 vi.mock("../../src/memory/retrieve", () => ({ retrieveMemoryContext }));
 vi.mock("../../src/memory/embeddings", () => ({ embedText }));
 vi.mock("../../src/memory/vectorize", () => ({ upsertFactVector, deleteFactVectors }));
-vi.mock("../../src/db", () => ({
+vi.mock("../../src/memory/repo", () => ({
   upsertSimilarMemoryFact,
   listActiveMemoryFacts,
   getActiveMemoryFactByTarget,

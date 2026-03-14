@@ -1,5 +1,24 @@
 import { retryOnce } from "./retry";
 
+export type { MemoryEpisodeRecord, MemoryFactRecord } from "./memory/repo";
+export {
+  attachMemoryFactSource,
+  createMemoryFact,
+  deleteMemoryFactById,
+  deleteMemoryForChat,
+  deleteOldMemoryEpisodes,
+  getActiveMemoryFactByTarget,
+  insertMemoryEpisode,
+  listActiveMemoryFacts,
+  listMemoryFactsByIds,
+  listRecentMemoryEpisodes,
+  listUnprocessedMemoryEpisodes,
+  markMemoryEpisodesProcessed,
+  searchMemoryFactsKeyword,
+  supersedeMemoryFact,
+  upsertSimilarMemoryFact,
+} from "./memory/repo";
+
 export interface GoogleOAuthStateRecord {
   state: string;
   chatId: number;
@@ -61,27 +80,6 @@ export interface ChatInboxRecord {
   consumedByRunId: string | null;
 }
 
-export interface MemoryEpisodeRecord {
-  id: string;
-  chatId: number;
-  role: "user" | "assistant" | "tool";
-  content: string;
-  salience: number;
-  createdAt: string;
-  processedAt: string | null;
-}
-
-export interface MemoryFactRecord {
-  id: string;
-  chatId: number;
-  kind: "preference" | "fact" | "goal" | "identity";
-  text: string;
-  confidence: number;
-  createdAt: string;
-  updatedAt: string;
-  supersededBy: string | null;
-}
-
 export interface PersistedRunStatus {
   running: boolean;
   startedAt: string | null;
@@ -106,19 +104,33 @@ export async function markUpdateSeen(db: D1Database, updateId: number): Promise<
   }, 150);
 }
 
-export async function getThreadStateSnapshot<T>(db: D1Database, threadId: string): Promise<T | null> {
+export async function getThreadStateSnapshot<T>(
+  db: D1Database,
+  threadId: string,
+): Promise<T | null> {
   return getChatStateValue<T>(db, threadStateKey(threadId));
 }
 
-export async function setThreadStateSnapshot<T>(db: D1Database, threadId: string, value: T): Promise<void> {
+export async function setThreadStateSnapshot<T>(
+  db: D1Database,
+  threadId: string,
+  value: T,
+): Promise<void> {
   await setChatStateValue(db, threadStateKey(threadId), value);
 }
 
-export async function getPersistedRunStatus(db: D1Database, threadId: string): Promise<PersistedRunStatus | null> {
+export async function getPersistedRunStatus(
+  db: D1Database,
+  threadId: string,
+): Promise<PersistedRunStatus | null> {
   return getChatStateValue<PersistedRunStatus>(db, runStatusKey(threadId));
 }
 
-export async function setPersistedRunStatus(db: D1Database, threadId: string, value: PersistedRunStatus): Promise<void> {
+export async function setPersistedRunStatus(
+  db: D1Database,
+  threadId: string,
+  value: PersistedRunStatus,
+): Promise<void> {
   await setChatStateValue(db, runStatusKey(threadId), value);
 }
 
@@ -126,7 +138,10 @@ export async function clearPersistedRunStatus(db: D1Database, threadId: string):
   await deleteChatStateValue(db, runStatusKey(threadId));
 }
 
-export async function requestPersistedRunStop(db: D1Database, threadId: string): Promise<PersistedRunStatus | null> {
+export async function requestPersistedRunStop(
+  db: D1Database,
+  threadId: string,
+): Promise<PersistedRunStatus | null> {
   const current = await getPersistedRunStatus(db, threadId);
   if (!current) return null;
   const nowIso = new Date().toISOString();
@@ -139,7 +154,10 @@ export async function requestPersistedRunStop(db: D1Database, threadId: string):
   return next;
 }
 
-export async function finalizePersistedRunStop(db: D1Database, threadId: string): Promise<PersistedRunStatus | null> {
+export async function finalizePersistedRunStop(
+  db: D1Database,
+  threadId: string,
+): Promise<PersistedRunStatus | null> {
   const current = await getPersistedRunStatus(db, threadId);
   if (!current) return null;
   const nowIso = new Date().toISOString();
@@ -155,24 +173,46 @@ export async function finalizePersistedRunStop(db: D1Database, threadId: string)
   return next;
 }
 
-export async function getPersistedThreadControls(db: D1Database, threadId: string): Promise<PersistedThreadControls | null> {
+export async function getPersistedThreadControls(
+  db: D1Database,
+  threadId: string,
+): Promise<PersistedThreadControls | null> {
   return getChatStateValue<PersistedThreadControls>(db, threadControlsKey(threadId));
 }
 
-export async function setPersistedThreadControls(db: D1Database, threadId: string, value: PersistedThreadControls): Promise<void> {
+export async function setPersistedThreadControls(
+  db: D1Database,
+  threadId: string,
+  value: PersistedThreadControls,
+): Promise<void> {
   await setChatStateValue(db, threadControlsKey(threadId), value);
 }
 
-export async function getPersistedWorkflowInstanceId(db: D1Database, threadId: string): Promise<string | null> {
-  const value = await getChatStateValue<{ workflowInstanceId?: string }>(db, workflowInstanceKey(threadId));
-  return typeof value?.workflowInstanceId === "string" && value.workflowInstanceId.trim() ? value.workflowInstanceId : null;
+export async function getPersistedWorkflowInstanceId(
+  db: D1Database,
+  threadId: string,
+): Promise<string | null> {
+  const value = await getChatStateValue<{ workflowInstanceId?: string }>(
+    db,
+    workflowInstanceKey(threadId),
+  );
+  return typeof value?.workflowInstanceId === "string" && value.workflowInstanceId.trim()
+    ? value.workflowInstanceId
+    : null;
 }
 
-export async function setPersistedWorkflowInstanceId(db: D1Database, threadId: string, workflowInstanceId: string): Promise<void> {
+export async function setPersistedWorkflowInstanceId(
+  db: D1Database,
+  threadId: string,
+  workflowInstanceId: string,
+): Promise<void> {
   await setChatStateValue(db, workflowInstanceKey(threadId), { workflowInstanceId });
 }
 
-export async function clearPersistedWorkflowInstanceId(db: D1Database, threadId: string): Promise<void> {
+export async function clearPersistedWorkflowInstanceId(
+  db: D1Database,
+  threadId: string,
+): Promise<void> {
   await deleteChatStateValue(db, workflowInstanceKey(threadId));
 }
 
@@ -190,7 +230,10 @@ export async function createGoogleOAuthState(
   }, 150);
 }
 
-export async function getGoogleOAuthState(db: D1Database, state: string): Promise<GoogleOAuthStateRecord | null> {
+export async function getGoogleOAuthState(
+  db: D1Database,
+  state: string,
+): Promise<GoogleOAuthStateRecord | null> {
   return retryOnce(async () => {
     const row = await db
       .prepare(
@@ -202,7 +245,11 @@ export async function getGoogleOAuthState(db: D1Database, state: string): Promis
   }, 150);
 }
 
-export async function markGoogleOAuthStateUsed(db: D1Database, state: string, usedAt: string): Promise<boolean> {
+export async function markGoogleOAuthStateUsed(
+  db: D1Database,
+  state: string,
+  usedAt: string,
+): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
       .prepare("UPDATE google_oauth_states SET used_at = ? WHERE state = ? AND used_at IS NULL")
@@ -212,7 +259,10 @@ export async function markGoogleOAuthStateUsed(db: D1Database, state: string, us
   }, 150);
 }
 
-export async function upsertGoogleOAuthToken(db: D1Database, token: GoogleOAuthTokenRecord): Promise<void> {
+export async function upsertGoogleOAuthToken(
+  db: D1Database,
+  token: GoogleOAuthTokenRecord,
+): Promise<void> {
   await retryOnce(async () => {
     await db
       .prepare(
@@ -230,7 +280,10 @@ export async function upsertGoogleOAuthToken(db: D1Database, token: GoogleOAuthT
   }, 150);
 }
 
-export async function getGoogleOAuthToken(db: D1Database, principal: string): Promise<GoogleOAuthTokenRecord | null> {
+export async function getGoogleOAuthToken(
+  db: D1Database,
+  principal: string,
+): Promise<GoogleOAuthTokenRecord | null> {
   return retryOnce(async () => {
     const row = await db
       .prepare(
@@ -244,18 +297,26 @@ export async function getGoogleOAuthToken(db: D1Database, principal: string): Pr
 
 export async function deleteGoogleOAuthToken(db: D1Database, principal: string): Promise<boolean> {
   return retryOnce(async () => {
-    const result = await db.prepare("DELETE FROM google_oauth_tokens WHERE principal = ?").bind(principal).run();
+    const result = await db
+      .prepare("DELETE FROM google_oauth_tokens WHERE principal = ?")
+      .bind(principal)
+      .run();
     return Boolean(result.meta.changes && result.meta.changes > 0);
   }, 150);
 }
 
 export async function getVfsRevision(db: D1Database): Promise<number> {
   return retryOnce(async () => {
-    const row = await db.prepare("SELECT revision FROM vfs_meta WHERE id = 1").first<Record<string, unknown>>();
+    const row = await db
+      .prepare("SELECT revision FROM vfs_meta WHERE id = 1")
+      .first<Record<string, unknown>>();
     if (row && row.revision !== null && row.revision !== undefined) {
       return Number(row.revision);
     }
-    await db.prepare("INSERT OR IGNORE INTO vfs_meta (id, revision, updated_at) VALUES (1, 0, ?)").bind(new Date().toISOString()).run();
+    await db
+      .prepare("INSERT OR IGNORE INTO vfs_meta (id, revision, updated_at) VALUES (1, 0, ?)")
+      .bind(new Date().toISOString())
+      .run();
     return 0;
   }, 150);
 }
@@ -269,7 +330,11 @@ export async function countVfsEntries(db: D1Database): Promise<number> {
   }, 150);
 }
 
-export async function listVfsEntries(db: D1Database, prefix: string, limit: number): Promise<VfsEntryRecord[]> {
+export async function listVfsEntries(
+  db: D1Database,
+  prefix: string,
+  limit: number,
+): Promise<VfsEntryRecord[]> {
   const normalizedPrefix = prefix || "/";
   return retryOnce(async () => {
     const rows = await db
@@ -317,7 +382,15 @@ export async function putVfsEntry(
       .prepare(
         "INSERT INTO vfs_entries (path, content, size_bytes, sha256, version, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(path) DO UPDATE SET content = excluded.content, size_bytes = excluded.size_bytes, sha256 = excluded.sha256, version = excluded.version, created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = NULL",
       )
-      .bind(input.path, input.content, input.sizeBytes, input.sha256, nextVersion, createdAt, input.nowIso)
+      .bind(
+        input.path,
+        input.content,
+        input.sizeBytes,
+        input.sha256,
+        nextVersion,
+        createdAt,
+        input.nowIso,
+      )
       .run();
 
     const revision = await bumpVfsRevision(db, input.nowIso);
@@ -337,10 +410,16 @@ export async function putVfsEntry(
   }, 150);
 }
 
-export async function deleteVfsEntry(db: D1Database, path: string, nowIso: string): Promise<boolean> {
+export async function deleteVfsEntry(
+  db: D1Database,
+  path: string,
+  nowIso: string,
+): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
-      .prepare("UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE path = ? AND deleted_at IS NULL")
+      .prepare(
+        "UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE path = ? AND deleted_at IS NULL",
+      )
       .bind(nowIso, nowIso, path)
       .run();
     const deleted = Boolean(result.meta.changes && result.meta.changes > 0);
@@ -354,7 +433,9 @@ export async function deleteVfsEntry(db: D1Database, path: string, nowIso: strin
 export async function clearAllVfsEntries(db: D1Database, nowIso: string): Promise<number> {
   return retryOnce(async () => {
     const result = await db
-      .prepare("UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE deleted_at IS NULL")
+      .prepare(
+        "UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE deleted_at IS NULL",
+      )
       .bind(nowIso, nowIso)
       .run();
     const changes = Number(result.meta.changes ?? 0);
@@ -386,7 +467,10 @@ export async function createAgentRun(
   }, 150);
 }
 
-export async function getActiveAgentRunForChat(db: D1Database, chatId: number): Promise<AgentRunRecord | null> {
+export async function getActiveAgentRunForChat(
+  db: D1Database,
+  chatId: number,
+): Promise<AgentRunRecord | null> {
   return retryOnce(async () => {
     const row = await db
       .prepare(
@@ -448,10 +532,16 @@ export async function claimChatInboxMessages(
   }, 150);
 }
 
-export async function clearPendingChatInbox(db: D1Database, chatId: number, nowIso: string): Promise<number> {
+export async function clearPendingChatInbox(
+  db: D1Database,
+  chatId: number,
+  nowIso: string,
+): Promise<number> {
   return retryOnce(async () => {
     const result = await db
-      .prepare("UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = 'cancelled' WHERE chat_id = ? AND consumed_at IS NULL")
+      .prepare(
+        "UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = 'cancelled' WHERE chat_id = ? AND consumed_at IS NULL",
+      )
       .bind(nowIso, chatId)
       .run();
     return Number(result.meta.changes ?? 0);
@@ -470,7 +560,11 @@ export async function getAgentRun(db: D1Database, id: string): Promise<AgentRunR
   }, 150);
 }
 
-export async function markAgentRunRunning(db: D1Database, id: string, nowIso: string): Promise<boolean> {
+export async function markAgentRunRunning(
+  db: D1Database,
+  id: string,
+  nowIso: string,
+): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
       .prepare(
@@ -482,10 +576,17 @@ export async function markAgentRunRunning(db: D1Database, id: string, nowIso: st
   }, 150);
 }
 
-export async function markAgentRunCompleted(db: D1Database, id: string, resultText: string, nowIso: string): Promise<boolean> {
+export async function markAgentRunCompleted(
+  db: D1Database,
+  id: string,
+  resultText: string,
+  nowIso: string,
+): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
-      .prepare("UPDATE agent_runs SET status = 'completed', result_text = ?, error_message = NULL, updated_at = ? WHERE id = ?")
+      .prepare(
+        "UPDATE agent_runs SET status = 'completed', result_text = ?, error_message = NULL, updated_at = ? WHERE id = ?",
+      )
       .bind(resultText, nowIso, id)
       .run();
     return Boolean(result.meta.changes && result.meta.changes > 0);
@@ -500,37 +601,58 @@ export async function markAgentRunRetryableFailure(
 ): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
-      .prepare("UPDATE agent_runs SET status = 'queued', attempts = attempts + 1, error_message = ?, updated_at = ? WHERE id = ?")
+      .prepare(
+        "UPDATE agent_runs SET status = 'queued', attempts = attempts + 1, error_message = ?, updated_at = ? WHERE id = ?",
+      )
       .bind(errorMessage, nowIso, id)
       .run();
     return Boolean(result.meta.changes && result.meta.changes > 0);
   }, 150);
 }
 
-export async function updateAgentRunPayload(db: D1Database, id: string, payloadJson: string, nowIso: string): Promise<boolean> {
+export async function updateAgentRunPayload(
+  db: D1Database,
+  id: string,
+  payloadJson: string,
+  nowIso: string,
+): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
-      .prepare("UPDATE agent_runs SET status = 'queued', payload_json = ?, updated_at = ? WHERE id = ?")
+      .prepare(
+        "UPDATE agent_runs SET status = 'queued', payload_json = ?, updated_at = ? WHERE id = ?",
+      )
       .bind(payloadJson, nowIso, id)
       .run();
     return Boolean(result.meta.changes && result.meta.changes > 0);
   }, 150);
 }
 
-export async function claimAgentRunDelivery(db: D1Database, id: string, nowIso: string): Promise<boolean> {
+export async function claimAgentRunDelivery(
+  db: D1Database,
+  id: string,
+  nowIso: string,
+): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
-      .prepare("UPDATE agent_runs SET delivered_at = ?, updated_at = ? WHERE id = ? AND delivered_at IS NULL")
+      .prepare(
+        "UPDATE agent_runs SET delivered_at = ?, updated_at = ? WHERE id = ? AND delivered_at IS NULL",
+      )
       .bind(nowIso, nowIso, id)
       .run();
     return Boolean(result.meta.changes && result.meta.changes > 0);
   }, 150);
 }
 
-export async function cancelActiveRunsForChat(db: D1Database, chatId: number, nowIso: string): Promise<number> {
+export async function cancelActiveRunsForChat(
+  db: D1Database,
+  chatId: number,
+  nowIso: string,
+): Promise<number> {
   return retryOnce(async () => {
     const result = await db
-      .prepare("UPDATE agent_runs SET status = 'cancelled', updated_at = ? WHERE chat_id = ? AND status IN ('queued', 'running')")
+      .prepare(
+        "UPDATE agent_runs SET status = 'cancelled', updated_at = ? WHERE chat_id = ? AND status IN ('queued', 'running')",
+      )
       .bind(nowIso, chatId)
       .run();
     return Number(result.meta.changes ?? 0);
@@ -550,7 +672,10 @@ function mapGoogleOAuthStateRecord(row: Record<string, unknown>): GoogleOAuthSta
 
 async function getChatStateValue<T>(db: D1Database, key: string): Promise<T | null> {
   return retryOnce(async () => {
-    const row = await db.prepare("SELECT value_json FROM chat_state_kv WHERE key = ?").bind(key).first<Record<string, unknown>>();
+    const row = await db
+      .prepare("SELECT value_json FROM chat_state_kv WHERE key = ?")
+      .bind(key)
+      .first<Record<string, unknown>>();
     if (!row?.value_json || typeof row.value_json !== "string") return null;
     return JSON.parse(row.value_json) as T;
   }, 150);
@@ -604,9 +729,17 @@ function mapGoogleOAuthTokenRecord(row: Record<string, unknown>): GoogleOAuthTok
 }
 
 async function bumpVfsRevision(db: D1Database, nowIso: string): Promise<number> {
-  await db.prepare("INSERT OR IGNORE INTO vfs_meta (id, revision, updated_at) VALUES (1, 0, ?)").bind(nowIso).run();
-  await db.prepare("UPDATE vfs_meta SET revision = revision + 1, updated_at = ? WHERE id = 1").bind(nowIso).run();
-  const row = await db.prepare("SELECT revision FROM vfs_meta WHERE id = 1").first<Record<string, unknown>>();
+  await db
+    .prepare("INSERT OR IGNORE INTO vfs_meta (id, revision, updated_at) VALUES (1, 0, ?)")
+    .bind(nowIso)
+    .run();
+  await db
+    .prepare("UPDATE vfs_meta SET revision = revision + 1, updated_at = ? WHERE id = 1")
+    .bind(nowIso)
+    .run();
+  const row = await db
+    .prepare("SELECT revision FROM vfs_meta WHERE id = 1")
+    .first<Record<string, unknown>>();
   return Number(row?.revision ?? 0);
 }
 
@@ -635,11 +768,16 @@ function mapAgentRunRecord(row: Record<string, unknown>): AgentRunRecord {
     payloadJson: String(row.payload_json ?? "{}"),
     status: normalizedStatus,
     attempts: Number(row.attempts ?? 0),
-    resultText: row.result_text === null || row.result_text === undefined ? null : String(row.result_text),
-    errorMessage: row.error_message === null || row.error_message === undefined ? null : String(row.error_message),
+    resultText:
+      row.result_text === null || row.result_text === undefined ? null : String(row.result_text),
+    errorMessage:
+      row.error_message === null || row.error_message === undefined
+        ? null
+        : String(row.error_message),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
-    deliveredAt: row.delivered_at === null || row.delivered_at === undefined ? null : String(row.delivered_at),
+    deliveredAt:
+      row.delivered_at === null || row.delivered_at === undefined ? null : String(row.delivered_at),
   };
 }
 
@@ -650,280 +788,11 @@ function mapChatInboxRecord(row: Record<string, unknown>): ChatInboxRecord {
     updateId: Number(row.update_id ?? 0),
     textJson: String(row.text_json ?? "{}"),
     createdAt: String(row.created_at ?? ""),
-    consumedAt: row.consumed_at === null || row.consumed_at === undefined ? null : String(row.consumed_at),
+    consumedAt:
+      row.consumed_at === null || row.consumed_at === undefined ? null : String(row.consumed_at),
     consumedByRunId:
       row.consumed_by_run_id === null || row.consumed_by_run_id === undefined
         ? null
         : String(row.consumed_by_run_id),
-  };
-}
-
-export async function insertMemoryEpisode(db: D1Database, episode: Omit<MemoryEpisodeRecord, "processedAt">): Promise<void> {
-  await retryOnce(async () => {
-    await db
-      .prepare(
-        "INSERT INTO memory_episodes (id, chat_id, role, content, salience, created_at, processed_at) VALUES (?, ?, ?, ?, ?, ?, NULL)",
-      )
-      .bind(episode.id, episode.chatId, episode.role, episode.content, episode.salience, episode.createdAt)
-      .run();
-  }, 150);
-}
-
-export async function listRecentMemoryEpisodes(
-  db: D1Database,
-  chatId: number,
-  limit: number,
-): Promise<MemoryEpisodeRecord[]> {
-  return retryOnce(async () => {
-    const rows = await db
-      .prepare(
-        "SELECT id, chat_id, role, content, salience, created_at, processed_at FROM memory_episodes WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?",
-      )
-      .bind(chatId, limit)
-      .all<Record<string, unknown>>();
-    return (rows.results ?? []).map(mapMemoryEpisodeRecord);
-  }, 150);
-}
-
-export async function listUnprocessedMemoryEpisodes(
-  db: D1Database,
-  chatId: number,
-  limit: number,
-): Promise<MemoryEpisodeRecord[]> {
-  return retryOnce(async () => {
-    const rows = await db
-      .prepare(
-        "SELECT id, chat_id, role, content, salience, created_at, processed_at FROM memory_episodes WHERE chat_id = ? AND processed_at IS NULL ORDER BY created_at ASC LIMIT ?",
-      )
-      .bind(chatId, limit)
-      .all<Record<string, unknown>>();
-    return (rows.results ?? []).map(mapMemoryEpisodeRecord);
-  }, 150);
-}
-
-export async function markMemoryEpisodesProcessed(
-  db: D1Database,
-  episodeIds: string[],
-  processedAt: string,
-): Promise<void> {
-  if (!episodeIds.length) return;
-  await retryOnce(async () => {
-    for (const episodeId of episodeIds) {
-      await db
-        .prepare("UPDATE memory_episodes SET processed_at = ? WHERE id = ?")
-        .bind(processedAt, episodeId)
-        .run();
-    }
-  }, 150);
-}
-
-export async function createMemoryFact(
-  db: D1Database,
-  fact: Omit<MemoryFactRecord, "supersededBy">,
-): Promise<void> {
-  await retryOnce(async () => {
-    await db
-      .prepare(
-        "INSERT INTO memory_facts (id, chat_id, kind, text, confidence, created_at, updated_at, superseded_by) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
-      )
-      .bind(fact.id, fact.chatId, fact.kind, fact.text, fact.confidence, fact.createdAt, fact.updatedAt)
-      .run();
-  }, 150);
-}
-
-export async function upsertSimilarMemoryFact(
-  db: D1Database,
-  fact: Omit<MemoryFactRecord, "id" | "createdAt" | "updatedAt" | "supersededBy"> & { nowIso: string; id: string },
-): Promise<{ fact: MemoryFactRecord; created: boolean }> {
-  return retryOnce(async () => {
-    const existing = await db
-      .prepare(
-        "SELECT id, chat_id, kind, text, confidence, created_at, updated_at, superseded_by FROM memory_facts WHERE chat_id = ? AND kind = ? AND superseded_by IS NULL AND lower(text) = lower(?) LIMIT 1",
-      )
-      .bind(fact.chatId, fact.kind, fact.text)
-      .first<Record<string, unknown>>();
-
-    if (existing) {
-      const current = mapMemoryFactRecord(existing);
-      const nextConfidence = Math.min(1, Math.max(current.confidence, fact.confidence));
-      await db
-        .prepare("UPDATE memory_facts SET confidence = ?, updated_at = ? WHERE id = ?")
-        .bind(nextConfidence, fact.nowIso, current.id)
-        .run();
-      return {
-        created: false,
-        fact: {
-          ...current,
-          confidence: nextConfidence,
-          updatedAt: fact.nowIso,
-        },
-      };
-    }
-
-    await createMemoryFact(db, {
-      id: fact.id,
-      chatId: fact.chatId,
-      kind: fact.kind,
-      text: fact.text,
-      confidence: fact.confidence,
-      createdAt: fact.nowIso,
-      updatedAt: fact.nowIso,
-    });
-
-    return {
-      created: true,
-      fact: {
-        id: fact.id,
-        chatId: fact.chatId,
-        kind: fact.kind,
-        text: fact.text,
-        confidence: fact.confidence,
-        createdAt: fact.nowIso,
-        updatedAt: fact.nowIso,
-        supersededBy: null,
-      },
-    };
-  }, 150);
-}
-
-export async function supersedeMemoryFact(
-  db: D1Database,
-  oldFactId: string,
-  newFactId: string,
-  updatedAt: string,
-): Promise<void> {
-  await retryOnce(async () => {
-    await db
-      .prepare("UPDATE memory_facts SET superseded_by = ?, updated_at = ? WHERE id = ?")
-      .bind(newFactId, updatedAt, oldFactId)
-      .run();
-  }, 150);
-}
-
-export async function attachMemoryFactSource(
-  db: D1Database,
-  factId: string,
-  episodeId: string,
-  createdAt: string,
-): Promise<void> {
-  await retryOnce(async () => {
-    await db
-      .prepare(
-        "INSERT OR IGNORE INTO memory_fact_sources (fact_id, episode_id, created_at) VALUES (?, ?, ?)",
-      )
-      .bind(factId, episodeId, createdAt)
-      .run();
-  }, 150);
-}
-
-export async function searchMemoryFactsKeyword(
-  db: D1Database,
-  chatId: number,
-  query: string,
-  limit: number,
-): Promise<MemoryFactRecord[]> {
-  const normalized = query.trim();
-  if (!normalized) return [];
-  return retryOnce(async () => {
-    const rows = await db
-      .prepare(
-        "SELECT f.id, f.chat_id, f.kind, f.text, f.confidence, f.created_at, f.updated_at, f.superseded_by FROM memory_facts_fts s JOIN memory_facts f ON f.id = s.fact_id WHERE s.chat_id = ? AND f.superseded_by IS NULL AND memory_facts_fts MATCH ? ORDER BY f.updated_at DESC LIMIT ?",
-      )
-      .bind(String(chatId), normalized, limit)
-      .all<Record<string, unknown>>();
-    return (rows.results ?? []).map(mapMemoryFactRecord);
-  }, 150);
-}
-
-export async function listActiveMemoryFacts(db: D1Database, chatId: number, limit: number): Promise<MemoryFactRecord[]> {
-  return retryOnce(async () => {
-    const rows = await db
-      .prepare(
-        "SELECT id, chat_id, kind, text, confidence, created_at, updated_at, superseded_by FROM memory_facts WHERE chat_id = ? AND superseded_by IS NULL ORDER BY updated_at DESC LIMIT ?",
-      )
-      .bind(chatId, limit)
-      .all<Record<string, unknown>>();
-    return (rows.results ?? []).map(mapMemoryFactRecord);
-  }, 150);
-}
-
-export async function listMemoryFactsByIds(db: D1Database, chatId: number, ids: string[]): Promise<MemoryFactRecord[]> {
-  if (!ids.length) return [];
-  return retryOnce(async () => {
-    const placeholders = ids.map(() => "?").join(", ");
-    const rows = await db
-      .prepare(
-        `SELECT id, chat_id, kind, text, confidence, created_at, updated_at, superseded_by FROM memory_facts WHERE chat_id = ? AND id IN (${placeholders}) AND superseded_by IS NULL`,
-      )
-      .bind(chatId, ...ids)
-      .all<Record<string, unknown>>();
-    return (rows.results ?? []).map(mapMemoryFactRecord);
-  }, 150);
-}
-
-export async function getActiveMemoryFactByTarget(
-  db: D1Database,
-  chatId: number,
-  target: string,
-): Promise<MemoryFactRecord | null> {
-  const normalized = target.trim();
-  if (!normalized) return null;
-  return retryOnce(async () => {
-    const row = await db
-      .prepare(
-        "SELECT id, chat_id, kind, text, confidence, created_at, updated_at, superseded_by FROM memory_facts WHERE chat_id = ? AND superseded_by IS NULL AND (id = ? OR lower(text) = lower(?)) LIMIT 1",
-      )
-      .bind(chatId, normalized, normalized)
-      .first<Record<string, unknown>>();
-    return row ? mapMemoryFactRecord(row) : null;
-  }, 150);
-}
-
-export async function deleteMemoryFactById(db: D1Database, chatId: number, factId: string): Promise<boolean> {
-  return retryOnce(async () => {
-    const result = await db
-      .prepare("DELETE FROM memory_facts WHERE chat_id = ? AND id = ?")
-      .bind(chatId, factId)
-      .run();
-    return Boolean(result.meta.changes && result.meta.changes > 0);
-  }, 150);
-}
-
-export async function deleteMemoryForChat(db: D1Database, chatId: number): Promise<void> {
-  await retryOnce(async () => {
-    await db.prepare("DELETE FROM memory_fact_sources WHERE episode_id IN (SELECT id FROM memory_episodes WHERE chat_id = ?)").bind(chatId).run();
-    await db.prepare("DELETE FROM memory_episodes WHERE chat_id = ?").bind(chatId).run();
-    await db.prepare("DELETE FROM memory_facts WHERE chat_id = ?").bind(chatId).run();
-  }, 150);
-}
-
-export async function deleteOldMemoryEpisodes(db: D1Database, chatId: number, cutoffIso: string): Promise<void> {
-  await retryOnce(async () => {
-    await db.prepare("DELETE FROM memory_episodes WHERE chat_id = ? AND created_at < ?").bind(chatId, cutoffIso).run();
-  }, 150);
-}
-
-function mapMemoryEpisodeRecord(row: Record<string, unknown>): MemoryEpisodeRecord {
-  return {
-    id: String(row.id ?? ""),
-    chatId: Number(row.chat_id ?? 0),
-    role: String(row.role ?? "user") as MemoryEpisodeRecord["role"],
-    content: String(row.content ?? ""),
-    salience: Number(row.salience ?? 0),
-    createdAt: String(row.created_at ?? ""),
-    processedAt: row.processed_at === null || row.processed_at === undefined ? null : String(row.processed_at),
-  };
-}
-
-function mapMemoryFactRecord(row: Record<string, unknown>): MemoryFactRecord {
-  return {
-    id: String(row.id ?? ""),
-    chatId: Number(row.chat_id ?? 0),
-    kind: String(row.kind ?? "fact") as MemoryFactRecord["kind"],
-    text: String(row.text ?? ""),
-    confidence: Number(row.confidence ?? 0),
-    createdAt: String(row.created_at ?? ""),
-    updatedAt: String(row.updated_at ?? ""),
-    supersededBy: row.superseded_by === null || row.superseded_by === undefined ? null : String(row.superseded_by),
   };
 }

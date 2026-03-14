@@ -3,8 +3,7 @@ import { deleteVfsEntry, getVfsEntry, listVfsEntries, putVfsEntry } from "./db";
 import { decodeEncryptionKey, decryptSecret } from "./crypto";
 import { getGoogleOAuthToken } from "./db";
 import { getGoogleOAuthConfig, refreshGoogleAccessToken } from "./google-oauth";
-import { executeMemoryFind, executeMemoryRemove, executeMemorySave } from "./memory/execute-api";
-import { getMemoryConfig } from "./memory/config";
+import { createMemoryRuntime } from "./memory";
 import type { Env } from "./types";
 
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
@@ -162,38 +161,19 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
   }
 
   private async executeMemoryFindPayload(payload: unknown): Promise<unknown> {
-    const memory = getMemoryConfig(this.env);
-    if (!memory.enabled) throw new Error("Memory is disabled");
-    return executeMemoryFind({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
-      chatId: this.props().chatId,
-      embeddingModel: memory.embeddingModel,
-      payload,
-    });
+    return this.memory().find({ chatId: this.props().chatId, payload });
   }
 
   private async executeMemorySavePayload(payload: unknown): Promise<unknown> {
-    const memory = getMemoryConfig(this.env);
-    if (!memory.enabled) throw new Error("Memory is disabled");
-    return executeMemorySave({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
-      chatId: this.props().chatId,
-      embeddingModel: memory.embeddingModel,
-      payload,
-    });
+    return this.memory().save({ chatId: this.props().chatId, payload });
   }
 
   private async executeMemoryRemovePayload(payload: unknown): Promise<unknown> {
-    const memory = getMemoryConfig(this.env);
-    if (!memory.enabled) throw new Error("Memory is disabled");
-    return executeMemoryRemove({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
-      chatId: this.props().chatId,
-      payload,
-    });
+    return this.memory().remove({ chatId: this.props().chatId, payload });
+  }
+
+  private memory() {
+    return createMemoryRuntime(this.env);
   }
 
   private async executeFetch(request: {

@@ -3,12 +3,9 @@ import type { Thread, Message } from "chat";
 import { z } from "zod";
 import { decodeEncryptionKey, decryptSecret } from "../crypto";
 import {
-  attachMemoryFactSource,
   clearAllVfsEntries,
   createGoogleOAuthState,
   deleteGoogleOAuthToken,
-  deleteMemoryForChat,
-  deleteOldMemoryEpisodes,
   deleteVfsEntry,
   getGoogleOAuthToken,
   getPersistedRunStatus,
@@ -16,12 +13,9 @@ import {
   getPersistedWorkflowInstanceId,
   getVfsEntry,
   getVfsRevision,
-  insertMemoryEpisode,
-  listActiveMemoryFacts,
   listVfsEntries,
   putVfsEntry,
   setPersistedRunStatus,
-  upsertSimilarMemoryFact,
 } from "../db";
 import {
   executeCode,
@@ -38,13 +32,7 @@ import {
 } from "../google-oauth";
 import { createZenModel } from "../llm/zen";
 import { createWorkersModel } from "../llm/workers";
-import { getMemoryConfig } from "../memory/config";
-import { embedText } from "../memory/embeddings";
-import { executeMemoryFind, executeMemoryRemove, executeMemorySave } from "../memory/execute-api";
-import { runMemoryReflection, buildMemoryId } from "../memory/reflection";
-import { retrieveMemoryContext } from "../memory/retrieve";
-import { extractFacts, scoreSalience } from "../memory/salience";
-import { deleteFactVectors, upsertFactVector } from "../memory/vectorize";
+import { createMemoryRuntime } from "../memory";
 import { fetchTelegramImageAsDataUrl } from "../telegram-api";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../types";
 import {
@@ -140,7 +128,7 @@ export class BotRuntime {
   }
 
   async factoryReset(chatId: number): Promise<BotThreadState> {
-    await this.deleteMemoryData(chatId);
+    await this.getMemoryRuntime().factoryReset({ chatId });
     await clearAllVfsEntries(this.env.DRECLAW_DB, new Date().toISOString());
     return normalizeBotThreadState(undefined);
   }
@@ -229,7 +217,12 @@ export class BotRuntime {
     if (taskGuidance) promptSections.push(`Task guidance:\n${taskGuidance}`);
     const historyContext = renderHistoryContext(state.history);
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
-    const memoryContext = await this.renderMemoryContext(chatId, userText || "[image message]");
+    const memoryContext = await this.getMemoryRuntime().renderContext({
+      chatId,
+      query: userText || "[image message]",
+      factTopK: MEMORY_FACT_TOP_K,
+      episodeTopK: MEMORY_EPISODE_TOP_K,
+    });
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
     const messages = buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks);
     state = markRunStarted(state);
@@ -503,10 +496,12 @@ export class BotRuntime {
     if (taskGuidance) promptSections.push(`Task guidance:\n${taskGuidance}`);
     const historyContext = renderHistoryContext(params.state.history);
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
-    const memoryContext = await this.renderMemoryContext(
-      params.chatId,
-      params.userText || "[image message]",
-    );
+    const memoryContext = await this.getMemoryRuntime().renderContext({
+      chatId: params.chatId,
+      query: params.userText || "[image message]",
+      factTopK: MEMORY_FACT_TOP_K,
+      episodeTopK: MEMORY_EPISODE_TOP_K,
+    });
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
     return buildAgentMessages(promptSections.join("\n\n"), params.userText, params.imageBlocks);
   }
@@ -1032,69 +1027,22 @@ export class BotRuntime {
 
   private getMemoryConfigSafe() {
     try {
-      return getMemoryConfig(this.env);
+      return this.getMemoryRuntime().getConfig();
     } catch (error) {
       throw new Error(`Memory config error: ${compactErrorMessage(error)}`);
     }
   }
 
   private async executeMemoryFindPayload(chatId: number, payload: unknown): Promise<unknown> {
-    const memory = this.getMemoryConfigSafe();
-    if (!memory.enabled) throw new Error("Memory is disabled");
-    return executeMemoryFind({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
-      chatId,
-      embeddingModel: memory.embeddingModel,
-      payload,
-    });
+    return this.getMemoryRuntime().find({ chatId, payload });
   }
 
   private async executeMemorySavePayload(chatId: number, payload: unknown): Promise<unknown> {
-    const memory = this.getMemoryConfigSafe();
-    if (!memory.enabled) throw new Error("Memory is disabled");
-    return executeMemorySave({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
-      chatId,
-      embeddingModel: memory.embeddingModel,
-      payload,
-    });
+    return this.getMemoryRuntime().save({ chatId, payload });
   }
 
   private async executeMemoryRemovePayload(chatId: number, payload: unknown): Promise<unknown> {
-    const memory = this.getMemoryConfigSafe();
-    if (!memory.enabled) throw new Error("Memory is disabled");
-    return executeMemoryRemove({ env: this.env, db: this.env.DRECLAW_DB, chatId, payload });
-  }
-
-  private async renderMemoryContext(chatId: number, query: string): Promise<string> {
-    const memory = this.getMemoryConfigSafe();
-    if (!memory.enabled) return "";
-    const retrieved = await retrieveMemoryContext({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
-      chatId,
-      query,
-      embeddingModel: memory.embeddingModel,
-      factTopK: MEMORY_FACT_TOP_K,
-      episodeTopK: MEMORY_EPISODE_TOP_K,
-    });
-    if (!retrieved.facts.length && !retrieved.episodes.length) return "";
-
-    const lines: string[] = [];
-    if (retrieved.facts.length) {
-      lines.push("Facts:");
-      for (const fact of retrieved.facts) lines.push(`- [${fact.kind}] ${fact.text}`);
-    }
-    if (retrieved.episodes.length) {
-      lines.push("Recent episodes:");
-      for (const episode of retrieved.episodes)
-        lines.push(`- ${episode.role}: ${truncateForLog(episode.content, 220)}`);
-    }
-    const joined = lines.join("\n");
-    const maxChars = memory.maxInjectTokens * 4;
-    return joined.length <= maxChars ? joined : `${joined.slice(0, Math.max(0, maxChars - 1))}…`;
+    return this.getMemoryRuntime().remove({ chatId, payload });
   }
 
   private async persistMemoryTurn(params: {
@@ -1104,78 +1052,11 @@ export class BotRuntime {
     toolTranscripts: string[];
     memoryTurns: number;
   }): Promise<void> {
-    const memory = this.getMemoryConfigSafe();
-    if (!memory.enabled) return;
-    const nowIso = new Date().toISOString();
-    const episodeInputs: Array<{ role: "user" | "assistant" | "tool"; content: string }> = [
-      { role: "user", content: params.userText },
-      ...params.toolTranscripts.map((content) => ({ role: "tool" as const, content })),
-      { role: "assistant", content: params.assistantText },
-    ];
-
-    for (const entry of episodeInputs) {
-      const salience = scoreSalience(entry.content);
-      if (!salience.shouldStoreEpisode) continue;
-      const episodeId = buildMemoryId("episode");
-      await insertMemoryEpisode(this.env.DRECLAW_DB, {
-        id: episodeId,
-        chatId: params.chatId,
-        role: entry.role,
-        content: entry.content,
-        salience: salience.score,
-        createdAt: nowIso,
-      });
-      if (!salience.shouldStoreFact) continue;
-      const facts = extractFacts(entry.content);
-      for (const extracted of facts) {
-        const saved = await upsertSimilarMemoryFact(this.env.DRECLAW_DB, {
-          id: buildMemoryId("fact"),
-          chatId: params.chatId,
-          kind: extracted.kind,
-          text: extracted.text,
-          confidence: extracted.confidence,
-          nowIso,
-        });
-        await attachMemoryFactSource(this.env.DRECLAW_DB, saved.fact.id, episodeId, nowIso);
-        if (saved.created) {
-          const vector = await embedText(this.env, memory.embeddingModel, saved.fact.text);
-          await upsertFactVector(this.env, saved.fact.id, params.chatId, vector);
-        }
-      }
-    }
-
-    if ((params.memoryTurns + 1) % memory.reflectionEveryTurns === 0) {
-      const reflection = await runMemoryReflection({
-        db: this.env.DRECLAW_DB,
-        chatId: params.chatId,
-        limit: 24,
-        nowIso,
-      });
-      if (reflection.writtenFacts > 0) {
-        const facts = await listActiveMemoryFacts(this.env.DRECLAW_DB, params.chatId, 200);
-        for (const fact of facts) {
-          const vector = await embedText(this.env, memory.embeddingModel, fact.text);
-          await upsertFactVector(this.env, fact.id, params.chatId, vector);
-        }
-      }
-    }
-
-    await deleteOldMemoryEpisodes(
-      this.env.DRECLAW_DB,
-      params.chatId,
-      new Date(Date.now() - memory.retentionDays * 24 * 60 * 60 * 1000).toISOString(),
-    );
+    await this.getMemoryRuntime().persistTurn(params);
   }
 
-  private async deleteMemoryData(chatId: number): Promise<void> {
-    const memory = this.getMemoryConfigSafe();
-    if (!memory.enabled) return;
-    const existingFacts = await listActiveMemoryFacts(this.env.DRECLAW_DB, chatId, 500);
-    await deleteMemoryForChat(this.env.DRECLAW_DB, chatId);
-    await deleteFactVectors(
-      this.env,
-      existingFacts.map((item) => item.id),
-    );
+  private getMemoryRuntime() {
+    return createMemoryRuntime(this.env);
   }
 
   private async getGoogleAccessToken(): Promise<{ accessToken: string; scope: string }> {

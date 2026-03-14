@@ -4,9 +4,10 @@ import {
   listActiveMemoryFacts,
   upsertSimilarMemoryFact,
   type MemoryFactRecord,
-} from "../db";
+} from "./repo";
 import type { Env } from "../types";
 import { embedText } from "./embeddings";
+import { buildMemoryId } from "./ids";
 import { retrieveMemoryContext } from "./retrieve";
 import { upsertFactVector, deleteFactVectors } from "./vectorize";
 
@@ -136,7 +137,9 @@ function parseSavePayload(input: unknown): { text: string; kind: MemoryKind; con
   if (!text) throw new Error("memory.save requires non-empty text");
   if (text.length > 2000) throw new Error("memory.save text too long");
 
-  const kindRaw = String(payload.kind ?? "fact").trim().toLowerCase();
+  const kindRaw = String(payload.kind ?? "fact")
+    .trim()
+    .toLowerCase();
   const kind: MemoryKind =
     kindRaw === "preference" || kindRaw === "goal" || kindRaw === "identity" || kindRaw === "fact"
       ? kindRaw
@@ -162,7 +165,12 @@ function parseRemovePayload(input: unknown): string {
   return target;
 }
 
-function serializeFact(fact: MemoryFactRecord): { id: string; kind: MemoryKind; text: string; confidence: number } {
+function serializeFact(fact: MemoryFactRecord): {
+  id: string;
+  kind: MemoryKind;
+  text: string;
+  confidence: number;
+} {
   return {
     id: fact.id,
     kind: fact.kind,
@@ -182,12 +190,12 @@ function normalizeForSearch(input: string): string {
     .toLowerCase();
 }
 
-function assertSupportedKeys(payload: Record<string, unknown>, allowed: string[], method: string): void {
+function assertSupportedKeys(
+  payload: Record<string, unknown>,
+  allowed: string[],
+  method: string,
+): void {
   const invalid = Object.keys(payload).filter((key) => !allowed.includes(key));
   if (!invalid.length) return;
   throw new Error(`${method} unsupported args: ${invalid.join(", ")}`);
-}
-
-function buildMemoryId(prefix: "fact"): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }

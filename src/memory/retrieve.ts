@@ -1,4 +1,9 @@
-import { listMemoryFactsByIds, listRecentMemoryEpisodes, searchMemoryFactsKeyword, type MemoryFactRecord } from "../db";
+import {
+  listMemoryFactsByIds,
+  listRecentMemoryEpisodes,
+  searchMemoryFactsKeyword,
+  type MemoryFactRecord,
+} from "./repo";
 import type { Env } from "../types";
 import { embedText } from "./embeddings";
 import { applyTemporalDecay } from "./decay";
@@ -20,16 +25,27 @@ export async function retrieveMemoryContext(params: {
 }): Promise<RetrievedMemory> {
   const [queryEmbedding, keywordFacts, recentEpisodes] = await Promise.all([
     embedText(params.env, params.embeddingModel, params.query),
-    searchMemoryFactsKeyword(params.db, params.chatId, buildKeywordQuery(params.query), params.factTopK * 2),
+    searchMemoryFactsKeyword(
+      params.db,
+      params.chatId,
+      buildKeywordQuery(params.query),
+      params.factTopK * 2,
+    ),
     listRecentMemoryEpisodes(params.db, params.chatId, params.episodeTopK),
   ]);
 
-  const vectorMatches = await queryFactVectors(params.env, params.chatId, queryEmbedding, params.factTopK * 3);
+  const vectorMatches = await queryFactVectors(
+    params.env,
+    params.chatId,
+    queryEmbedding,
+    params.factTopK * 3,
+  );
   const vectorFactIds = unique(vectorMatches.map((item) => item.id));
   const vectorFacts = await listMemoryFactsByIds(params.db, params.chatId, vectorFactIds);
 
   const vectorScore = new Map<string, number>();
-  for (const match of vectorMatches) vectorScore.set(match.id, Math.max(0, Math.min(1, match.score)));
+  for (const match of vectorMatches)
+    vectorScore.set(match.id, Math.max(0, Math.min(1, match.score)));
 
   const keywordScore = new Map<string, number>();
   for (const [index, fact] of keywordFacts.entries()) {
