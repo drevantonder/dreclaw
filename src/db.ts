@@ -18,7 +18,7 @@ export {
   supersedeMemoryFact,
   upsertSimilarMemoryFact,
 } from "./memory/repo";
-export type { GoogleOAuthStateRecord, GoogleOAuthTokenRecord } from "./google/repo";
+export type { GoogleOAuthStateRecord, GoogleOAuthTokenRecord } from "./integrations/google/repo";
 export {
   createGoogleOAuthState,
   deleteGoogleOAuthToken,
@@ -26,7 +26,7 @@ export {
   getGoogleOAuthToken,
   markGoogleOAuthStateUsed,
   upsertGoogleOAuthToken,
-} from "./google/repo";
+} from "./integrations/google/repo";
 
 export interface VfsEntryRecord {
   path: string;

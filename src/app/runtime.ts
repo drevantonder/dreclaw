@@ -9,7 +9,7 @@ import {
   type ExecuteHostBinding,
 } from "../code-exec";
 import { executeBash } from "../bash-exec";
-import { createGoogleModule } from "../google";
+import { createGoogleModule } from "../integrations/google";
 import { createZenModel } from "../llm/zen";
 import { createWorkersModel } from "../llm/workers";
 import { createMemoryRuntime } from "../memory";

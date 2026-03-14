@@ -6,7 +6,7 @@ import {
   getGoogleOAuthConfig,
   parseGoogleScopes,
   refreshGoogleAccessToken,
-} from "../../src/google";
+} from "../../src/integrations/google";
 import type { Env } from "../../src/types";
 
 afterEach(() => {

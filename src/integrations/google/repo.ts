@@ -1,4 +1,4 @@
-import { retryOnce } from "../retry";
+import { retryOnce } from "../../retry";
 
 export interface GoogleOAuthStateRecord {
   state: string;

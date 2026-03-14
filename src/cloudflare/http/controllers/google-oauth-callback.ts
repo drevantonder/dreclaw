@@ -1,4 +1,4 @@
-import { createGoogleModule } from "../../../google";
+import { createGoogleModule } from "../../../integrations/google";
 import type { Env } from "../../../types";
 
 export async function handleGoogleOAuthCallbackRequest(

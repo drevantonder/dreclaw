@@ -17,17 +17,17 @@ vi.mock("../../src/crypto", () => ({
   encryptSecret: mocks.encryptSecret,
 }));
 
-vi.mock("../../src/google/repo", () => ({
+vi.mock("../../src/integrations/google/repo", () => ({
   getGoogleOAuthState: mocks.getGoogleOAuthState,
   markGoogleOAuthStateUsed: mocks.markGoogleOAuthStateUsed,
   upsertGoogleOAuthToken: mocks.upsertGoogleOAuthToken,
 }));
 
-vi.mock("../../src/google/oauth", () => ({
+vi.mock("../../src/integrations/google/oauth", () => ({
   exchangeGoogleOAuthCode: mocks.exchangeGoogleOAuthCode,
 }));
 
-vi.mock("../../src/google/config", () => ({
+vi.mock("../../src/integrations/google/config", () => ({
   GOOGLE_OAUTH_DEFAULT_PRINCIPAL: "default",
   getGoogleOAuthConfig: mocks.getGoogleOAuthConfig,
 }));
@@ -36,7 +36,7 @@ vi.mock("../../src/chat-adapters/telegram/api", () => ({
   sendTelegramTextMessage: mocks.sendTelegramTextMessage,
 }));
 
-import { handleGoogleOAuthCallback } from "../../src/google/callback";
+import { handleGoogleOAuthCallback } from "../../src/integrations/google/callback";
 
 describe("google callback", () => {
   beforeEach(() => {

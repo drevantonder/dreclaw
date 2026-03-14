@@ -1,4 +1,4 @@
-import type { Env } from "../types";
+import type { Env } from "../../types";
 
 const DEFAULT_SCOPES = [
   "https://mail.google.com/",

@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   handleOAuthCallback: vi.fn(),
 }));
 
-vi.mock("../../src/google", () => ({
+vi.mock("../../src/integrations/google", () => ({
   createGoogleModule: mocks.createGoogleModule,
 }));
 

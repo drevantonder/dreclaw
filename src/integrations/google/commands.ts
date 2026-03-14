@@ -1,4 +1,4 @@
-import type { Env } from "../types";
+import type { Env } from "../../types";
 import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig } from "./config";
 import { buildGoogleOAuthUrl, createOAuthStateToken } from "./oauth";
 import { createGoogleOAuthState, deleteGoogleOAuthToken, getGoogleOAuthToken } from "./repo";

@@ -1,5 +1,5 @@
-import { decodeEncryptionKey, decryptSecret } from "../crypto";
-import type { Env } from "../types";
+import { decodeEncryptionKey, decryptSecret } from "../../crypto";
+import type { Env } from "../../types";
 import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig } from "./config";
 import { refreshGoogleAccessToken } from "./oauth";
 import { getGoogleOAuthToken } from "./repo";
