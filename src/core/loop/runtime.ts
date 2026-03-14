@@ -106,10 +106,6 @@ export class BotRuntime {
     return { ...state, verbose: enabled };
   }
 
-  async handleGoogleCommand(text: string, chatId: number, telegramUserId: number): Promise<string> {
-    return this.google().handleCommand({ text, chatId, telegramUserId });
-  }
-
   async runConversation(params: {
     thread: Thread<BotThreadState>;
     message: Message;

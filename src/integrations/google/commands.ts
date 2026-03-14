@@ -3,15 +3,23 @@ import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig } from "./config";
 import { buildGoogleOAuthUrl, createOAuthStateToken } from "./oauth";
 import { createGoogleOAuthState, deleteGoogleOAuthToken, getGoogleOAuthToken } from "./repo";
 
+export function isGoogleCommandText(text: string): boolean {
+  return String(text ?? "")
+    .trim()
+    .toLowerCase()
+    .startsWith("/google");
+}
+
+export function isBusySensitiveGoogleCommand(text: string): boolean {
+  const action = parseGoogleAction(text);
+  return action === "connect" || action === "disconnect";
+}
+
 export async function handleGoogleCommand(
   env: Env,
   input: { text: string; chatId: number; telegramUserId: number },
 ): Promise<string> {
-  const parts = input.text
-    .split(/\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const action = parts[1]?.toLowerCase() ?? "";
+  const action = parseGoogleAction(input.text);
   if (!action || action === "help") {
     return [
       "Google OAuth commands:",
@@ -55,4 +63,12 @@ export async function handleGoogleCommand(
   }
 
   return "Unknown /google command. Use /google help";
+}
+
+function parseGoogleAction(text: string): string {
+  const parts = text
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return parts[1]?.toLowerCase() ?? "";
 }

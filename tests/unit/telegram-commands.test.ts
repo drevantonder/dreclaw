@@ -8,7 +8,6 @@ const mocks = vi.hoisted(() => {
     reset: vi.fn((state) => ({ ...state, history: [] })),
     setVerbose: vi.fn((state, enabled) => ({ ...state, verbose: enabled })),
     factoryReset: vi.fn(async () => ({ history: [], verbose: false, runStatus: {} })),
-    handleGoogleCommand: vi.fn(async () => "google text"),
   };
   class BotRuntimeMock {
     constructor(_env: unknown, _executionContext?: unknown) {}
@@ -18,11 +17,11 @@ const mocks = vi.hoisted(() => {
     reset = runtimeInstance.reset;
     setVerbose = runtimeInstance.setVerbose;
     factoryReset = runtimeInstance.factoryReset;
-    handleGoogleCommand = runtimeInstance.handleGoogleCommand;
   }
   return {
     runtimeInstance,
     BotRuntime: vi.fn(BotRuntimeMock),
+    createGoogleModule: vi.fn(),
     sendTelegramTextMessage: vi.fn(),
     getThreadStateSnapshot: vi.fn(),
     setPersistedThreadControls: vi.fn(),
@@ -37,6 +36,10 @@ vi.mock("../../src/core/loop/runtime", () => ({
 
 vi.mock("../../src/chat-adapters/telegram/api", () => ({
   sendTelegramTextMessage: mocks.sendTelegramTextMessage,
+}));
+
+vi.mock("../../src/integrations/google", () => ({
+  createGoogleModule: mocks.createGoogleModule,
 }));
 
 vi.mock("../../src/db", () => ({
@@ -67,6 +70,11 @@ describe("telegram commands", () => {
       getStatus: vi.fn(async () => ({ busy: "no", runStatus: { running: false } })),
       getWorkflowStatus: vi.fn(async () => null),
       requestStop: vi.fn(async () => undefined),
+    });
+    mocks.createGoogleModule.mockReturnValue({
+      isCommandText: vi.fn((text: string) => text.startsWith("/google")),
+      isBusySensitiveCommand: vi.fn((text: string) => text === "/google connect"),
+      handleCommand: vi.fn(async () => "google text"),
     });
     mocks.sendTelegramTextMessage.mockResolvedValue(undefined);
   });
@@ -155,7 +163,7 @@ describe("telegram commands", () => {
       text: "/google connect",
     });
 
-    expect(mocks.runtimeInstance.handleGoogleCommand).not.toHaveBeenCalled();
+    expect(mocks.createGoogleModule).toHaveBeenCalledWith(env);
     expect(mocks.sendTelegramTextMessage).toHaveBeenCalledWith(
       env.TELEGRAM_BOT_TOKEN,
       777,

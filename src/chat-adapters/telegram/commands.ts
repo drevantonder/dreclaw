@@ -6,6 +6,7 @@ import {
   setThreadStateSnapshot,
 } from "../../db";
 import { createRunCoordinator } from "../../core/loop/run";
+import { createGoogleModule } from "../../integrations/google";
 import type { Env, TelegramUpdate } from "../../types";
 import { sendTelegramTextMessage } from "./api";
 import { isAllowedTelegramUpdate } from "./auth";
@@ -140,20 +141,17 @@ export async function handleAsyncCommand(params: {
     return;
   }
 
-  if (lowered === "/google") {
-    const action = text.split(/\s+/, 3)[1]?.toLowerCase() ?? "";
-    if (busy && (action === "connect" || action === "disconnect")) {
-      await sendTelegramTextMessage(
-        env.TELEGRAM_BOT_TOKEN,
-        chatId,
-        busyMessage(`/google ${action}`),
-      );
+  const google = createGoogleModule(env);
+
+  if (google.isCommandText(text)) {
+    if (busy && google.isBusySensitiveCommand(text)) {
+      await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, busyMessage(text.trim()));
       return;
     }
     await sendTelegramTextMessage(
       env.TELEGRAM_BOT_TOKEN,
       chatId,
-      await runtime.handleGoogleCommand(text, chatId, telegramUserId),
+      await google.handleCommand({ text, chatId, telegramUserId }),
     );
     return;
   }

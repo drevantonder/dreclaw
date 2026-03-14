@@ -3,6 +3,7 @@ import { handleGoogleCommand } from "./commands";
 import { getGoogleAccessToken, isGoogleLinked } from "./client";
 import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig, parseGoogleScopes } from "./config";
 import { handleGoogleOAuthCallback } from "./callback";
+import { isBusySensitiveGoogleCommand, isGoogleCommandText } from "./commands";
 import {
   buildGoogleOAuthUrl,
   createOAuthStateToken,
@@ -23,6 +24,8 @@ export function createGoogleModule(env: Env) {
   return {
     isLinked: () => isGoogleLinked(env),
     getAccessToken: (timeoutMs: number) => getGoogleAccessToken(env, timeoutMs),
+    isCommandText: (text: string) => isGoogleCommandText(text),
+    isBusySensitiveCommand: (text: string) => isBusySensitiveGoogleCommand(text),
     handleCommand: (input: { text: string; chatId: number; telegramUserId: number }) =>
       handleGoogleCommand(env, input),
     handleOAuthCallback: (request: Request) => handleGoogleOAuthCallback(request, env),
@@ -52,6 +55,8 @@ export {
   getGoogleOAuthToken,
   handleGoogleCommand,
   handleGoogleOAuthCallback,
+  isBusySensitiveGoogleCommand,
+  isGoogleCommandText,
   markGoogleOAuthStateUsed,
   parseGoogleScopes,
   refreshGoogleAccessToken,
