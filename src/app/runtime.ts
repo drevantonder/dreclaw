@@ -12,7 +12,7 @@ import { executeBash } from "../bash-exec";
 import { createGoogleModule } from "../integrations/google";
 import { createZenModel } from "../llm/zen";
 import { createWorkersModel } from "../llm/workers";
-import { createMemoryRuntime } from "../memory";
+import { createMemoryRuntime } from "../core/memory";
 import { RunCancelledError, createRunCoordinator, idleRunStatus } from "../run";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../types";
 import { createWorkspace } from "../workspace";

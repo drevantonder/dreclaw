@@ -1,6 +1,6 @@
 import { retryOnce } from "./retry";
 
-export type { MemoryEpisodeRecord, MemoryFactRecord } from "./memory/repo";
+export type { MemoryEpisodeRecord, MemoryFactRecord } from "./core/memory/repo";
 export {
   attachMemoryFactSource,
   createMemoryFact,
@@ -17,7 +17,7 @@ export {
   searchMemoryFactsKeyword,
   supersedeMemoryFact,
   upsertSimilarMemoryFact,
-} from "./memory/repo";
+} from "./core/memory/repo";
 export type { GoogleOAuthStateRecord, GoogleOAuthTokenRecord } from "./integrations/google/repo";
 export {
   createGoogleOAuthState,

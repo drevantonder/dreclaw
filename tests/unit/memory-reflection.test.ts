@@ -16,15 +16,15 @@ const {
   extractFacts: vi.fn(),
 }));
 
-vi.mock("../../src/memory/repo", () => ({
+vi.mock("../../src/core/memory/repo", () => ({
   listUnprocessedMemoryEpisodes,
   markMemoryEpisodesProcessed,
   upsertSimilarMemoryFact,
   attachMemoryFactSource,
 }));
-vi.mock("../../src/memory/salience", () => ({ scoreSalience, extractFacts }));
+vi.mock("../../src/core/memory/salience", () => ({ scoreSalience, extractFacts }));
 
-import { runMemoryReflection } from "../../src/memory/reflection";
+import { runMemoryReflection } from "../../src/core/memory/reflection";
 
 describe("memory reflection", () => {
   beforeEach(() => {

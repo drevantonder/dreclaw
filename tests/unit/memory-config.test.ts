@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { getMemoryConfig } from "../../src/memory/config";
+import { getMemoryConfig } from "../../src/core/memory/config";
 import type { Env } from "../../src/types";
 
 function baseEnv(overrides: Partial<Env> = {}): Env {

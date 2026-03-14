@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { createGoogleModule } from "../integrations/google";
-import { createMemoryRuntime } from "../memory";
+import { createMemoryRuntime } from "../core/memory";
 import type { Env } from "../types";
 import { createWorkspace } from "../workspace";
 

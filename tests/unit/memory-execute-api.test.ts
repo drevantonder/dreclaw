@@ -20,10 +20,10 @@ const {
   deleteMemoryFactById: vi.fn(),
 }));
 
-vi.mock("../../src/memory/retrieve", () => ({ retrieveMemoryContext }));
-vi.mock("../../src/memory/embeddings", () => ({ embedText }));
-vi.mock("../../src/memory/vectorize", () => ({ upsertFactVector, deleteFactVectors }));
-vi.mock("../../src/memory/repo", () => ({
+vi.mock("../../src/core/memory/retrieve", () => ({ retrieveMemoryContext }));
+vi.mock("../../src/core/memory/embeddings", () => ({ embedText }));
+vi.mock("../../src/core/memory/vectorize", () => ({ upsertFactVector, deleteFactVectors }));
+vi.mock("../../src/core/memory/repo", () => ({
   upsertSimilarMemoryFact,
   listActiveMemoryFacts,
   getActiveMemoryFactByTarget,
@@ -34,7 +34,7 @@ import {
   executeMemoryFind,
   executeMemoryRemove,
   executeMemorySave,
-} from "../../src/memory/execute-api";
+} from "../../src/core/memory/execute-api";
 
 describe("memory execute api", () => {
   beforeEach(() => {
