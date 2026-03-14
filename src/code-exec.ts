@@ -175,6 +175,7 @@ async function buildModules(
   if (!ctx.vfs) return modules;
   const paths = await ctx.vfs.listFiles("/", ctx.config.limits.vfsMaxFiles);
   for (const path of paths) {
+    if (!/\.(?:[cm]?js|json)$/i.test(path)) continue;
     const content = await ctx.vfs.readFile(path);
     if (content === null) continue;
     const moduleName = `vfs:${path}`;
