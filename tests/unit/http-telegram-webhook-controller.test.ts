@@ -7,8 +7,11 @@ const mocks = vi.hoisted(() => ({
   markUpdateSeen: vi.fn(),
 }));
 
-vi.mock("../../src/bot", () => ({
+vi.mock("../../src/telegram/gateway", () => ({
   createBot: mocks.createBot,
+}));
+
+vi.mock("../../src/telegram/commands", () => ({
   maybeHandleAsyncTelegramCommand: mocks.maybeHandleAsyncTelegramCommand,
 }));
 
@@ -16,7 +19,7 @@ vi.mock("../../src/db", () => ({
   markUpdateSeen: mocks.markUpdateSeen,
 }));
 
-import { handleTelegramWebhookRequest } from "../../src/http/controllers/telegram-webhook";
+import { handleTelegramWebhookRequest } from "../../src/telegram/webhook";
 
 function createCtx() {
   return {

@@ -14,7 +14,6 @@ import { createZenModel } from "../llm/zen";
 import { createWorkersModel } from "../llm/workers";
 import { createMemoryRuntime } from "../memory";
 import { RunCancelledError, createRunCoordinator, idleRunStatus } from "../run";
-import { fetchTelegramImageAsDataUrl } from "../telegram/api";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../types";
 import { createWorkspace } from "../workspace";
 import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "./skills";
@@ -114,14 +113,16 @@ export class BotRuntime {
   async runConversation(params: {
     thread: Thread<BotThreadState>;
     message: Message;
+    chatId: number;
     state: BotThreadState;
     runTimeoutMs?: number;
+    imageBlocks?: string[];
   }): Promise<BotThreadState> {
     const { thread, message } = params;
     let state = normalizeBotThreadState(params.state);
-    const chatId = getTelegramChatId(thread.id, message.raw);
+    const { chatId } = params;
     const userText = message.text.trim();
-    const imageBlocks = await loadImages(this.env, message.raw);
+    const imageBlocks = params.imageBlocks ?? [];
     const runtime = this.getRuntimeConfig();
     const toolTraces: ToolTrace[] = [];
     const tracer = new VerboseTracer(this.env.DRECLAW_DB, thread);
@@ -287,16 +288,18 @@ export class BotRuntime {
   async runConversationAgentStep(params: {
     thread: Thread<BotThreadState>;
     message: Message;
+    chatId: number;
     state: BotThreadState;
     runTimeoutMs?: number;
     baseMessages?: ModelMessage[];
     isFirstStep?: boolean;
+    imageBlocks?: string[];
   }): Promise<{ state: BotThreadState; nextMessages: ModelMessage[]; shouldContinue: boolean }> {
     const { thread, message } = params;
     let state = normalizeBotThreadState(params.state);
-    const chatId = getTelegramChatId(thread.id, message.raw);
+    const { chatId } = params;
     const userText = message.text.trim();
-    const imageBlocks = await loadImages(this.env, message.raw);
+    const imageBlocks = params.imageBlocks ?? [];
     const runtime = this.getRuntimeConfig();
     const toolTraces: ToolTrace[] = [];
     const tracer = new VerboseTracer(this.env.DRECLAW_DB, thread);
@@ -902,15 +905,6 @@ function mergeContinuationMessages(
   return [...base, ...continuation];
 }
 
-async function loadImages(env: Env, rawMessage: unknown): Promise<string[]> {
-  const photo = (rawMessage as { photo?: Array<{ file_id?: string; file_size?: number }> })?.photo;
-  if (!Array.isArray(photo) || !photo.length) return [];
-  const best = [...photo].sort((a, b) => Number(b.file_size ?? 0) - Number(a.file_size ?? 0))[0];
-  if (!best?.file_id) return [];
-  const image = await fetchTelegramImageAsDataUrl(env.TELEGRAM_BOT_TOKEN, best.file_id);
-  return image ? [image] : [];
-}
-
 function renderHistoryContext(history: BotThreadState["history"]): string {
   if (!history.length) return "";
   return history.map((entry) => `${entry.role}: ${entry.content}`).join("\n");
@@ -1145,14 +1139,6 @@ function extractAssistantText(messages: ModelMessage[]): string {
     if (typeof message.content === "string") return message.content.trim();
   }
   return "";
-}
-
-function getTelegramChatId(threadId: string, rawMessage: unknown): number {
-  const raw = (rawMessage as { chat?: { id?: number } })?.chat?.id;
-  if (typeof raw === "number") return raw;
-  const maybe = Number(threadId.split(":").at(-1));
-  if (Number.isFinite(maybe)) return maybe;
-  throw new Error("Unable to resolve Telegram chat id");
 }
 
 function truncateForLog(input: string, max: number): string {

@@ -3,7 +3,8 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import type { ModelMessage } from "ai";
 import { BotRuntime } from "./app/runtime";
 import type { BotThreadState } from "./app/state";
-import { createChat } from "./bot";
+import { createChat } from "./telegram/gateway";
+import { getTelegramUserChatId, loadTelegramImageBlocks } from "./telegram/message";
 import { createRunCoordinator } from "./run";
 import type { ConversationWorkflowPayload, Env } from "./types";
 
@@ -25,10 +26,14 @@ export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWo
         const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
         const message = ChatMessage.fromJSON(event.payload.message);
         const runtime = new BotRuntime(this.env, this.ctx as unknown as ExecutionContext);
+        const chatId = getTelegramUserChatId(message.raw, thread.id);
+        const imageBlocks = await loadTelegramImageBlocks(this.env.TELEGRAM_BOT_TOKEN, message.raw);
         const stepResult = await runtime.runConversationAgentStep({
           thread,
           message,
+          chatId,
           state,
+          imageBlocks,
           baseMessages: Array.isArray(messages) ? (messages as ModelMessage[]) : undefined,
           isFirstStep: stepIndex === 0,
           runTimeoutMs: 300_000,
