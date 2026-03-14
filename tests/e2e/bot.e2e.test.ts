@@ -37,6 +37,26 @@ function telegramMessageResult(text: string, messageId: number) {
   };
 }
 
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+function requestJsonBody(init?: RequestInit): { text?: string } {
+  const body = init?.body;
+  if (typeof body !== "string") return {};
+  return JSON.parse(body) as { text?: string };
+}
+
+function textValue(value: unknown): string {
+  return typeof value === "string"
+    ? value
+    : typeof value === "number" || typeof value === "boolean" || typeof value === "bigint"
+      ? String(value)
+      : "";
+}
+
 type MockContext = {
   messages?: Array<Record<string, unknown>>;
   tools: Array<{
@@ -138,11 +158,11 @@ vi.mock("ai", () => {
         const toolCalls = next.content.filter((block) => block.type === "toolCall");
         for (const toolCall of toolCalls) {
           const tool = context.tools.find((entry) => entry.name === toolCall.name);
-          await tool?.execute(String(toolCall.id ?? ""), toolCall.arguments ?? {});
+          await tool?.execute(textValue(toolCall.id), toolCall.arguments ?? {});
         }
 
         const text = textBlocks
-          .map((block) => String(block.text ?? ""))
+          .map((block) => textValue(block.text))
           .join("\n")
           .trim();
         messages.push({ role: "assistant", content: text });
@@ -210,7 +230,7 @@ describe("chat sdk bot", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+        const url = requestUrl(input);
         if (url.includes("/getMe")) {
           return new Response(
             JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
@@ -227,14 +247,14 @@ describe("chat sdk bot", () => {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
         if (url.includes("/sendMessage")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           sent.push(body.text ?? "");
           return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", 100)), {
             status: 200,
           });
         }
         if (url.includes("/editMessageText")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           edited.push(body.text ?? "");
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
@@ -275,7 +295,7 @@ describe("chat sdk bot", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+        const url = requestUrl(input);
         if (url.includes("/getMe")) {
           return new Response(
             JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
@@ -292,7 +312,7 @@ describe("chat sdk bot", () => {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
         if (url.includes("/sendMessage")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           sent.push(body.text ?? "");
           return new Response(
             JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)),
@@ -300,7 +320,7 @@ describe("chat sdk bot", () => {
           );
         }
         if (url.includes("/editMessageText")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           edited.push(body.text ?? "");
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
@@ -367,7 +387,7 @@ describe("chat sdk bot", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+        const url = requestUrl(input);
         if (url.includes("/getMe")) {
           return new Response(
             JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
@@ -384,7 +404,7 @@ describe("chat sdk bot", () => {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
         if (url.includes("/sendMessage")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           sent.push(body.text ?? "");
           return new Response(
             JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)),
@@ -392,7 +412,7 @@ describe("chat sdk bot", () => {
           );
         }
         if (url.includes("/editMessageText")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           edited.push(body.text ?? "");
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
@@ -461,7 +481,7 @@ describe("chat sdk bot", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+        const url = requestUrl(input);
         if (url.includes("/getMe")) {
           return new Response(
             JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
@@ -478,7 +498,7 @@ describe("chat sdk bot", () => {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
         if (url.includes("/sendMessage")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           sent.push(body.text ?? "");
           return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", 100)), {
             status: 200,
@@ -530,7 +550,7 @@ describe("chat sdk bot", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+        const url = requestUrl(input);
         if (url.includes("/getMe")) {
           return new Response(
             JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
@@ -547,7 +567,7 @@ describe("chat sdk bot", () => {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
         if (url.includes("/sendMessage")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           sent.push(body.text ?? "");
           return new Response(
             JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)),
@@ -555,7 +575,7 @@ describe("chat sdk bot", () => {
           );
         }
         if (url.includes("/editMessageText")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           edited.push(body.text ?? "");
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
@@ -617,7 +637,7 @@ describe("chat sdk bot", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+        const url = requestUrl(input);
         if (url.includes("/getMe")) {
           return new Response(
             JSON.stringify({ ok: true, result: { id: 999, is_bot: true, username: "dreclawbot" } }),
@@ -634,7 +654,7 @@ describe("chat sdk bot", () => {
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }
         if (url.includes("/sendMessage")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           sent.push(body.text ?? "");
           return new Response(
             JSON.stringify(telegramMessageResult(body.text ?? "", sent.length + 100)),
@@ -642,7 +662,7 @@ describe("chat sdk bot", () => {
           );
         }
         if (url.includes("/editMessageText")) {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+          const body = requestJsonBody(init);
           edited.push(body.text ?? "");
           return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
         }

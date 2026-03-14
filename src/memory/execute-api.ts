@@ -117,7 +117,7 @@ function parseFindPayload(input: unknown): { query: string; topK: number } {
   }
   const payload = input as { query?: unknown; topK?: unknown };
   assertSupportedKeys(payload, ["query", "topK"], "memory.find");
-  const query = String(payload.query ?? "").trim();
+  const query = toStringInput(payload.query).trim();
   if (query.length > 600) throw new Error("memory.find query too long");
   const topKRaw = payload.topK;
   const topK =
@@ -133,13 +133,11 @@ function parseSavePayload(input: unknown): { text: string; kind: MemoryKind; con
   }
   const payload = input as { text?: unknown; kind?: unknown; confidence?: unknown };
   assertSupportedKeys(payload, ["text", "kind", "confidence"], "memory.save");
-  const text = String(payload.text ?? "").trim();
+  const text = toStringInput(payload.text).trim();
   if (!text) throw new Error("memory.save requires non-empty text");
   if (text.length > 2000) throw new Error("memory.save text too long");
 
-  const kindRaw = String(payload.kind ?? "fact")
-    .trim()
-    .toLowerCase();
+  const kindRaw = toStringInput(payload.kind, "fact").trim().toLowerCase();
   const kind: MemoryKind =
     kindRaw === "preference" || kindRaw === "goal" || kindRaw === "identity" || kindRaw === "fact"
       ? kindRaw
@@ -159,10 +157,18 @@ function parseRemovePayload(input: unknown): string {
   }
   const payload = input as { target?: unknown };
   assertSupportedKeys(payload, ["target"], "memory.remove");
-  const target = String(payload.target ?? "").trim();
+  const target = toStringInput(payload.target).trim();
   if (!target) throw new Error("memory.remove requires target");
   if (target.length > 2000) throw new Error("memory.remove target too long");
   return target;
+}
+
+function toStringInput(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  return fallback;
 }
 
 function serializeFact(fact: MemoryFactRecord): {

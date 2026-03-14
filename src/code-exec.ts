@@ -352,7 +352,7 @@ function compactErrorMessage(error: unknown): string {
   try {
     return JSON.stringify(error);
   } catch {
-    return String(error ?? "unknown error");
+    return "unknown error";
   }
 }
 
@@ -361,7 +361,7 @@ function compactSerialize(value: unknown): string {
   try {
     return JSON.stringify(value);
   } catch {
-    return String(value ?? "");
+    return "";
   }
 }
 

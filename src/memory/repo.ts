@@ -313,29 +313,38 @@ export async function deleteOldMemoryEpisodes(
 
 function mapMemoryEpisodeRecord(row: Record<string, unknown>): MemoryEpisodeRecord {
   return {
-    id: String(row.id ?? ""),
+    id: toStringValue(row.id),
     chatId: Number(row.chat_id ?? 0),
-    role: String(row.role ?? "user") as MemoryEpisodeRecord["role"],
-    content: String(row.content ?? ""),
+    role: toStringValue(row.role, "user") as MemoryEpisodeRecord["role"],
+    content: toStringValue(row.content),
     salience: Number(row.salience ?? 0),
-    createdAt: String(row.created_at ?? ""),
-    processedAt:
-      row.processed_at === null || row.processed_at === undefined ? null : String(row.processed_at),
+    createdAt: toStringValue(row.created_at),
+    processedAt: toNullableStringValue(row.processed_at),
   };
 }
 
 function mapMemoryFactRecord(row: Record<string, unknown>): MemoryFactRecord {
   return {
-    id: String(row.id ?? ""),
+    id: toStringValue(row.id),
     chatId: Number(row.chat_id ?? 0),
-    kind: String(row.kind ?? "fact") as MemoryFactRecord["kind"],
-    text: String(row.text ?? ""),
+    kind: toStringValue(row.kind, "fact") as MemoryFactRecord["kind"],
+    text: toStringValue(row.text),
     confidence: Number(row.confidence ?? 0),
-    createdAt: String(row.created_at ?? ""),
-    updatedAt: String(row.updated_at ?? ""),
-    supersededBy:
-      row.superseded_by === null || row.superseded_by === undefined
-        ? null
-        : String(row.superseded_by),
+    createdAt: toStringValue(row.created_at),
+    updatedAt: toStringValue(row.updated_at),
+    supersededBy: toNullableStringValue(row.superseded_by),
   };
+}
+
+function toStringValue(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  return fallback;
+}
+
+function toNullableStringValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return toStringValue(value);
 }

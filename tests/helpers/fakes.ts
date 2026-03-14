@@ -97,14 +97,15 @@ export class FakeD1 {
       this.kv.set(key, {
         key,
         value_json: String(args[1]),
-        expires_at: args[2] == null ? null : String(args[2]),
+        expires_at: stringifyPrimitive(args[2]),
         updated_at: String(args[3]),
       });
       return { meta: { changes: 1 } };
     }
     if (sql.includes("DELETE FROM chat_state_kv WHERE key = ? AND expires_at")) {
       const row = this.kv.get(String(args[0]));
-      if (!row || row.expires_at == null || String(row.expires_at) > String(args[1]))
+      const expiresAt = stringifyPrimitive(args[1]);
+      if (!row || row.expires_at == null || expiresAt == null || row.expires_at > expiresAt)
         return { meta: { changes: 0 } };
       this.kv.delete(String(args[0]));
       return { meta: { changes: 1 } };
@@ -221,6 +222,15 @@ export class FakeD1 {
     }
     return null;
   }
+}
+
+function stringifyPrimitive(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  return null;
 }
 
 export function createEnv(overrides?: Partial<Env>) {

@@ -183,5 +183,6 @@ function normalizeShellPath(path: string | undefined): string {
 
 function compactErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
-  return String(error ?? "Unknown error");
+  if (typeof error === "string") return error;
+  return "Unknown error";
 }

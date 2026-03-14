@@ -278,7 +278,7 @@ export async function putVfsEntry(
     }
 
     const nextVersion = existing ? Number(existing.version ?? 0) + 1 : 1;
-    const createdAt = existing ? String(existing.created_at ?? input.nowIso) : input.nowIso;
+    const createdAt = existing ? toStringValue(existing.created_at, input.nowIso) : input.nowIso;
 
     await db
       .prepare(
@@ -623,54 +623,58 @@ async function bumpVfsRevision(db: D1Database, nowIso: string): Promise<number> 
 
 function mapVfsEntryRecord(row: Record<string, unknown>): VfsEntryRecord {
   return {
-    path: String(row.path ?? ""),
-    content: String(row.content ?? ""),
+    path: toStringValue(row.path),
+    content: toStringValue(row.content),
     sizeBytes: Number(row.size_bytes ?? 0),
-    sha256: String(row.sha256 ?? ""),
+    sha256: toStringValue(row.sha256),
     version: Number(row.version ?? 0),
-    createdAt: String(row.created_at ?? ""),
-    updatedAt: String(row.updated_at ?? ""),
+    createdAt: toStringValue(row.created_at),
+    updatedAt: toStringValue(row.updated_at),
   };
 }
 
 function mapAgentRunRecord(row: Record<string, unknown>): AgentRunRecord {
-  const status = String(row.status ?? "queued");
+  const status = toStringValue(row.status, "queued");
   const normalizedStatus: AgentRunRecord["status"] =
     status === "running" || status === "completed" || status === "failed" || status === "cancelled"
       ? status
       : "queued";
   return {
-    id: String(row.id ?? ""),
+    id: toStringValue(row.id),
     updateId: Number(row.update_id ?? 0),
     chatId: Number(row.chat_id ?? 0),
-    payloadJson: String(row.payload_json ?? "{}"),
+    payloadJson: toStringValue(row.payload_json, "{}"),
     status: normalizedStatus,
     attempts: Number(row.attempts ?? 0),
-    resultText:
-      row.result_text === null || row.result_text === undefined ? null : String(row.result_text),
-    errorMessage:
-      row.error_message === null || row.error_message === undefined
-        ? null
-        : String(row.error_message),
-    createdAt: String(row.created_at ?? ""),
-    updatedAt: String(row.updated_at ?? ""),
-    deliveredAt:
-      row.delivered_at === null || row.delivered_at === undefined ? null : String(row.delivered_at),
+    resultText: toNullableStringValue(row.result_text),
+    errorMessage: toNullableStringValue(row.error_message),
+    createdAt: toStringValue(row.created_at),
+    updatedAt: toStringValue(row.updated_at),
+    deliveredAt: toNullableStringValue(row.delivered_at),
   };
 }
 
 function mapChatInboxRecord(row: Record<string, unknown>): ChatInboxRecord {
   return {
-    id: String(row.id ?? ""),
+    id: toStringValue(row.id),
     chatId: Number(row.chat_id ?? 0),
     updateId: Number(row.update_id ?? 0),
-    textJson: String(row.text_json ?? "{}"),
-    createdAt: String(row.created_at ?? ""),
-    consumedAt:
-      row.consumed_at === null || row.consumed_at === undefined ? null : String(row.consumed_at),
-    consumedByRunId:
-      row.consumed_by_run_id === null || row.consumed_by_run_id === undefined
-        ? null
-        : String(row.consumed_by_run_id),
+    textJson: toStringValue(row.text_json, "{}"),
+    createdAt: toStringValue(row.created_at),
+    consumedAt: toNullableStringValue(row.consumed_at),
+    consumedByRunId: toNullableStringValue(row.consumed_by_run_id),
   };
+}
+
+function toStringValue(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  return fallback;
+}
+
+function toNullableStringValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return toStringValue(value);
 }
