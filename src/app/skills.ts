@@ -10,7 +10,7 @@ const BUILTIN_SKILLS = [
   {
     name: "execute-runtime",
     description:
-      "Sandboxed execute runtime rules and patterns. Use for execute scripts, async returns, VFS imports, and non-Node constraints.",
+      "Sandboxed execute runtime rules and patterns. Use for execute scripts, async returns, and non-Node constraints.",
     content: `# Execute Runtime
 
 Use this skill when writing or fixing execute scripts.
@@ -20,7 +20,7 @@ Rules:
 - Use only built-in runtime globals and host APIs.
 - Do not use require(), fs from Node, process, Buffer, or googleapis imports.
 - If a script uses await or multiple statements, explicitly return the final value.
-- For reusable helpers, write modules to VFS and load them with await import('vfs:/path.js').
+- For reusable helpers, save code or data in VFS and read it explicitly from the script when needed.
 - When formatting user-facing summaries, prefer simple string concatenation over large template literals.
 
 Patterns:
@@ -32,12 +32,11 @@ return result;
 
 ~~~js
 await fs.write({
-  path: '/scripts/example.js',
-  content: 'export async function run(input) { return input; }',
+  path: '/tmp/example.txt',
+  content: 'hello',
   overwrite: true,
 });
-const { run } = await import('vfs:/scripts/example.js');
-return await run({ ok: true });
+return await fs.read({ path: '/tmp/example.txt' });
 ~~~
 `,
   },
@@ -124,7 +123,6 @@ Rules:
 - VFS paths must be absolute, like /scripts/google/gmail.js.
 - Prefer the vfs tool for direct file access; use fs.* inside execute only when the running script itself needs file access.
 - Use fs.write with an object payload: path, content, overwrite.
-- Imports use vfs:/absolute/path.js.
 - System skills under /skills/system/... are read-only.
 - User-created skills belong under /skills/user/<name>/SKILL.md.
 

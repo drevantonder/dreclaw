@@ -110,7 +110,6 @@ Normal messages stream a single assistant reply.
 - `execute` runs JavaScript in a sandboxed dynamic Worker and exposes `fetch`, `fs.read/fs.write/fs.list/fs.remove`, `memory.find/save/remove`, and `google.execute`.
 - `execute` also exposes `memory.find(query, opts?)`, `memory.save(text, opts?)`, and `memory.remove(target)` for direct memory control.
 - `execute` exposes `google.execute({...})` for Google API calls.
-- `execute` can import saved modules via `vfs:/...` (for example `const { run } = await import("vfs:/scripts/run.js")`).
 
 ### Google OAuth setup
 

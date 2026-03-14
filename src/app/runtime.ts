@@ -772,7 +772,7 @@ export class BotRuntime {
       }),
       execute: tool({
         description:
-          "Run JavaScript in a sandboxed Worker runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, built-in global `google`, and imports from vfs:/... . Return the final value explicitly. For reusable helpers, write modules to VFS and load them with await import('vfs:/path.js'). For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
+          "Run JavaScript in a sandboxed Worker runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, and built-in global `google`. Return the final value explicitly. For reusable helpers, keep code in normal scripts or read files from VFS. For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
         inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
         execute: async (input) => {
           const writes: string[] = [];
