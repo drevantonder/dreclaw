@@ -193,9 +193,8 @@ async function buildModules(
 }
 
 function buildMainModule(code: string): string {
+  const preparedCode = maybeInjectImplicitReturn(code);
   return [
-    `const USER_CODE = ${JSON.stringify(code)};`,
-    "const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;",
     "",
     "function formatValue(value) {",
     "  if (typeof value === 'string') return value;",
@@ -277,8 +276,9 @@ function buildMainModule(code: string): string {
     "      });",
     "    };",
     "    try {",
-    "      const runner = new AsyncFunction('input', 'fs', 'memory', 'google', 'fetch', 'console', USER_CODE);",
-    "      const result = await runner(payload.input, fs, memory, google, fetchShim, consoleShim);",
+    "      const result = await (async (input, fs, memory, google, fetch, console) => {",
+    indentCode(preparedCode, 8),
+    "      })(payload.input, fs, memory, google, fetchShim, consoleShim);",
     "      stats.durationMs = Date.now() - startedAt;",
     "      return Response.json({ ok: true, result: sanitizeResult(result, env.EXEC_LIMITS.execMaxOutputBytes), logs, stats });",
     "    } catch (error) {",
@@ -295,6 +295,35 @@ function buildMainModule(code: string): string {
     "};",
     "",
   ].join("\n");
+}
+
+function maybeInjectImplicitReturn(code: string): string {
+  const lines = code.split("\n");
+  let index = lines.length - 1;
+  while (index >= 0 && !lines[index]?.trim()) index -= 1;
+  if (index < 0) return code;
+  const target = lines[index].trim();
+  if (!looksLikeExpressionStatement(target)) return code;
+  const leading = /^\s*/.exec(lines[index])?.[0] ?? "";
+  const expression = target.replace(/;\s*$/, "");
+  lines[index] = `${leading}return ${expression};`;
+  return lines.join("\n");
+}
+
+function looksLikeExpressionStatement(line: string): boolean {
+  if (!line) return false;
+  if (line.startsWith("//") || line.startsWith("/*") || line === "{" || line === "}") return false;
+  return !/^(const|let|var|if|for|while|switch|try|catch|finally|function|class|return|throw|import|export)\b/.test(
+    line,
+  );
+}
+
+function indentCode(code: string, spaces: number): string {
+  const prefix = " ".repeat(spaces);
+  return code
+    .split("\n")
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
 }
 
 function sanitizeExecuteResult(result: ExecuteResult, maxBytes: number): ExecuteResult {
