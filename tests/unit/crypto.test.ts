@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { decodeEncryptionKey, decryptSecret, encryptSecret } from "../../src/crypto";
+import {
+  decodeEncryptionKey,
+  decryptSecret,
+  encryptSecret,
+} from "../../src/integrations/google/crypto";
 
 describe("crypto", () => {
   it("roundtrips encrypted secrets", async () => {

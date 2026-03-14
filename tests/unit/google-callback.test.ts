@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   sendTelegramTextMessage: vi.fn(),
 }));
 
-vi.mock("../../src/crypto", () => ({
+vi.mock("../../src/integrations/google/crypto", () => ({
   decodeEncryptionKey: mocks.decodeEncryptionKey,
   encryptSecret: mocks.encryptSecret,
 }));

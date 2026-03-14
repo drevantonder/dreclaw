@@ -1,4 +1,4 @@
-import { decodeEncryptionKey, decryptSecret } from "../../crypto";
+import { decodeEncryptionKey, decryptSecret } from "./crypto";
 import type { Env } from "../../cloudflare/env";
 import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig } from "./config";
 import { refreshGoogleAccessToken } from "./oauth";

@@ -1,4 +1,4 @@
-import { retryOnce } from "../../retry";
+import { retryOnce } from "../../utils/retry";
 
 export async function markUpdateSeen(db: D1Database, updateId: number): Promise<boolean> {
   return retryOnce(async () => {
