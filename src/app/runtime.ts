@@ -1,14 +1,7 @@
 import { ToolLoopAgent, generateText, stepCountIs, tool, type ModelMessage } from "ai";
 import type { Thread, Message } from "chat";
 import { z } from "zod";
-import { decodeEncryptionKey, decryptSecret } from "../crypto";
-import {
-  clearAllVfsEntries,
-  createGoogleOAuthState,
-  deleteGoogleOAuthToken,
-  getGoogleOAuthToken,
-  getPersistedThreadControls,
-} from "../db";
+import { clearAllVfsEntries, getPersistedThreadControls } from "../db";
 import {
   executeCode,
   getCodeExecutionConfig,
@@ -16,17 +9,12 @@ import {
   type ExecuteHostBinding,
 } from "../code-exec";
 import { executeBash } from "../bash-exec";
-import {
-  buildGoogleOAuthUrl,
-  createOAuthStateToken,
-  getGoogleOAuthConfig,
-  refreshGoogleAccessToken,
-} from "../google-oauth";
+import { createGoogleModule } from "../google";
 import { createZenModel } from "../llm/zen";
 import { createWorkersModel } from "../llm/workers";
 import { createMemoryRuntime } from "../memory";
 import { RunCancelledError, createRunCoordinator, idleRunStatus } from "../run";
-import { fetchTelegramImageAsDataUrl } from "../telegram-api";
+import { fetchTelegramImageAsDataUrl } from "../telegram/api";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../types";
 import { createWorkspace } from "../workspace";
 import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "./skills";
@@ -45,7 +33,6 @@ type ToolTrace = {
   writes?: string[];
 };
 
-const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 25_000;
@@ -67,9 +54,7 @@ export class BotRuntime {
   async status(threadId: string, state: BotThreadState): Promise<string> {
     const runtime = this.getRuntimeConfig();
     const memory = this.getMemoryConfigSafe();
-    const googleLinked = Boolean(
-      await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL),
-    );
+    const googleLinked = await this.google().isLinked();
     const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
     const run = await this.runs.getStatus(threadId, state);
     return [
@@ -123,57 +108,7 @@ export class BotRuntime {
   }
 
   async handleGoogleCommand(text: string, chatId: number, telegramUserId: number): Promise<string> {
-    const parts = text
-      .split(/\s+/)
-      .map((item) => item.trim())
-      .filter(Boolean);
-    const action = parts[1]?.toLowerCase() ?? "";
-    if (!action || action === "help") {
-      return [
-        "Google OAuth commands:",
-        "/google connect - link your Google account",
-        "/google status - show link status and scopes",
-        "/google disconnect - remove saved token",
-      ].join("\n");
-    }
-
-    if (action === "connect") {
-      const config = getGoogleOAuthConfig(this.env);
-      const state = createOAuthStateToken();
-      const nowIso = new Date().toISOString();
-      await createGoogleOAuthState(this.env.DRECLAW_DB, {
-        state,
-        chatId,
-        telegramUserId,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-        createdAt: nowIso,
-      });
-      return [
-        "Open this URL to connect Google:",
-        buildGoogleOAuthUrl(config, state),
-        "This link expires in 10 minutes.",
-      ].join("\n");
-    }
-
-    if (action === "status") {
-      const token = await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL);
-      if (!token) return "google: not linked\nrun: /google connect";
-      return [
-        "google: linked",
-        `scopes: ${token.scopes || "unknown"}`,
-        `updated_at: ${token.updatedAt}`,
-      ].join("\n");
-    }
-
-    if (action === "disconnect") {
-      const deleted = await deleteGoogleOAuthToken(
-        this.env.DRECLAW_DB,
-        GOOGLE_OAUTH_DEFAULT_PRINCIPAL,
-      );
-      return deleted ? "Google account disconnected." : "No linked Google account found.";
-    }
-
-    return "Unknown /google command. Use /google help";
+    return this.google().handleCommand({ text, chatId, telegramUserId });
   }
 
   async runConversation(params: {
@@ -900,19 +835,8 @@ export class BotRuntime {
     return createMemoryRuntime(this.env);
   }
 
-  private async getGoogleAccessToken(): Promise<{ accessToken: string; scope: string }> {
-    const token = await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL);
-    if (!token) throw new Error("Google account not linked. Run /google connect");
-    const refreshToken = await decryptSecret(
-      { ciphertext: token.refreshTokenCiphertext, nonce: token.nonce },
-      decodeEncryptionKey(String(this.env.GOOGLE_OAUTH_ENCRYPTION_KEY ?? "")),
-    );
-    const refreshed = await refreshGoogleAccessToken(
-      getGoogleOAuthConfig(this.env),
-      refreshToken,
-      this.getCodeExecutionConfig().limits.netRequestTimeoutMs,
-    );
-    return { accessToken: refreshed.accessToken, scope: refreshed.scope };
+  private google() {
+    return createGoogleModule(this.env);
   }
 }
 

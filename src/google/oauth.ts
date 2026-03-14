@@ -1,21 +1,7 @@
-import type { Env } from "./types";
+import type { GoogleOAuthConfig } from "./config";
 
 const GOOGLE_AUTH_BASE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const DEFAULT_SCOPES = [
-  "https://mail.google.com/",
-  "https://www.googleapis.com/auth/spreadsheets",
-  "https://www.googleapis.com/auth/documents",
-  "https://www.googleapis.com/auth/calendar",
-  "https://www.googleapis.com/auth/drive",
-];
-
-export interface GoogleOAuthConfig {
-  clientId: string;
-  clientSecret: string;
-  redirectUri: string;
-  scopes: string[];
-}
 
 export interface GoogleTokenExchangeResult {
   accessToken: string;
@@ -30,38 +16,6 @@ export interface GoogleTokenRefreshResult {
   scope: string;
   expiresIn: number;
   tokenType: string;
-}
-
-export function getGoogleOAuthConfig(env: Env): GoogleOAuthConfig {
-  const clientId = String(env.GOOGLE_OAUTH_CLIENT_ID ?? "").trim();
-  const clientSecret = String(env.GOOGLE_OAUTH_CLIENT_SECRET ?? "").trim();
-  const redirectUri = String(env.GOOGLE_OAUTH_REDIRECT_URI ?? "").trim();
-  if (!clientId || !clientSecret || !redirectUri) {
-    throw new Error("Google OAuth is not configured");
-  }
-
-  const scopes = parseGoogleScopes(env.GOOGLE_OAUTH_SCOPES);
-  return {
-    clientId,
-    clientSecret,
-    redirectUri,
-    scopes,
-  };
-}
-
-export function parseGoogleScopes(raw: string | undefined): string[] {
-  const normalized = String(raw ?? "").trim();
-  const source = normalized ? normalized.split(/\s+/) : DEFAULT_SCOPES;
-  const uniq = new Set<string>();
-  for (const item of source) {
-    const scope = item.trim();
-    if (!scope) continue;
-    uniq.add(scope);
-  }
-  if (!uniq.size) {
-    throw new Error("GOOGLE_OAUTH_SCOPES cannot be empty");
-  }
-  return [...uniq];
 }
 
 export function buildGoogleOAuthUrl(config: GoogleOAuthConfig, state: string): string {
@@ -94,7 +48,6 @@ export async function exchangeGoogleOAuthCode(
     redirect_uri: config.redirectUri,
     grant_type: "authorization_code",
   });
-
   const response = await fetchWithTimeout(
     GOOGLE_TOKEN_URL,
     {
@@ -104,26 +57,20 @@ export async function exchangeGoogleOAuthCode(
     },
     timeoutMs,
   );
-
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
-    const description = String(
-      payload.error_description ?? payload.error ?? "token exchange failed",
+    throw new Error(
+      `Google OAuth token exchange failed: ${stringFromUnknown(payload.error_description) || stringFromUnknown(payload.error) || "token exchange failed"}`,
     );
-    throw new Error(`Google OAuth token exchange failed: ${description}`);
   }
-
-  const accessToken = String(payload.access_token ?? "");
-  if (!accessToken) {
-    throw new Error("Google OAuth token exchange failed: missing access token");
-  }
-
+  const accessToken = stringFromUnknown(payload.access_token);
+  if (!accessToken) throw new Error("Google OAuth token exchange failed: missing access token");
   return {
     accessToken,
-    refreshToken: payload.refresh_token ? String(payload.refresh_token) : null,
-    scope: String(payload.scope ?? ""),
+    refreshToken: stringFromUnknown(payload.refresh_token) || null,
+    scope: stringFromUnknown(payload.scope),
     expiresIn: Number(payload.expires_in ?? 0),
-    tokenType: String(payload.token_type ?? "Bearer"),
+    tokenType: stringFromUnknown(payload.token_type) || "Bearer",
   };
 }
 
@@ -147,25 +94,19 @@ export async function refreshGoogleAccessToken(
     },
     timeoutMs,
   );
-
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
-    const description = String(
-      payload.error_description ?? payload.error ?? "token refresh failed",
+    throw new Error(
+      `Google OAuth token refresh failed: ${stringFromUnknown(payload.error_description) || stringFromUnknown(payload.error) || "token refresh failed"}`,
     );
-    throw new Error(`Google OAuth token refresh failed: ${description}`);
   }
-
-  const accessToken = String(payload.access_token ?? "");
-  if (!accessToken) {
-    throw new Error("Google OAuth token refresh failed: missing access token");
-  }
-
+  const accessToken = stringFromUnknown(payload.access_token);
+  if (!accessToken) throw new Error("Google OAuth token refresh failed: missing access token");
   return {
     accessToken,
-    scope: String(payload.scope ?? ""),
+    scope: stringFromUnknown(payload.scope),
     expiresIn: Number(payload.expires_in ?? 0),
-    tokenType: String(payload.token_type ?? "Bearer"),
+    tokenType: stringFromUnknown(payload.token_type) || "Bearer",
   };
 }
 
@@ -193,4 +134,12 @@ async function fetchWithTimeout(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function stringFromUnknown(value: unknown): string {
+  return typeof value === "string"
+    ? value
+    : typeof value === "number" || typeof value === "boolean" || typeof value === "bigint"
+      ? `${value}`
+      : "";
 }
