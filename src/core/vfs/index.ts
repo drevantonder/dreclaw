@@ -5,7 +5,7 @@ import {
   listVfsEntries,
   putVfsEntry,
   type VfsEntryRecord,
-} from "../../db";
+} from "./repo";
 import {
   getBuiltinSkillByName,
   getBuiltinSkillByPath,

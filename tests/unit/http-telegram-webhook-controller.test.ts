@@ -15,7 +15,7 @@ vi.mock("../../src/chat-adapters/telegram/commands", () => ({
   maybeHandleAsyncTelegramCommand: mocks.maybeHandleAsyncTelegramCommand,
 }));
 
-vi.mock("../../src/db", () => ({
+vi.mock("../../src/chat-adapters/telegram/repo", () => ({
   markUpdateSeen: mocks.markUpdateSeen,
 }));
 

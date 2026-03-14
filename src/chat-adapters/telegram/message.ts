@@ -1,5 +1,5 @@
 import { fetchTelegramImageAsDataUrl } from "./api";
-import type { TelegramUpdate } from "../../types";
+import type { TelegramUpdate } from "./types";
 
 export function isTelegramPrivateMessage(raw: unknown): boolean {
   return ((raw as { chat?: { type?: string } })?.chat?.type || "") === "private";

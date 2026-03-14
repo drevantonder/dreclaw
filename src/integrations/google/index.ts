@@ -1,4 +1,4 @@
-import type { Env } from "../../types";
+import type { Env } from "../../cloudflare/env";
 import { handleGoogleCommand } from "./commands";
 import { getGoogleAccessToken, isGoogleLinked } from "./client";
 import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig, parseGoogleScopes } from "./config";

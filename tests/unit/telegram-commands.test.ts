@@ -42,7 +42,7 @@ vi.mock("../../src/integrations/google", () => ({
   createGoogleModule: mocks.createGoogleModule,
 }));
 
-vi.mock("../../src/db", () => ({
+vi.mock("../../src/core/loop/repo", () => ({
   getThreadStateSnapshot: mocks.getThreadStateSnapshot,
   setPersistedThreadControls: mocks.setPersistedThreadControls,
   setThreadStateSnapshot: mocks.setThreadStateSnapshot,

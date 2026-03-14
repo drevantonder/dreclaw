@@ -1,4 +1,4 @@
-import type { Env } from "../../types";
+import type { Env } from "../../cloudflare/env";
 
 const DEFAULT_SCOPES = [
   "https://mail.google.com/",

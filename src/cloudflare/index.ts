@@ -1,5 +1,5 @@
 import { handleTelegramWebhookRequest } from "../chat-adapters/telegram/webhook";
-import type { Env } from "../types";
+import type { Env } from "./env";
 import { ConversationWorkflow } from "./conversation-workflow";
 import { ExecuteHost } from "./execute-host";
 import { handleGoogleOAuthCallbackRequest } from "./http/controllers/google-oauth-callback";

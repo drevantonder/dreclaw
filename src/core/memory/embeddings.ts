@@ -1,4 +1,4 @@
-import type { Env } from "../../types";
+import type { Env } from "../../cloudflare/env";
 
 export async function embedText(env: Env, model: string, text: string): Promise<number[]> {
   const input = String(text ?? "").trim();

@@ -1,4 +1,4 @@
-import type { Env } from "../../types";
+import type { Env } from "../../cloudflare/env";
 import { getMemoryConfig, type MemoryConfig } from "./config";
 import { executeMemoryFind, executeMemoryRemove, executeMemorySave } from "./execute-api";
 import { buildMemoryId } from "./ids";

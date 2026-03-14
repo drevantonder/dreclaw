@@ -5,7 +5,7 @@ import {
   upsertSimilarMemoryFact,
   type MemoryFactRecord,
 } from "./repo";
-import type { Env } from "../../types";
+import type { Env } from "../../cloudflare/env";
 import { embedText } from "./embeddings";
 import { buildMemoryId } from "./ids";
 import { retrieveMemoryContext } from "./retrieve";

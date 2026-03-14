@@ -1,7 +1,8 @@
-import { markUpdateSeen } from "../../db";
-import type { Env, TelegramUpdate } from "../../types";
+import type { Env } from "../../cloudflare/env";
 import { hasValidTelegramWebhookSecret } from "./auth";
 import { maybeHandleAsyncTelegramCommand } from "./commands";
+import { markUpdateSeen } from "./repo";
+import type { TelegramUpdate } from "./types";
 import { createBot } from "./gateway";
 
 export async function handleTelegramWebhookRequest(

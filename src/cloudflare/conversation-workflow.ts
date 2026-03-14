@@ -6,7 +6,7 @@ import { BotRuntime } from "../core/loop/runtime";
 import type { BotThreadState } from "../core/loop/state";
 import { createChat } from "../chat-adapters/telegram/gateway";
 import { getTelegramUserChatId, loadTelegramImageBlocks } from "../chat-adapters/telegram/message";
-import type { ConversationWorkflowPayload, Env } from "../types";
+import type { ConversationWorkflowPayload, Env } from "./env";
 
 export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWorkflowPayload> {
   async run(event: WorkflowEvent<ConversationWorkflowPayload>, step: WorkflowStep): Promise<void> {

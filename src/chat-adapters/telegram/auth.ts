@@ -1,5 +1,6 @@
 import type { Message } from "chat";
-import type { Env, TelegramUpdate } from "../../types";
+import type { Env } from "../../cloudflare/env";
+import type { TelegramUpdate } from "./types";
 
 export function isAllowedTelegramMessage(env: Env, message: Message): boolean {
   return String(message.author.userId) === String(env.TELEGRAM_ALLOWED_USER_ID).trim();

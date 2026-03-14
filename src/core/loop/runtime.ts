@@ -1,7 +1,7 @@
 import { ToolLoopAgent, generateText, stepCountIs, tool, type ModelMessage } from "ai";
 import type { Thread, Message } from "chat";
 import { z } from "zod";
-import { clearAllVfsEntries, getPersistedThreadControls } from "../../db";
+import { getPersistedThreadControls } from "./repo";
 import {
   executeCode,
   getCodeExecutionConfig,
@@ -11,9 +11,11 @@ import {
 import { executeBash } from "../tools/bash";
 import { createMemoryRuntime } from "../memory";
 import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../skills";
+import { clearAllVfsEntries } from "../vfs/repo";
 import { createWorkspace } from "../vfs";
+import type { Env } from "../../cloudflare/env";
 import { createGoogleModule } from "../../integrations/google";
-import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../../types";
+import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "../../types";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
 import { RunCancelledError, createRunCoordinator, idleRunStatus } from "./run";

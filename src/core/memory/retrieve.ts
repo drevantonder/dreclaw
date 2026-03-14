@@ -4,7 +4,7 @@ import {
   searchMemoryFactsKeyword,
   type MemoryFactRecord,
 } from "./repo";
-import type { Env } from "../../types";
+import type { Env } from "../../cloudflare/env";
 import { embedText } from "./embeddings";
 import { applyTemporalDecay } from "./decay";
 import { queryFactVectors } from "./vectorize";

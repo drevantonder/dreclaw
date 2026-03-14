@@ -1,13 +1,14 @@
 import { BotRuntime } from "../../core/loop/runtime";
-import { normalizeBotThreadState, type BotThreadState } from "../../core/loop/state";
 import {
   getThreadStateSnapshot,
   setPersistedThreadControls,
   setThreadStateSnapshot,
-} from "../../db";
+} from "../../core/loop/repo";
+import { normalizeBotThreadState, type BotThreadState } from "../../core/loop/state";
 import { createRunCoordinator } from "../../core/loop/run";
 import { createGoogleModule } from "../../integrations/google";
-import type { Env, TelegramUpdate } from "../../types";
+import type { Env } from "../../cloudflare/env";
+import type { TelegramUpdate } from "./types";
 import { sendTelegramTextMessage } from "./api";
 import { isAllowedTelegramUpdate } from "./auth";
 import { isPrivateTelegramUpdate } from "./message";

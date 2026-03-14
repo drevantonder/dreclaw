@@ -1,4 +1,4 @@
-import type { Env } from "../../types";
+import type { Env } from "../../cloudflare/env";
 
 export interface MemoryConfig {
   enabled: boolean;

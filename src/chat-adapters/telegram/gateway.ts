@@ -4,7 +4,7 @@ import { createD1StateAdapter } from "../../core/loop/chat-state";
 import { BotRuntime } from "../../core/loop/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "../../core/loop/state";
 import { createRunCoordinator } from "../../core/loop/run";
-import type { Env } from "../../types";
+import type { Env } from "../../cloudflare/env";
 import { isAllowedTelegramMessage } from "./auth";
 import { handleAsyncCommand } from "./commands";
 import {
