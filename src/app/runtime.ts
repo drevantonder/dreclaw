@@ -741,7 +741,7 @@ export class BotRuntime {
       }),
       bash: tool({
         description:
-          "Run bash commands in a sandboxed shell with core Unix tools, VFS-backed files, and full network access via curl. Use this for shell/text/file/network tasks. Use execute instead for JavaScript, google.execute, memory.*, or vfs:/ imports.",
+          "Run bash commands in a sandboxed shell with core Unix tools, VFS-backed files, and full network access via curl. Use this for shell/text/file/network tasks. Use execute instead for JavaScript, google.execute, memory.*, or fs.* runtime work.",
         inputSchema: z.object({
           command: z.string(),
           cwd: z.string().optional(),
@@ -772,7 +772,7 @@ export class BotRuntime {
       }),
       execute: tool({
         description:
-          "Run JavaScript in a sandboxed Worker runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, and built-in global `google`. Return the final value explicitly. For reusable helpers, keep code in normal scripts or read files from VFS. For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
+          "Run JavaScript in a sandboxed Worker runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, and built-in global `google`. Return the final value explicitly. VFS is available through fs.* only, not imports. For reusable helpers, keep code inline or read files from VFS manually. For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
         inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
         execute: async (input) => {
           const writes: string[] = [];
@@ -784,7 +784,6 @@ export class BotRuntime {
                 { code: input.code, input: input.input },
                 {
                   config: this.getCodeExecutionConfig(),
-                  vfs: this.createVfsAdapter(writes),
                   loader: this.env.LOADER ?? null,
                   host: this.createExecuteHostBinding(params.threadId, params.chatId),
                 },
@@ -1465,7 +1464,7 @@ function renderTaskGuidance(userText: string): string {
       "- Prefer bash for shell pipelines, curl, jq/yq, grep/sed/awk, and file-oriented text processing.",
     );
     lines.push(
-      "- Prefer execute only when the task needs JavaScript, google.execute, memory.*, or vfs:/ imports.",
+      "- Prefer execute only when the task needs JavaScript, google.execute, memory.*, or fs.* runtime work.",
     );
   }
   if (/gmail|email|inbox/.test(text)) {

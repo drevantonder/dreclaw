@@ -49,10 +49,6 @@ export interface ExecuteHostBinding {
 
 type HostContext = {
   config: CodeExecutionConfig;
-  vfs?: {
-    readFile: (path: string) => Promise<string | null>;
-    listFiles: (prefix: string, limit: number) => Promise<string[]>;
-  };
   loader?: {
     get(
       id: string,
@@ -131,7 +127,7 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   }
 
   try {
-    const modules = await buildModules(payload.code, ctx);
+    const modules = buildModules(payload.code);
     const runtimeVersion = await hashText(
       JSON.stringify({ code: payload.code, modules: Object.keys(modules).sort() }),
     );
@@ -165,43 +161,16 @@ export async function executeCode(payload: ExecuteInput, ctx: HostContext): Prom
   }
 }
 
-async function buildModules(
-  code: string,
-  ctx: HostContext,
-): Promise<Record<string, { js: string } | { json: unknown }>> {
-  const paths = ctx.vfs ? await ctx.vfs.listFiles("/", ctx.config.limits.vfsMaxFiles) : [];
-  const vfsSpecifiers = new Map(
-    paths
-      .filter((path) => /\.(?:[cm]?js|json)$/i.test(path))
-      .map((path) => [path, toLoaderVfsModuleName(path)]),
-  );
-  const modules: Record<string, { js: string } | { json: unknown }> = {
-    "main.js": { js: buildMainModule(code, vfsSpecifiers) },
+function buildModules(code: string): Record<string, { js: string }> {
+  const modules: Record<string, { js: string }> = {
+    "main.js": { js: buildMainModule(code) },
   };
-  if (!ctx.vfs) return modules;
-  for (const path of paths) {
-    if (!/\.(?:[cm]?js|json)$/i.test(path)) continue;
-    const content = await ctx.vfs.readFile(path);
-    if (content === null) continue;
-    const moduleName = vfsSpecifiers.get(path) ?? toLoaderVfsModuleName(path);
-    if (path.endsWith(".json")) {
-      try {
-        modules[moduleName] = { json: JSON.parse(content) };
-        continue;
-      } catch {
-        // fall through
-      }
-    }
-    modules[moduleName] = { js: rewriteVfsImports(content, vfsSpecifiers) };
-  }
   return modules;
 }
 
-function buildMainModule(code: string, vfsSpecifiers: Map<string, string>): string {
-  const preparedCode = rewriteVfsImports(maybeInjectImplicitReturn(code), vfsSpecifiers);
-  const staticImports = extractStaticVfsImports(preparedCode, vfsSpecifiers);
+function buildMainModule(code: string): string {
+  const preparedCode = maybeInjectImplicitReturn(code);
   return [
-    ...staticImports.imports,
     "",
     "function formatValue(value) {",
     "  if (typeof value === 'string') return value;",
@@ -284,7 +253,7 @@ function buildMainModule(code: string, vfsSpecifiers: Map<string, string>): stri
     "    };",
     "    try {",
     "      const result = await (async (input, fs, memory, google, fetch, console) => {",
-    indentCode(staticImports.code, 8),
+    indentCode(preparedCode, 8),
     "      })(payload.input, fs, memory, google, fetchShim, consoleShim);",
     "      stats.durationMs = Date.now() - startedAt;",
     "      return Response.json({ ok: true, result: sanitizeResult(result, env.EXEC_LIMITS.execMaxOutputBytes), logs, stats });",
@@ -302,27 +271,6 @@ function buildMainModule(code: string, vfsSpecifiers: Map<string, string>): stri
     "};",
     "",
   ].join("\n");
-}
-
-function extractStaticVfsImports(
-  source: string,
-  vfsSpecifiers: Map<string, string>,
-): { imports: string[]; code: string } {
-  const imports: string[] = [];
-  let index = 0;
-  const code = source.replace(
-    /import\((['"])(vfs:\/[^'"]+)\1\)/g,
-    (_match, _quote: string, path: string) => {
-      const normalizedPath = path.slice(4);
-      const specifier = vfsSpecifiers.get(normalizedPath);
-      if (!specifier) return _match;
-      const localName = `__vfs_import_${index}`;
-      imports.push(`import * as ${localName} from ${JSON.stringify(specifier)};`);
-      index += 1;
-      return `Promise.resolve(${localName})`;
-    },
-  );
-  return { imports, code };
 }
 
 function maybeInjectImplicitReturn(code: string): string {
@@ -352,18 +300,6 @@ function indentCode(code: string, spaces: number): string {
     .split("\n")
     .map((line) => `${prefix}${line}`)
     .join("\n");
-}
-
-function rewriteVfsImports(source: string, vfsSpecifiers: Map<string, string>): string {
-  let next = source;
-  for (const [path, specifier] of vfsSpecifiers.entries()) {
-    next = next.replaceAll(`vfs:${path}`, specifier);
-  }
-  return next;
-}
-
-function toLoaderVfsModuleName(path: string): string {
-  return `vfs_${path.replace(/[^a-zA-Z0-9]+/g, "_")}`;
 }
 
 function sanitizeExecuteResult(result: ExecuteResult, maxBytes: number): ExecuteResult {

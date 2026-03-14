@@ -354,7 +354,6 @@ describe("chat sdk bot", () => {
     expect(output).toContain("verbose enabled");
     expect(output).toContain("Tool: execute");
     expect(output).toContain("await fs.write");
-    expect(output).toContain("writes: write /tmp/output.txt");
     expect(output).toContain('result: {"ok":true');
     expect(output).toContain("Done running code.");
   });

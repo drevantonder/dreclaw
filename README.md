@@ -108,6 +108,7 @@ Normal messages stream a single assistant reply.
 - `bash` runs a sandboxed shell with core Unix text/file tools, VFS-backed file persistence, and full `curl` network access.
 - `bash` currently excludes Python and SQLite workflows; use `execute` for JavaScript-native tasks.
 - `execute` runs JavaScript in a sandboxed dynamic Worker and exposes `fetch`, `fs.read/fs.write/fs.list/fs.remove`, `memory.find/save/remove`, and `google.execute`.
+- `execute` uses VFS as a filesystem only; it does not import code from VFS paths.
 - `execute` also exposes `memory.find(query, opts?)`, `memory.save(text, opts?)`, and `memory.remove(target)` for direct memory control.
 - `execute` exposes `google.execute({...})` for Google API calls.
 

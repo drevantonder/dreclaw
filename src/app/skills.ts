@@ -20,7 +20,8 @@ Rules:
 - Use only built-in runtime globals and host APIs.
 - Do not use require(), fs from Node, process, Buffer, or googleapis imports.
 - If a script uses await or multiple statements, explicitly return the final value.
-- For reusable helpers, save code or data in VFS and read it explicitly from the script when needed.
+- VFS is available through fs.read/fs.write/fs.list/fs.remove only, not imports.
+- For reusable helpers, keep code inline or save data in VFS and read it explicitly when needed.
 - When formatting user-facing summaries, prefer simple string concatenation over large template literals.
 
 Patterns:
@@ -52,8 +53,8 @@ Rules:
 - Use the built-in global google.
 - Call google.execute with only: service, version, method, params, body.
 - Never use endpoint.
-- Prefer reusable helpers under /scripts/google/... for repeatable workflows.
-- For multi-step flows, write a helper module with export async function run(input) { ... }.
+- Prefer reusable snippets under /scripts/google/... for repeatable workflows.
+- For multi-step flows, keep each execute run small and copy in only the helper logic you need.
 - For inbox summaries, fetch the list first, then fetch each message with format: 'metadata' and metadataHeaders: ['From', 'Subject', 'Date'].
 - For user-facing summaries, return one final formatted string instead of a raw array when possible.
 - For final formatting, prefer building lines with string concatenation and join('\n') rather than complex template literals.
@@ -123,6 +124,7 @@ Rules:
 - VFS paths must be absolute, like /scripts/google/gmail.js.
 - Prefer the vfs tool for direct file access; use fs.* inside execute only when the running script itself needs file access.
 - Use fs.write with an object payload: path, content, overwrite.
+- Files stored in VFS are not importable modules inside execute.
 - System skills under /skills/system/... are read-only.
 - User-created skills belong under /skills/user/<name>/SKILL.md.
 
