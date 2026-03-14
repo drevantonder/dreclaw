@@ -1,22 +1,22 @@
 import { ToolLoopAgent, generateText, stepCountIs, tool, type ModelMessage } from "ai";
 import type { Thread, Message } from "chat";
 import { z } from "zod";
-import { clearAllVfsEntries, getPersistedThreadControls } from "../db";
+import { clearAllVfsEntries, getPersistedThreadControls } from "../../db";
 import {
   executeCode,
   getCodeExecutionConfig,
   normalizeCodeRuntimeState,
   type ExecuteHostBinding,
-} from "../code-exec";
-import { executeBash } from "../bash-exec";
-import { createGoogleModule } from "../integrations/google";
-import { createZenModel } from "../llm/zen";
-import { createWorkersModel } from "../llm/workers";
-import { createMemoryRuntime } from "../core/memory";
-import { RunCancelledError, createRunCoordinator, idleRunStatus } from "../run";
-import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../types";
-import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../core/skills";
-import { createWorkspace } from "../core/vfs";
+} from "../tools/code-exec";
+import { executeBash } from "../tools/bash";
+import { createMemoryRuntime } from "../memory";
+import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../skills";
+import { createWorkspace } from "../vfs";
+import { createGoogleModule } from "../../integrations/google";
+import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../../types";
+import { createZenModel } from "./llm/zen";
+import { createWorkersModel } from "./llm/workers";
+import { RunCancelledError, createRunCoordinator, idleRunStatus } from "./run";
 import { normalizeBotThreadState, pushHistory, type BotThreadState } from "./state";
 
 type RuntimeConfig =

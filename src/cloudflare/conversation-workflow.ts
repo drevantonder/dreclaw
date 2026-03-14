@@ -1,9 +1,9 @@
 import { Message as ChatMessage, ThreadImpl } from "chat";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { ModelMessage } from "ai";
-import { BotRuntime } from "../app/runtime";
-import type { BotThreadState } from "../app/state";
-import { createRunCoordinator } from "../run";
+import { createRunCoordinator } from "../core/loop/run";
+import { BotRuntime } from "../core/loop/runtime";
+import type { BotThreadState } from "../core/loop/state";
 import { createChat } from "../chat-adapters/telegram/gateway";
 import { getTelegramUserChatId, loadTelegramImageBlocks } from "../chat-adapters/telegram/message";
 import type { ConversationWorkflowPayload, Env } from "../types";

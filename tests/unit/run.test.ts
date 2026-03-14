@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { normalizeBotThreadState } from "../../src/app/state";
+import { normalizeBotThreadState } from "../../src/core/loop/state";
 import {
   getPersistedRunStatus,
   getPersistedWorkflowInstanceId,
@@ -8,7 +8,7 @@ import {
   setPersistedThreadControls,
   setPersistedWorkflowInstanceId,
 } from "../../src/db";
-import { createRunCoordinator } from "../../src/run";
+import { createRunCoordinator } from "../../src/core/loop/run";
 import type { ConversationWorkflowPayload, Env } from "../../src/types";
 import { createEnv } from "../helpers/fakes";
 

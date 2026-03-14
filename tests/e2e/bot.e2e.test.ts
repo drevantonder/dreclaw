@@ -76,7 +76,7 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
   createOpenAICompatible: () => (_modelId: string) => ({ id: "mock-model" }),
 }));
 
-vi.mock("../../src/code-exec", () => ({
+vi.mock("../../src/core/tools/code-exec", () => ({
   executeCode: vi.fn(
     async (
       _input: { code: string },
@@ -109,7 +109,7 @@ vi.mock("../../src/code-exec", () => ({
   normalizeCodeRuntimeState: vi.fn(() => ({})),
 }));
 
-vi.mock("../../src/bash-exec", () => ({
+vi.mock("../../src/core/tools/bash", () => ({
   executeBash: vi.fn(
     async (
       _input: { command: string },

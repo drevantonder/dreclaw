@@ -31,7 +31,7 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../../src/app/runtime", () => ({
+vi.mock("../../src/core/loop/runtime", () => ({
   BotRuntime: mocks.BotRuntime,
 }));
 
@@ -45,7 +45,7 @@ vi.mock("../../src/db", () => ({
   setThreadStateSnapshot: mocks.setThreadStateSnapshot,
 }));
 
-vi.mock("../../src/run", () => ({
+vi.mock("../../src/core/loop/run", () => ({
   createRunCoordinator: mocks.createRunCoordinator,
 }));
 

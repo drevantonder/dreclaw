@@ -1,6 +1,6 @@
 import type { Message, SerializedThread, Thread } from "chat";
-import type { BotThreadState, RunStatus } from "../app/state";
-import { normalizeBotThreadState } from "../app/state";
+import type { BotThreadState, RunStatus } from "./state";
+import { normalizeBotThreadState } from "./state";
 import {
   clearPersistedWorkflowInstanceId,
   finalizePersistedRunStop,
@@ -11,8 +11,8 @@ import {
   setPersistedRunStatus,
   setPersistedWorkflowInstanceId,
   setThreadStateSnapshot,
-} from "../db";
-import type { ConversationWorkflowPayload, Env } from "../types";
+} from "../../db";
+import type { ConversationWorkflowPayload, Env } from "../../types";
 
 const RUN_ACTIVE_WINDOW_MS = 15_000;
 const RUN_HEARTBEAT_INTERVAL_MS = 4_000;

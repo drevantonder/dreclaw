@@ -1,4 +1,4 @@
-import { normalizeCodeRuntimeState, type CodeRuntimeState } from "../code-exec";
+import { normalizeCodeRuntimeState, type CodeRuntimeState } from "../tools/code-exec";
 
 export type ConversationEntry = {
   role: "user" | "assistant" | "tool";

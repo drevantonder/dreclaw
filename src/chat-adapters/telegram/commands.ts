@@ -1,11 +1,11 @@
-import { BotRuntime } from "../../app/runtime";
-import { normalizeBotThreadState, type BotThreadState } from "../../app/state";
+import { BotRuntime } from "../../core/loop/runtime";
+import { normalizeBotThreadState, type BotThreadState } from "../../core/loop/state";
 import {
   getThreadStateSnapshot,
   setPersistedThreadControls,
   setThreadStateSnapshot,
 } from "../../db";
-import { createRunCoordinator } from "../../run";
+import { createRunCoordinator } from "../../core/loop/run";
 import type { Env, TelegramUpdate } from "../../types";
 import { sendTelegramTextMessage } from "./api";
 import { isAllowedTelegramUpdate } from "./auth";

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { executeBash } from "../../src/bash-exec";
+import { executeBash } from "../../src/core/tools/bash";
 
 afterEach(() => {
   vi.restoreAllMocks();

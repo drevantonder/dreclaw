@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createD1StateAdapter } from "../../src/chat-state";
+import { createD1StateAdapter } from "../../src/core/loop/chat-state";
 import { FakeD1 } from "../helpers/fakes";
 
 describe("chat state adapter", () => {
