@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createWorkspace } from "../../src/workspace";
+import { createWorkspace } from "../../src/core/vfs";
 
 type Statement = {
   bind: (...args: unknown[]) => Statement;

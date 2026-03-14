@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { getBuiltinSkillByName, listBuiltinSkills, parseSkillDocument } from "../../src/app/skills";
+import {
+  getBuiltinSkillByName,
+  listBuiltinSkills,
+  parseSkillDocument,
+} from "../../src/core/skills";
 
 describe("skills", () => {
   it("lists builtin skills", () => {

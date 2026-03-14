@@ -15,8 +15,8 @@ import { createWorkersModel } from "../llm/workers";
 import { createMemoryRuntime } from "../core/memory";
 import { RunCancelledError, createRunCoordinator, idleRunStatus } from "../run";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../types";
-import { createWorkspace } from "../workspace";
-import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "./skills";
+import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../core/skills";
+import { createWorkspace } from "../core/vfs";
 import { normalizeBotThreadState, pushHistory, type BotThreadState } from "./state";
 
 type RuntimeConfig =

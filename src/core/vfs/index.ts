@@ -5,7 +5,7 @@ import {
   listVfsEntries,
   putVfsEntry,
   type VfsEntryRecord,
-} from "../db";
+} from "../../db";
 import {
   getBuiltinSkillByName,
   getBuiltinSkillByPath,
@@ -13,7 +13,7 @@ import {
   listBuiltinSkills,
   parseSkillDocument,
   type SkillRecord,
-} from "../app/skills";
+} from "../skills";
 
 export interface WorkspaceOptions {
   db: D1Database;
