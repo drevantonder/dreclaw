@@ -5,7 +5,6 @@ import { decodeEncryptionKey, decryptSecret } from "../crypto";
 import {
   attachMemoryFactSource,
   clearAllVfsEntries,
-  countVfsEntries,
   createGoogleOAuthState,
   deleteGoogleOAuthToken,
   deleteMemoryForChat,
@@ -28,8 +27,7 @@ import {
   executeCode,
   getCodeExecutionConfig,
   normalizeCodeRuntimeState,
-  searchCodeRuntime,
-  type CodeRuntimeState,
+  type ExecuteHostBinding,
 } from "../code-exec";
 import { executeBash } from "../bash-exec";
 import {
@@ -80,18 +78,26 @@ const MEMORY_EPISODE_TOP_K = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 25_000;
 const RUN_HEARTBEAT_INTERVAL_MS = 4_000;
 const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and QuickJS scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape. search is only for local runtime/package introspection, not web search.";
+  "Be concise. Solve tasks with runtime-native tools and sandboxed execute scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape.";
 
 export class BotRuntime {
-  constructor(private readonly env: Env) {}
+  constructor(
+    private readonly env: Env,
+    private readonly executionContext?: ExecutionContext & {
+      exports?: Record<string, (options?: { props?: unknown }) => ExecuteHostBinding>;
+    },
+  ) {}
 
   async status(threadId: string, state: BotThreadState): Promise<string> {
     const runtime = this.getRuntimeConfig();
     const memory = this.getMemoryConfigSafe();
-    const googleLinked = Boolean(await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL));
+    const googleLinked = Boolean(
+      await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL),
+    );
     const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
     const workflowInstanceId = await getPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
-    const persistedRunStatus = (await getPersistedRunStatus(this.env.DRECLAW_DB, threadId)) ?? state.runStatus;
+    const persistedRunStatus =
+      (await getPersistedRunStatus(this.env.DRECLAW_DB, threadId)) ?? state.runStatus;
     const busy = formatBusyState(persistedRunStatus);
     return [
       `model: ${runtime.model}`,
@@ -116,7 +122,7 @@ export class BotRuntime {
       "/help - show commands",
       "/status - show current bot status",
       "/reset - clear conversation context",
-      "/factory-reset - clear conversation, memory, runtime state, and VFS",
+      "/factory-reset - clear conversation, memory, and VFS",
       "/stop - cooperatively stop the current run",
       "/verbose on|off - show tool traces",
       "/google connect - link your Google account",
@@ -144,7 +150,10 @@ export class BotRuntime {
   }
 
   async handleGoogleCommand(text: string, chatId: number, telegramUserId: number): Promise<string> {
-    const parts = text.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+    const parts = text
+      .split(/\s+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
     const action = parts[1]?.toLowerCase() ?? "";
     if (!action || action === "help") {
       return [
@@ -166,19 +175,28 @@ export class BotRuntime {
         expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
         createdAt: nowIso,
       });
-      return ["Open this URL to connect Google:", buildGoogleOAuthUrl(config, state), "This link expires in 10 minutes."].join(
-        "\n",
-      );
+      return [
+        "Open this URL to connect Google:",
+        buildGoogleOAuthUrl(config, state),
+        "This link expires in 10 minutes.",
+      ].join("\n");
     }
 
     if (action === "status") {
       const token = await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL);
       if (!token) return "google: not linked\nrun: /google connect";
-      return ["google: linked", `scopes: ${token.scopes || "unknown"}`, `updated_at: ${token.updatedAt}`].join("\n");
+      return [
+        "google: linked",
+        `scopes: ${token.scopes || "unknown"}`,
+        `updated_at: ${token.updatedAt}`,
+      ].join("\n");
     }
 
     if (action === "disconnect") {
-      const deleted = await deleteGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL);
+      const deleted = await deleteGoogleOAuthToken(
+        this.env.DRECLAW_DB,
+        GOOGLE_OAUTH_DEFAULT_PRINCIPAL,
+      );
       return deleted ? "Google account disconnected." : "No linked Google account found.";
     }
 
@@ -235,9 +253,13 @@ export class BotRuntime {
       }),
     });
 
-    const heartbeat = this.createRunHeartbeat(thread, () => state, (nextState) => {
-      state = nextState;
-    });
+    const heartbeat = this.createRunHeartbeat(
+      thread,
+      () => state,
+      (nextState) => {
+        state = nextState;
+      },
+    );
 
     try {
       await thread.startTyping();
@@ -253,13 +275,32 @@ export class BotRuntime {
       finalText = await withTimeout(
         (async () => {
           await this.throwIfCancelled(thread.id);
-          const stream = await withTimeout(agent.stream({ messages }), runTimeoutMs, "Agent stream timed out");
-          await withTimeout(thread.post(stream.textStream), runTimeoutMs, "Assistant response timed out");
+          const stream = await withTimeout(
+            agent.stream({ messages }),
+            runTimeoutMs,
+            "Agent stream timed out",
+          );
+          await withTimeout(
+            thread.post(stream.textStream),
+            runTimeoutMs,
+            "Assistant response timed out",
+          );
           await this.throwIfCancelled(thread.id);
-          const response = await withTimeout(Promise.resolve(stream.response), runTimeoutMs, "Assistant response timed out");
-          const generatedText = await withTimeout(Promise.resolve(stream.text), runTimeoutMs, "Assistant text timed out");
+          const response = await withTimeout(
+            Promise.resolve(stream.response),
+            runTimeoutMs,
+            "Assistant response timed out",
+          );
+          const generatedText = await withTimeout(
+            Promise.resolve(stream.text),
+            runTimeoutMs,
+            "Assistant text timed out",
+          );
           await this.throwIfCancelled(thread.id);
-          return (typeof generatedText === "string" ? generatedText : "").trim() || extractAssistantText(response.messages as ModelMessage[]);
+          return (
+            (typeof generatedText === "string" ? generatedText : "").trim() ||
+            extractAssistantText(response.messages as ModelMessage[])
+          );
         })(),
         runTimeoutMs,
         "Conversation timed out",
@@ -367,9 +408,13 @@ export class BotRuntime {
       }),
     });
 
-    const heartbeat = this.createRunHeartbeat(thread, () => state, (nextState) => {
-      state = nextState;
-    });
+    const heartbeat = this.createRunHeartbeat(
+      thread,
+      () => state,
+      (nextState) => {
+        state = nextState;
+      },
+    );
 
     try {
       await thread.startTyping();
@@ -391,8 +436,16 @@ export class BotRuntime {
         runTimeoutMs,
         "Agent step timed out",
       );
-      const response = await withTimeout(Promise.resolve(stream.response), runTimeoutMs, "Assistant response timed out");
-      const text = await withTimeout(Promise.resolve(stream.text), runTimeoutMs, "Assistant text timed out");
+      const response = await withTimeout(
+        Promise.resolve(stream.response),
+        runTimeoutMs,
+        "Assistant response timed out",
+      );
+      const text = await withTimeout(
+        Promise.resolve(stream.text),
+        runTimeoutMs,
+        "Assistant text timed out",
+      );
       await this.throwIfCancelled(thread.id);
       const responseMessages = isModelMessageArray(response.messages) ? response.messages : [];
       const nextMessages = mergeContinuationMessages(inputMessages, responseMessages);
@@ -403,7 +456,8 @@ export class BotRuntime {
         state = pushHistory(state, "tool", renderToolTranscript(trace));
       }
 
-      const assistantText = [text, stepText].find((value) => typeof value === "string" && value.trim())?.trim() ?? "";
+      const assistantText =
+        [text, stepText].find((value) => typeof value === "string" && value.trim())?.trim() ?? "";
       if (assistantText && !stepHadToolCalls) {
         try {
           await thread.post(assistantText);
@@ -422,7 +476,11 @@ export class BotRuntime {
       if (isRunCancelledError(error)) {
         state = markRunFinished(state);
         await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
-        return { state: stripEphemeralState(state), nextMessages: inputMessages, shouldContinue: false };
+        return {
+          state: stripEphemeralState(state),
+          nextMessages: inputMessages,
+          shouldContinue: false,
+        };
       }
       throw error;
     }
@@ -445,7 +503,10 @@ export class BotRuntime {
     if (taskGuidance) promptSections.push(`Task guidance:\n${taskGuidance}`);
     const historyContext = renderHistoryContext(params.state.history);
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
-    const memoryContext = await this.renderMemoryContext(params.chatId, params.userText || "[image message]");
+    const memoryContext = await this.renderMemoryContext(
+      params.chatId,
+      params.userText || "[image message]",
+    );
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
     return buildAgentMessages(promptSections.join("\n\n"), params.userText, params.imageBlocks);
   }
@@ -506,7 +567,10 @@ export class BotRuntime {
     if (status?.cancelRequested || status?.stoppedAt) throw new RunCancelledError();
   }
 
-  private async mergeAsyncControls(threadId: string, state: BotThreadState): Promise<BotThreadState> {
+  private async mergeAsyncControls(
+    threadId: string,
+    state: BotThreadState,
+  ): Promise<BotThreadState> {
     const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
     if (!controls) return state;
     return {
@@ -523,7 +587,12 @@ export class BotRuntime {
     tracer: VerboseTracer;
     toolTraces: ToolTrace[];
   }) {
-    const runTool = async <T>(name: string, args: Record<string, unknown>, execute: () => Promise<T>, writes?: string[]) => {
+    const runTool = async <T>(
+      name: string,
+      args: Record<string, unknown>,
+      execute: () => Promise<T>,
+      writes?: string[],
+    ) => {
       await this.throwIfCancelled(params.threadId);
       await params.tracer.onToolStart(name, args);
       try {
@@ -553,15 +622,30 @@ export class BotRuntime {
         description:
           "Manage VFS files for scripts and user skills. Use this to list, read, write, patch, and delete files when file access is needed.",
         inputSchema: z.discriminatedUnion("action", [
-          z.object({ action: z.literal("list"), prefix: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }),
+          z.object({
+            action: z.literal("list"),
+            prefix: z.string().optional(),
+            limit: z.number().int().min(1).max(200).optional(),
+          }),
           z.object({
             action: z.literal("read"),
             path: z.string(),
             startLine: z.number().int().min(1).optional(),
             endLine: z.number().int().min(1).optional(),
           }),
-          z.object({ action: z.literal("write"), path: z.string(), content: z.string(), mode: z.enum(["create", "overwrite"]).default("overwrite") }),
-          z.object({ action: z.literal("patch"), path: z.string(), search: z.string(), replace: z.string(), replaceAll: z.boolean().optional() }),
+          z.object({
+            action: z.literal("write"),
+            path: z.string(),
+            content: z.string(),
+            mode: z.enum(["create", "overwrite"]).default("overwrite"),
+          }),
+          z.object({
+            action: z.literal("patch"),
+            path: z.string(),
+            search: z.string(),
+            replace: z.string(),
+            replaceAll: z.boolean().optional(),
+          }),
           z.object({ action: z.literal("delete"), path: z.string() }),
         ]),
         execute: async (input) => {
@@ -580,10 +664,18 @@ export class BotRuntime {
                 case "read": {
                   const content = await this.readVfsContent(input.path);
                   if (content === null) throw new Error(`ENOENT: ${input.path}`);
-                  return { path: this.normalizeVfsPath(input.path), ...sliceVfsContent(content, input.startLine, input.endLine) };
+                  return {
+                    path: this.normalizeVfsPath(input.path),
+                    ...sliceVfsContent(content, input.startLine, input.endLine),
+                  };
                 }
                 case "write": {
-                  const result = await this.writeVfsContent(input.path, input.content, input.mode === "overwrite", writes);
+                  const result = await this.writeVfsContent(
+                    input.path,
+                    input.content,
+                    input.mode === "overwrite",
+                    writes,
+                  );
                   if (!result.ok) throw new Error(result.code);
                   return {
                     path: result.path,
@@ -595,8 +687,18 @@ export class BotRuntime {
                 case "patch": {
                   const current = await this.readVfsContent(input.path);
                   if (current === null) throw new Error(`ENOENT: ${input.path}`);
-                  const patched = patchVfsContent(current, input.search, input.replace, Boolean(input.replaceAll));
-                  const result = await this.writeVfsContent(input.path, patched.content, true, writes);
+                  const patched = patchVfsContent(
+                    current,
+                    input.search,
+                    input.replace,
+                    Boolean(input.replaceAll),
+                  );
+                  const result = await this.writeVfsContent(
+                    input.path,
+                    patched.content,
+                    true,
+                    writes,
+                  );
                   if (!result.ok) throw new Error(result.code);
                   return {
                     path: result.path,
@@ -618,7 +720,8 @@ export class BotRuntime {
       list_skills: tool({
         description: "List available built-in and user skills by name and description",
         inputSchema: z.object({}),
-        execute: async () => runTool("list_skills", {}, async () => ({ skills: await this.listSkills() })),
+        execute: async () =>
+          runTool("list_skills", {}, async () => ({ skills: await this.listSkills() })),
       }),
       load_skill: tool({
         description: "Load full instructions for a named skill for the current turn",
@@ -636,25 +739,14 @@ export class BotRuntime {
             };
           }),
       }),
-      search: tool({
-        description: "Inspect local QuickJS runtime capabilities and installed packages (not web search)",
-        inputSchema: z.object({ query: z.string().optional() }),
-        execute: async (input) =>
-          runTool("search", input as Record<string, unknown>, async () =>
-            searchCodeRuntime(
-              { query: input.query },
-              {
-                config: this.getCodeExecutionConfig(),
-                state: params.state.codeRuntime,
-                saveState: async () => undefined,
-              },
-            ),
-          ),
-      }),
       bash: tool({
         description:
           "Run bash commands in a sandboxed shell with core Unix tools, VFS-backed files, and full network access via curl. Use this for shell/text/file/network tasks. Use execute instead for JavaScript, google.execute, memory.*, or vfs:/ imports.",
-        inputSchema: z.object({ command: z.string(), cwd: z.string().optional(), stdin: z.string().optional() }),
+        inputSchema: z.object({
+          command: z.string(),
+          cwd: z.string().optional(),
+          stdin: z.string().optional(),
+        }),
         execute: async (input) => {
           const writes: string[] = [];
           return runTool(
@@ -680,7 +772,7 @@ export class BotRuntime {
       }),
       execute: tool({
         description:
-          "Run JavaScript in QuickJS runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, built-in global `google`, and imports from vfs:/... . Return the final value explicitly. For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
+          "Run JavaScript in a sandboxed Worker runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, built-in global `google`, and imports from vfs:/... . Return the final value explicitly. For reusable helpers, write modules to VFS and load them with await import('vfs:/path.js'). For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
         inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
         execute: async (input) => {
           const writes: string[] = [];
@@ -692,23 +784,9 @@ export class BotRuntime {
                 { code: input.code, input: input.input },
                 {
                   config: this.getCodeExecutionConfig(),
-                  state: params.state.codeRuntime,
-                  saveState: async (next: CodeRuntimeState) => {
-                    params.state = {
-                      ...params.state,
-                      codeRuntime: normalizeCodeRuntimeState(next),
-                    };
-                  },
                   vfs: this.createVfsAdapter(writes),
-                  memory: {
-                    find: async (payload) => this.executeMemoryFindPayload(params.chatId, payload),
-                    save: async (payload) => this.executeMemorySavePayload(params.chatId, payload),
-                    remove: async (payload) => this.executeMemoryRemovePayload(params.chatId, payload),
-                  },
-                  googleAuth: {
-                    getAccessToken: async () => this.getGoogleAccessToken(),
-                    allowedServices: ["gmail", "drive", "sheets", "docs", "calendar"],
-                  },
+                  loader: this.env.LOADER ?? null,
+                  host: this.createExecuteHostBinding(params.threadId, params.chatId),
                 },
               ),
             writes,
@@ -719,7 +797,11 @@ export class BotRuntime {
     };
   }
 
-  private async recoverTimedOutRun(params: { model: ReturnType<BotRuntime["createModel"]>; userText: string; toolTraces: ToolTrace[] }) {
+  private async recoverTimedOutRun(params: {
+    model: ReturnType<BotRuntime["createModel"]>;
+    userText: string;
+    toolTraces: ToolTrace[];
+  }) {
     const successfulToolTraces = params.toolTraces.filter((trace) => trace.ok);
     if (successfulToolTraces.length) {
       try {
@@ -751,7 +833,11 @@ export class BotRuntime {
   }
 
   private async listSkills(): Promise<Array<Pick<SkillRecord, "name" | "description" | "scope">>> {
-    const builtin = listBuiltinSkills().map(({ name, description, scope }) => ({ name, description, scope }));
+    const builtin = listBuiltinSkills().map(({ name, description, scope }) => ({
+      name,
+      description,
+      scope,
+    }));
     const userRows = await listVfsEntries(this.env.DRECLAW_DB, "/skills/user/", 200);
     const userSkills = userRows
       .filter((row) => row.path.endsWith("/SKILL.md"))
@@ -763,7 +849,9 @@ export class BotRuntime {
           return null;
         }
       })
-      .filter((skill): skill is { name: string; description: string; scope: "user" } => Boolean(skill))
+      .filter((skill): skill is { name: string; description: string; scope: "user" } =>
+        Boolean(skill),
+      )
       .filter((skill) => !isSystemSkillName(skill.name));
     return [...builtin, ...userSkills].sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -776,7 +864,8 @@ export class BotRuntime {
     const row = await getVfsEntry(this.env.DRECLAW_DB, `/skills/user/${normalized}/SKILL.md`);
     if (!row) return null;
     const parsed = parseSkillDocument(row.content);
-    if (parsed.name !== normalized) throw new Error(`SKILL_INVALID: name mismatch for ${normalized}`);
+    if (parsed.name !== normalized)
+      throw new Error(`SKILL_INVALID: name mismatch for ${normalized}`);
     return {
       name: parsed.name,
       description: parsed.description,
@@ -810,18 +899,29 @@ export class BotRuntime {
   private async listVfsPaths(prefix: string, limit: number): Promise<string[]> {
     const normalized = this.normalizeVfsPath(prefix || "/");
     const rows = await listVfsEntries(this.env.DRECLAW_DB, normalized, Math.max(1, limit));
-    const dynamic = listBuiltinSkills().map((item) => item.path).filter((path) => path.startsWith(normalized));
-    return [...new Set([...dynamic, ...rows.map((item) => item.path)])].sort().slice(0, Math.max(1, limit));
+    const dynamic = listBuiltinSkills()
+      .map((item) => item.path)
+      .filter((path) => path.startsWith(normalized));
+    return [...new Set([...dynamic, ...rows.map((item) => item.path)])]
+      .sort()
+      .slice(0, Math.max(1, limit));
   }
 
-  private async writeVfsContent(path: string, content: string, overwrite: boolean, writes?: string[]) {
+  private async writeVfsContent(
+    path: string,
+    content: string,
+    overwrite: boolean,
+    writes?: string[],
+  ) {
     const normalized = this.normalizeVfsPath(path);
-    if (normalized.startsWith("/skills/system/")) return { ok: false as const, code: "VFS_READ_ONLY" as const };
+    if (normalized.startsWith("/skills/system/"))
+      return { ok: false as const, code: "VFS_READ_ONLY" as const };
     if (normalized.startsWith("/skills/user/")) this.validateUserSkillWrite(normalized, content);
     writes?.push(`write ${normalized}`);
     const config = this.getCodeExecutionConfig();
     const sizeBytes = new TextEncoder().encode(content).byteLength;
-    if (sizeBytes > config.limits.vfsMaxFileBytes) return { ok: false as const, code: "VFS_LIMIT_EXCEEDED" as const };
+    if (sizeBytes > config.limits.vfsMaxFileBytes)
+      return { ok: false as const, code: "VFS_LIMIT_EXCEEDED" as const };
     const result = await putVfsEntry(this.env.DRECLAW_DB, {
       path: normalized,
       content,
@@ -830,7 +930,9 @@ export class BotRuntime {
       nowIso: new Date().toISOString(),
       overwrite,
     });
-    return result.ok ? { ok: true as const, path: normalized } : { ok: false as const, code: result.code };
+    return result.ok
+      ? { ok: true as const, path: normalized }
+      : { ok: false as const, code: result.code };
   }
 
   private async deleteVfsContent(path: string, writes?: string[]): Promise<boolean> {
@@ -843,7 +945,8 @@ export class BotRuntime {
   private createVfsAdapter(writes: string[]) {
     return {
       readFile: async (path: string) => this.readVfsContent(path),
-      writeFile: async (path: string, content: string, overwrite: boolean) => this.writeVfsContent(path, content, overwrite, writes),
+      writeFile: async (path: string, content: string, overwrite: boolean) =>
+        this.writeVfsContent(path, content, overwrite, writes),
       listFiles: async (prefix: string, limit: number) => this.listVfsPaths(prefix, limit),
       removeFile: async (path: string) => this.deleteVfsContent(path, writes),
       revision: async () => getVfsRevision(this.env.DRECLAW_DB),
@@ -859,7 +962,8 @@ export class BotRuntime {
     if (!path.endsWith("/SKILL.md")) return;
     const parsed = parseSkillDocument(content);
     const dirName = parts[2] ?? "";
-    if (parsed.name !== dirName) throw new Error(`SKILL_INVALID: name must match directory (${dirName})`);
+    if (parsed.name !== dirName)
+      throw new Error(`SKILL_INVALID: name must match directory (${dirName})`);
     if (isSystemSkillName(parsed.name)) throw new Error(`SKILL_RESERVED: ${parsed.name}`);
   }
 
@@ -867,9 +971,34 @@ export class BotRuntime {
     return getCodeExecutionConfig(this.env as unknown as Record<string, string | undefined>);
   }
 
+  private createExecuteHostBinding(threadId: string, chatId: number): ExecuteHostBinding | null {
+    const factory = this.executionContext?.exports?.ExecuteHost;
+    if (typeof factory !== "function") return null;
+    const config = this.getCodeExecutionConfig();
+    return factory({
+      props: {
+        threadId,
+        chatId,
+        limits: {
+          execMaxOutputBytes: config.limits.execMaxOutputBytes,
+          execMaxLogLines: config.limits.execMaxLogLines,
+          netRequestTimeoutMs: config.limits.netRequestTimeoutMs,
+          netMaxResponseBytes: config.limits.netMaxResponseBytes,
+          vfsMaxFileBytes: config.limits.vfsMaxFileBytes,
+          vfsListLimit: config.limits.vfsListLimit,
+        },
+        allowedGoogleServices: ["gmail", "drive", "sheets", "docs", "calendar"],
+      },
+    });
+  }
+
   private getRuntimeConfig(): RuntimeConfig {
-    const provider = (this.env.AI_PROVIDER?.trim().toLowerCase() || "opencode") as "opencode" | "opencode-go" | "workers";
-    const model = this.env.MODEL?.trim() || (provider === "workers" ? "@cf/zai-org/glm-4.7-flash" : "");
+    const provider = (this.env.AI_PROVIDER?.trim().toLowerCase() || "opencode") as
+      | "opencode"
+      | "opencode-go"
+      | "workers";
+    const model =
+      this.env.MODEL?.trim() || (provider === "workers" ? "@cf/zai-org/glm-4.7-flash" : "");
     if (!model) throw new Error("Missing MODEL");
     if (provider === "workers") {
       if (!this.env.AI) throw new Error("Missing AI binding");
@@ -881,7 +1010,9 @@ export class BotRuntime {
       provider,
       model,
       apiKey,
-      baseUrl: this.env.BASE_URL?.trim() || (provider === "opencode-go" ? OPENCODE_GO_BASE_URL : OPENCODE_ZEN_BASE_URL),
+      baseUrl:
+        this.env.BASE_URL?.trim() ||
+        (provider === "opencode-go" ? OPENCODE_GO_BASE_URL : OPENCODE_ZEN_BASE_URL),
     };
   }
 
@@ -891,9 +1022,13 @@ export class BotRuntime {
       : createZenModel({ model: runtime.model, apiKey: runtime.apiKey, baseUrl: runtime.baseUrl });
   }
 
-  private getAgentProviderOptions(runtime: RuntimeConfig): Record<string, Record<string, string>> | undefined {
+  private getAgentProviderOptions(
+    runtime: RuntimeConfig,
+  ): Record<string, Record<string, string>> | undefined {
     if (runtime.provider === "workers") return undefined;
-    return { [runtime.provider]: { reasoningEffort: this.env.REASONING_EFFORT?.trim() || "medium" } };
+    return {
+      [runtime.provider]: { reasoningEffort: this.env.REASONING_EFFORT?.trim() || "medium" },
+    };
   }
 
   private getMemoryConfigSafe() {
@@ -907,13 +1042,25 @@ export class BotRuntime {
   private async executeMemoryFindPayload(chatId: number, payload: unknown): Promise<unknown> {
     const memory = this.getMemoryConfigSafe();
     if (!memory.enabled) throw new Error("Memory is disabled");
-    return executeMemoryFind({ env: this.env, db: this.env.DRECLAW_DB, chatId, embeddingModel: memory.embeddingModel, payload });
+    return executeMemoryFind({
+      env: this.env,
+      db: this.env.DRECLAW_DB,
+      chatId,
+      embeddingModel: memory.embeddingModel,
+      payload,
+    });
   }
 
   private async executeMemorySavePayload(chatId: number, payload: unknown): Promise<unknown> {
     const memory = this.getMemoryConfigSafe();
     if (!memory.enabled) throw new Error("Memory is disabled");
-    return executeMemorySave({ env: this.env, db: this.env.DRECLAW_DB, chatId, embeddingModel: memory.embeddingModel, payload });
+    return executeMemorySave({
+      env: this.env,
+      db: this.env.DRECLAW_DB,
+      chatId,
+      embeddingModel: memory.embeddingModel,
+      payload,
+    });
   }
 
   private async executeMemoryRemovePayload(chatId: number, payload: unknown): Promise<unknown> {
@@ -943,7 +1090,8 @@ export class BotRuntime {
     }
     if (retrieved.episodes.length) {
       lines.push("Recent episodes:");
-      for (const episode of retrieved.episodes) lines.push(`- ${episode.role}: ${truncateForLog(episode.content, 220)}`);
+      for (const episode of retrieved.episodes)
+        lines.push(`- ${episode.role}: ${truncateForLog(episode.content, 220)}`);
     }
     const joined = lines.join("\n");
     const maxChars = memory.maxInjectTokens * 4;
@@ -998,7 +1146,12 @@ export class BotRuntime {
     }
 
     if ((params.memoryTurns + 1) % memory.reflectionEveryTurns === 0) {
-      const reflection = await runMemoryReflection({ db: this.env.DRECLAW_DB, chatId: params.chatId, limit: 24, nowIso });
+      const reflection = await runMemoryReflection({
+        db: this.env.DRECLAW_DB,
+        chatId: params.chatId,
+        limit: 24,
+        nowIso,
+      });
       if (reflection.writtenFacts > 0) {
         const facts = await listActiveMemoryFacts(this.env.DRECLAW_DB, params.chatId, 200);
         for (const fact of facts) {
@@ -1033,14 +1186,20 @@ export class BotRuntime {
       { ciphertext: token.refreshTokenCiphertext, nonce: token.nonce },
       decodeEncryptionKey(String(this.env.GOOGLE_OAUTH_ENCRYPTION_KEY ?? "")),
     );
-    const refreshed = await refreshGoogleAccessToken(getGoogleOAuthConfig(this.env), refreshToken, this.getCodeExecutionConfig().limits.netRequestTimeoutMs);
+    const refreshed = await refreshGoogleAccessToken(
+      getGoogleOAuthConfig(this.env),
+      refreshToken,
+      this.getCodeExecutionConfig().limits.netRequestTimeoutMs,
+    );
     return { accessToken: refreshed.accessToken, scope: refreshed.scope };
   }
-
 }
 
 class VerboseTracer {
-  constructor(private readonly db: D1Database, private readonly thread: Thread<BotThreadState>) {}
+  constructor(
+    private readonly db: D1Database,
+    private readonly thread: Thread<BotThreadState>,
+  ) {}
 
   private async isEnabled(): Promise<boolean> {
     const controls = await getPersistedThreadControls(this.db, this.thread.id);
@@ -1068,7 +1227,11 @@ function isRunCancelledError(error: unknown): error is RunCancelledError {
   return error instanceof RunCancelledError;
 }
 
-function buildAgentMessages(systemPrompt: string, userText: string, imageBlocks: string[]): ModelMessage[] {
+function buildAgentMessages(
+  systemPrompt: string,
+  userText: string,
+  imageBlocks: string[],
+): ModelMessage[] {
   const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [];
   parts.push({ type: "text", text: userText || "[image message]" });
   for (const image of imageBlocks) parts.push({ type: "image", image });
@@ -1079,10 +1242,19 @@ function buildAgentMessages(systemPrompt: string, userText: string, imageBlocks:
 }
 
 function isModelMessageArray(value: unknown): value is ModelMessage[] {
-  return Array.isArray(value) && value.every((item) => item && typeof item === "object" && typeof (item as { role?: unknown }).role === "string");
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        item && typeof item === "object" && typeof (item as { role?: unknown }).role === "string",
+    )
+  );
 }
 
-function mergeContinuationMessages(base: ModelMessage[], continuation: ModelMessage[]): ModelMessage[] {
+function mergeContinuationMessages(
+  base: ModelMessage[],
+  continuation: ModelMessage[],
+): ModelMessage[] {
   if (!continuation.length) return base;
   if (continuation.length >= base.length) {
     const prefix = continuation.slice(0, base.length);
@@ -1274,11 +1446,11 @@ function inferImplicitSkillNames(userText: string): string[] {
   const names = new Set<string>();
   if (/gmail|email|inbox|calendar|drive|docs|sheets|google/.test(text)) {
     names.add("google");
-    names.add("quickjs");
+    names.add("execute-runtime");
   }
   if (/script|helper|vfs|module|import/.test(text)) {
     names.add("vfs");
-    names.add("quickjs");
+    names.add("execute-runtime");
   }
   if (/memory|remember|label/.test(text)) names.add("memory");
   if (/skill|workflow/.test(text)) names.add("skill-authoring");
@@ -1289,17 +1461,29 @@ function renderTaskGuidance(userText: string): string {
   const text = String(userText ?? "").toLowerCase();
   const lines: string[] = [];
   if (/bash|shell|curl|grep|sed|awk|jq|yq|find|xargs|pipe|regex/.test(text)) {
-    lines.push("- Prefer bash for shell pipelines, curl, jq/yq, grep/sed/awk, and file-oriented text processing.");
-    lines.push("- Prefer execute only when the task needs JavaScript, google.execute, memory.*, or vfs:/ imports.");
+    lines.push(
+      "- Prefer bash for shell pipelines, curl, jq/yq, grep/sed/awk, and file-oriented text processing.",
+    );
+    lines.push(
+      "- Prefer execute only when the task needs JavaScript, google.execute, memory.*, or vfs:/ imports.",
+    );
   }
   if (/gmail|email|inbox/.test(text)) {
     lines.push("- For Gmail summaries, use at most one google.execute call per execute run.");
-    lines.push("- Good pattern: one execute run to list ids, one execute run per message detail, one final execute run to format a string summary.");
-    lines.push("- For detail fetch runs, do not use return JSON.stringify({ ... }). Assign fields to const vars and return a plain string.");
-    lines.push("- If one execute script fails, rewrite it to the simplest plain-string form on the next try.");
+    lines.push(
+      "- Good pattern: one execute run to list ids, one execute run per message detail, one final execute run to format a string summary.",
+    );
+    lines.push(
+      "- For detail fetch runs, do not use return JSON.stringify({ ... }). Assign fields to const vars and return a plain string.",
+    );
+    lines.push(
+      "- If one execute script fails, rewrite it to the simplest plain-string form on the next try.",
+    );
   }
   if (/calendar/.test(text)) {
-    lines.push("- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.");
+    lines.push(
+      "- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.",
+    );
   }
   return lines.join("\n");
 }
@@ -1330,12 +1514,17 @@ function renderTraceStart(name: string, args: Record<string, unknown>): string {
   if (name === "bash") {
     const command = typeof args.command === "string" ? args.command : "";
     const cwd = typeof args.cwd === "string" ? `\ncwd: ${args.cwd}` : "";
-    const stdin = typeof args.stdin === "string" && args.stdin ? `\nstdin: ${redactSensitiveText(args.stdin)}` : "";
+    const stdin =
+      typeof args.stdin === "string" && args.stdin
+        ? `\nstdin: ${redactSensitiveText(args.stdin)}`
+        : "";
     return `Tool: ${name}\n\n\`\`\`bash\n${command}\n\`\`\`${cwd}${stdin}`;
   }
   if (name === "execute") {
     const code = typeof args.code === "string" ? args.code : "";
-    const input = Object.prototype.hasOwnProperty.call(args, "input") ? `\ninput: ${redactSensitiveText(serializeUnknown(args.input))}` : "";
+    const input = Object.prototype.hasOwnProperty.call(args, "input")
+      ? `\ninput: ${redactSensitiveText(serializeUnknown(args.input))}`
+      : "";
     return `Tool: ${name}\n\n\`\`\`js\n${code}\n\`\`\`${input}`;
   }
   return `Tool: ${name}\nargs: ${redactSensitiveText(serializeUnknown(args))}`;
@@ -1343,7 +1532,10 @@ function renderTraceStart(name: string, args: Record<string, unknown>): string {
 
 function renderTraceResult(trace: ToolTrace): string {
   const executeOk =
-    trace.name === "execute" && trace.output && typeof trace.output === "object" && "ok" in (trace.output as Record<string, unknown>)
+    trace.name === "execute" &&
+    trace.output &&
+    typeof trace.output === "object" &&
+    "ok" in (trace.output as Record<string, unknown>)
       ? Boolean((trace.output as Record<string, unknown>).ok)
       : trace.ok;
   const lines = [`Tool result: ${trace.name} ${trace.ok ? "ok" : "failed"}`];
@@ -1355,18 +1547,32 @@ function renderTraceResult(trace: ToolTrace): string {
     lines.push(`path: ${String(output.path ?? "")}`);
     return lines.join("\n");
   }
-  if (trace.ok && trace.name === "list_skills" && trace.output && typeof trace.output === "object") {
-    const skills = Array.isArray((trace.output as { skills?: unknown[] }).skills) ? ((trace.output as { skills: unknown[] }).skills as unknown[]) : [];
+  if (
+    trace.ok &&
+    trace.name === "list_skills" &&
+    trace.output &&
+    typeof trace.output === "object"
+  ) {
+    const skills = Array.isArray((trace.output as { skills?: unknown[] }).skills)
+      ? ((trace.output as { skills: unknown[] }).skills as unknown[])
+      : [];
     lines.push(`skills: ${skills.length}`);
-    lines.push(`result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 600))}`);
+    lines.push(
+      `result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 600))}`,
+    );
     return lines.join("\n");
   }
   if (trace.ok && trace.name === "vfs") {
-    lines.push(`result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 1200))}`);
+    lines.push(
+      `result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 1200))}`,
+    );
     return lines.join("\n");
   }
   if (trace.writes?.length) lines.push(`writes: ${trace.writes.join(", ")}`);
-  if (trace.ok) lines.push(`result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 1200))}`);
+  if (trace.ok)
+    lines.push(
+      `result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 1200))}`,
+    );
   else lines.push(`error: ${trace.error || "tool failed"}`);
   return lines.join("\n");
 }
@@ -1414,7 +1620,9 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 function truncateForLog(input: string, max: number): string {
-  const compact = String(input ?? "").replace(/\s+/g, " ").trim();
+  const compact = String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!compact) return "";
   return compact.length <= max ? compact : `${compact.slice(0, max - 1)}…`;
 }

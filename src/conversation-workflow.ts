@@ -10,7 +10,9 @@ import type { ConversationWorkflowPayload, Env } from "./types";
 
 export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWorkflowPayload> {
   async run(event: WorkflowEvent<ConversationWorkflowPayload>, step: WorkflowStep): Promise<void> {
-    let state = normalizeBotThreadState(event.payload.state as Parameters<typeof normalizeBotThreadState>[0]);
+    let state = normalizeBotThreadState(
+      event.payload.state as Parameters<typeof normalizeBotThreadState>[0],
+    );
     let messages: unknown[] | undefined;
     let shouldContinue = true;
 
@@ -20,7 +22,7 @@ export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWo
         void chat;
         const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
         const message = ChatMessage.fromJSON(event.payload.message);
-        const runtime = new BotRuntime(this.env);
+        const runtime = new BotRuntime(this.env, this.ctx as unknown as ExecutionContext);
         const stepResult = await runtime.runConversationAgentStep({
           thread,
           message,
@@ -29,16 +31,26 @@ export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWo
           isFirstStep: stepIndex === 0,
           runTimeoutMs: 300_000,
         });
-        await thread.setState(stepResult.state as unknown as Record<string, unknown>, { replace: true });
+        await thread.setState(stepResult.state as unknown as Record<string, unknown>, {
+          replace: true,
+        });
         return {
           stateJson: JSON.stringify(stepResult.state),
           nextMessagesJson: JSON.stringify(stepResult.nextMessages),
           shouldContinue: stepResult.shouldContinue,
         };
       });
-      const result = rawResult as { stateJson: string; nextMessagesJson: string; shouldContinue: boolean };
+      const result = rawResult as {
+        stateJson: string;
+        nextMessagesJson: string;
+        shouldContinue: boolean;
+      };
 
-      state = normalizeBotThreadState(JSON.parse(String(result.stateJson ?? "{}")) as Parameters<typeof normalizeBotThreadState>[0]);
+      state = normalizeBotThreadState(
+        JSON.parse(String(result.stateJson ?? "{}")) as Parameters<
+          typeof normalizeBotThreadState
+        >[0],
+      );
       messages = JSON.parse(String(result.nextMessagesJson ?? "[]")) as unknown[];
       shouldContinue = Boolean(result.shouldContinue);
     }

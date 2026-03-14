@@ -23,8 +23,9 @@ v0 security model is intentionally simple and single-user.
 ## Runtime boundaries
 
 - No Sandbox/container dependency in v0.
-- Tool execution is constrained to `search` and `execute`; memory persistence is runtime-managed.
-- `execute` runs in QuickJS with strict resource limits and host-call limits.
+- Tool execution is constrained to `execute` and `bash`; memory persistence is runtime-managed.
+- `execute` runs in a sandboxed dynamic Worker with parent-mediated host APIs.
 - `execute` filesystem (`fs.read/write/list/remove`) is path-normalized, traversal-blocked, and bounded by VFS limits.
+- Child execute Workers have outbound network disabled and reach the network only through the parent `fetch` proxy.
 - Google API access in `execute` is gated by stored OAuth refresh token + configured allowed services.
 - Refresh token is encrypted at rest in D1 with `GOOGLE_OAUTH_ENCRYPTION_KEY`.

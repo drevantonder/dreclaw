@@ -56,6 +56,19 @@ export interface Env {
   REASONING_EFFORT?: string;
   DRECLAW_DB: D1Database;
   CONVERSATION_WORKFLOW?: Workflow<ConversationWorkflowPayload>;
+  LOADER?: {
+    get(
+      id: string,
+      getCode: () => Promise<unknown>,
+    ): {
+      getEntrypoint(
+        name?: string,
+        options?: { props?: unknown },
+      ): {
+        fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+      };
+    };
+  };
 }
 
 export interface TelegramUpdate {

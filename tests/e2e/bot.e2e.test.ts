@@ -6,12 +6,6 @@ const app = worker as unknown as {
   fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response>;
 };
 
-const testCtx = {
-  waitUntil: (_task: Promise<unknown>) => undefined,
-  passThroughOnException: () => undefined,
-  props: {},
-} as unknown as ExecutionContext;
-
 function createExecutionTracker() {
   const pending: Promise<unknown>[] = [];
   return {
@@ -79,38 +73,20 @@ vi.mock("../../src/code-exec", () => ({
   getCodeExecutionConfig: vi.fn(() => ({
     codeExecEnabled: true,
     netFetchEnabled: true,
-    pkgInstallEnabled: true,
     limits: {
       execTimeoutMs: 1000,
-      execMemoryMb: 32,
-      execStackKb: 512,
-      execMaxHostCalls: 10,
       execMaxLogLines: 10,
       execMaxOutputBytes: 10000,
-      netMaxRequestsPerRun: 10,
-      netMaxParallel: 2,
       netRequestTimeoutMs: 1000,
       netMaxResponseBytes: 10000,
-      netMaxTotalDownloadBytes: 10000,
       netMaxRedirects: 2,
-      pkgInstallTimeoutMs: 1000,
-      pkgMaxSpecLength: 100,
-      pkgMaxModuleBytes: 10000,
-      pkgMaxTotalInstallBytesPerRun: 10000,
-      pkgMaxInstallsPerRun: 2,
       vfsMaxFileBytes: 10000,
       vfsMaxFiles: 100,
       vfsMaxPathLength: 255,
       vfsListLimit: 100,
     },
   })),
-  normalizeCodeRuntimeState: vi.fn((state?: { installedPackages?: unknown[] }) => ({
-    installedPackages: state?.installedPackages ?? [],
-  })),
-  searchCodeRuntime: vi.fn(({ query }: { query?: string }) => ({
-    runtime: { engine: "quickjs-emscripten", apis: [], limits: {} },
-    packages: query ? [{ spec: query }] : [],
-  })),
+  normalizeCodeRuntimeState: vi.fn(() => ({})),
 }));
 
 vi.mock("../../src/bash-exec", () => ({

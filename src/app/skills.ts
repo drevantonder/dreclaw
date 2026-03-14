@@ -8,18 +8,19 @@ export interface SkillRecord {
 
 const BUILTIN_SKILLS = [
   {
-    name: "quickjs",
-    description: "QuickJS runtime rules and patterns. Use for execute scripts, async returns, imports, and non-Node constraints.",
-    content: `# QuickJS
+    name: "execute-runtime",
+    description:
+      "Sandboxed execute runtime rules and patterns. Use for execute scripts, async returns, VFS imports, and non-Node constraints.",
+    content: `# Execute Runtime
 
-Use this skill when writing or fixing QuickJS scripts for the execute tool.
+Use this skill when writing or fixing execute scripts.
 
 Rules:
-- The runtime is QuickJS, not Node.js.
+- The runtime is a sandboxed Worker, not Node.js.
 - Use only built-in runtime globals and host APIs.
 - Do not use require(), fs from Node, process, Buffer, or googleapis imports.
 - If a script uses await or multiple statements, explicitly return the final value.
-- For reusable helpers, write modules to VFS and import them with vfs:/ paths.
+- For reusable helpers, write modules to VFS and load them with await import('vfs:/path.js').
 - When formatting user-facing summaries, prefer simple string concatenation over large template literals.
 
 Patterns:
@@ -42,7 +43,8 @@ return await run({ ok: true });
   },
   {
     name: "google",
-    description: "Google API access via built-in google.execute. Use for Gmail, Calendar, Drive, Docs, and Sheets tasks.",
+    description:
+      "Google API access via built-in google.execute. Use for Gmail, Calendar, Drive, Docs, and Sheets tasks.",
     content: `# Google
 
 Use this skill for Google workflows.
@@ -112,7 +114,8 @@ return events.result?.items || [];
   },
   {
     name: "vfs",
-    description: "VFS file rules for scripts, skills, and reusable artifacts. Use for fs.read/fs.write/fs.list/fs.remove patterns.",
+    description:
+      "VFS file rules for scripts, skills, and reusable artifacts. Use for fs.read/fs.write/fs.list/fs.remove patterns.",
     content: `# VFS
 
 Use this skill when reading, writing, listing, or deleting runtime files.
@@ -143,7 +146,8 @@ return files;
   },
   {
     name: "memory",
-    description: "Memory API usage for finding, saving, and removing durable facts when a task benefits from recall.",
+    description:
+      "Memory API usage for finding, saving, and removing durable facts when a task benefits from recall.",
     content: `# Memory
 
 Use this skill when durable recall helps complete the task.
@@ -167,7 +171,8 @@ return await memory.find({ query: 'recent inbox summary labels' });
   },
   {
     name: "skill-authoring",
-    description: "Create concise user skills in VFS. Use when a reusable workflow should become a skill.",
+    description:
+      "Create concise user skills in VFS. Use when a reusable workflow should become a skill.",
     content: `# Skill Authoring
 
 Use this skill when creating or refining user skills.
@@ -227,18 +232,22 @@ export function isSystemSkillName(name: string): boolean {
   return BUILTIN_BY_NAME.has(String(name ?? "").trim());
 }
 
-export function renderSkillCatalog(skills: Array<Pick<SkillRecord, "name" | "description" | "scope">>): string {
+export function renderSkillCatalog(
+  skills: Array<Pick<SkillRecord, "name" | "description" | "scope">>,
+): string {
   if (!skills.length) return "";
-  return skills
-    .map((skill) => `- ${skill.name} [${skill.scope}]: ${skill.description}`)
-    .join("\n");
+  return skills.map((skill) => `- ${skill.name} [${skill.scope}]: ${skill.description}`).join("\n");
 }
 
 export function renderLoadedSkill(skill: SkillRecord): string {
   return `<skill_content name="${skill.name}" scope="${skill.scope}">\n${skill.content.trim()}\n</skill_content>`;
 }
 
-export function parseSkillDocument(content: string): { name: string; description: string; body: string } {
+export function parseSkillDocument(content: string): {
+  name: string;
+  description: string;
+  body: string;
+} {
   const input = String(content ?? "").trim();
   if (!input.startsWith("---")) throw new Error("SKILL_INVALID: missing frontmatter");
   const match = input.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
@@ -256,5 +265,5 @@ export function parseSkillDocument(content: string): { name: string; description
 
 function matchLine(frontmatter: string, key: string): string {
   const match = frontmatter.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
-  return match ? match[1].trim().replace(/^['\"]|['\"]$/g, "") : "";
+  return match ? match[1].trim().replace(/^['"]|['"]$/g, "") : "";
 }

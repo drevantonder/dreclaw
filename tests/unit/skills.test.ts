@@ -5,7 +5,7 @@ describe("skills", () => {
   it("lists builtin skills", () => {
     const skills = listBuiltinSkills();
     expect(skills.map((skill) => skill.name)).toEqual([
-      "quickjs",
+      "execute-runtime",
       "google",
       "vfs",
       "memory",

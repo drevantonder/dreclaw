@@ -1,7 +1,13 @@
 import { decodeEncryptionKey, encryptSecret } from "./crypto";
-import { getGoogleOAuthState, markGoogleOAuthStateUsed, markUpdateSeen, upsertGoogleOAuthToken } from "./db";
+import {
+  getGoogleOAuthState,
+  markGoogleOAuthStateUsed,
+  markUpdateSeen,
+  upsertGoogleOAuthToken,
+} from "./db";
 import { createBot, maybeHandleAsyncTelegramCommand } from "./bot";
 import { ConversationWorkflow } from "./conversation-workflow";
+import { ExecuteHost } from "./execute-host";
 import { exchangeGoogleOAuthCode, getGoogleOAuthConfig } from "./google-oauth";
 import { sendTelegramTextMessage } from "./telegram-api";
 import type { Env, TelegramUpdate } from "./types";
@@ -20,13 +26,21 @@ export default {
       if (request.headers.get("x-telegram-bot-api-secret-token") !== env.TELEGRAM_WEBHOOK_SECRET) {
         return new Response("Unauthorized", { status: 401 });
       }
-      const update = (await request.clone().json().catch(() => null)) as TelegramUpdate | null;
-      const firstSeen = update?.update_id ? await markUpdateSeen(env.DRECLAW_DB, update.update_id) : true;
+      const update = (await request
+        .clone()
+        .json()
+        .catch(() => null)) as TelegramUpdate | null;
+      const firstSeen = update?.update_id
+        ? await markUpdateSeen(env.DRECLAW_DB, update.update_id)
+        : true;
       if (!firstSeen) return new Response("ok");
-      if (update && await maybeHandleAsyncTelegramCommand(env, update, (task) => ctx.waitUntil(task))) {
+      if (
+        update &&
+        (await maybeHandleAsyncTelegramCommand(env, update, (task) => ctx.waitUntil(task), ctx))
+      ) {
         return new Response("ok");
       }
-      const bot = createBot(env);
+      const bot = createBot(env, ctx);
       return bot.webhooks.telegram(request, {
         waitUntil: (task) => ctx.waitUntil(task),
       });
@@ -44,6 +58,7 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 export { ConversationWorkflow };
+export { ExecuteHost };
 
 async function handleGoogleOAuthCallback(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -55,19 +70,27 @@ async function handleGoogleOAuthCallback(request: Request, env: Env): Promise<Re
 
   const oauthState = await getGoogleOAuthState(env.DRECLAW_DB, state);
   if (!oauthState) return htmlResponse(400, "Google OAuth failed", "Invalid or expired state.");
-  if (oauthState.usedAt) return htmlResponse(400, "Google OAuth failed", "This authorization link was already used.");
+  if (oauthState.usedAt)
+    return htmlResponse(400, "Google OAuth failed", "This authorization link was already used.");
   if (Date.parse(oauthState.expiresAt) <= Date.now()) {
-    return htmlResponse(400, "Google OAuth failed", "Authorization link expired. Run /google connect again.");
+    return htmlResponse(
+      400,
+      "Google OAuth failed",
+      "Authorization link expired. Run /google connect again.",
+    );
   }
 
   const marked = await markGoogleOAuthStateUsed(env.DRECLAW_DB, state, new Date().toISOString());
-  if (!marked) return htmlResponse(400, "Google OAuth failed", "Authorization link is no longer valid.");
+  if (!marked)
+    return htmlResponse(400, "Google OAuth failed", "Authorization link is no longer valid.");
 
   try {
     const oauthConfig = getGoogleOAuthConfig(env);
     const exchange = await exchangeGoogleOAuthCode(oauthConfig, code);
     if (!exchange.refreshToken) {
-      throw new Error("Google did not return a refresh token. Revoke app access and retry /google connect.");
+      throw new Error(
+        "Google did not return a refresh token. Revoke app access and retry /google connect.",
+      );
     }
 
     const encrypted = await encryptSecret(
@@ -96,9 +119,17 @@ async function handleGoogleOAuthCallback(request: Request, env: Env): Promise<Re
       });
     }
 
-    return htmlResponse(200, "Google OAuth complete", "You can close this tab and return to Telegram.");
+    return htmlResponse(
+      200,
+      "Google OAuth complete",
+      "You can close this tab and return to Telegram.",
+    );
   } catch (error) {
-    return htmlResponse(400, "Google OAuth failed", error instanceof Error ? error.message : "Unknown OAuth error");
+    return htmlResponse(
+      400,
+      "Google OAuth failed",
+      error instanceof Error ? error.message : "Unknown OAuth error",
+    );
   }
 }
 
@@ -114,5 +145,9 @@ function htmlResponse(status: number, title: string, message: string): Response 
 }
 
 function escapeHtml(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }

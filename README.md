@@ -105,13 +105,12 @@ Normal messages stream a single assistant reply.
 - Conversation history and bot state live in Chat SDK thread state backed by D1.
 - Long-term memory facts/episodes live in D1 + Vectorize (`VECTORIZE_MEMORY`) with Workers AI embeddings (`env.AI`).
 - Memory writes are salience-gated and consolidated through reflection.
-- `search` returns QuickJS runtime capabilities/limits and package inventory.
 - `bash` runs a sandboxed shell with core Unix text/file tools, VFS-backed file persistence, and full `curl` network access.
 - `bash` currently excludes Python and SQLite workflows; use `execute` for JavaScript-native tasks.
-- `execute` runs JavaScript in QuickJS and exposes `pkg.install`, `pkg.list`, `fetch`, and `fs.read/fs.write/fs.list/fs.remove` inside the runtime.
+- `execute` runs JavaScript in a sandboxed dynamic Worker and exposes `fetch`, `fs.read/fs.write/fs.list/fs.remove`, `memory.find/save/remove`, and `google.execute`.
 - `execute` also exposes `memory.find(query, opts?)`, `memory.save(text, opts?)`, and `memory.remove(target)` for direct memory control.
 - `execute` exposes `google.execute({...})` for Google API calls.
-- `execute` can import saved modules via `vfs:/...` (for example `import { run } from "vfs:/scripts/run.js"`).
+- `execute` can import saved modules via `vfs:/...` (for example `const { run } = await import("vfs:/scripts/run.js")`).
 
 ### Google OAuth setup
 

@@ -37,11 +37,15 @@ export function createChat(env: Env) {
   });
 }
 
-export function createBot(env: Env) {
-  const runtime = new BotRuntime(env);
+export function createBot(env: Env, executionContext?: ExecutionContext) {
+  const runtime = new BotRuntime(env, executionContext);
   const bot = createChat(env);
 
-  const handleIncoming = async (thread: Thread<BotThreadState>, message: Message, subscribe: boolean) => {
+  const handleIncoming = async (
+    thread: Thread<BotThreadState>,
+    message: Message,
+    subscribe: boolean,
+  ) => {
     if (!isTelegramPrivateMessage(message.raw)) return;
     if (!isAllowedUser(env, message)) return;
     const text = message.text.trim();
@@ -63,7 +67,8 @@ export function createBot(env: Env) {
     let currentState = normalizeBotThreadState(await thread.state);
     const controls = await getPersistedThreadControls(env.DRECLAW_DB, thread.id);
     if (controls) currentState = { ...currentState, verbose: controls.verbose };
-    const runStatus = (await getPersistedRunStatus(env.DRECLAW_DB, thread.id)) ?? currentState.runStatus;
+    const runStatus =
+      (await getPersistedRunStatus(env.DRECLAW_DB, thread.id)) ?? currentState.runStatus;
     if (isRunBusy(runStatus)) {
       await thread.post("Currently busy. Not executed. Use /status or /stop.");
       return;
@@ -127,6 +132,7 @@ export async function maybeHandleAsyncTelegramCommand(
   env: Env,
   update: TelegramUpdate,
   schedule?: (promise: Promise<unknown>) => void,
+  executionContext?: ExecutionContext,
 ): Promise<boolean> {
   const message = update.message;
   const text = message?.text?.trim() ?? "";
@@ -136,7 +142,7 @@ export async function maybeHandleAsyncTelegramCommand(
 
   await handleAsyncCommand({
     env,
-    runtime: new BotRuntime(env),
+    runtime: new BotRuntime(env, executionContext),
     threadId: `telegram:${message.chat.id}`,
     chatId: message.chat.id,
     telegramUserId: Number(message.from?.id ?? 0),
@@ -155,14 +161,17 @@ async function handleAsyncCommand(params: {
   text: string;
   schedule?: (promise: Promise<unknown>) => void;
 }): Promise<void> {
-  const { env, runtime, threadId, chatId, telegramUserId, text, schedule } = params;
+  const { env, runtime, threadId, chatId, telegramUserId, text } = params;
   const [command, value] = text.split(/\s+/, 2);
   const lowered = command.toLowerCase();
-  const state = normalizeBotThreadState(await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId));
+  const state = normalizeBotThreadState(
+    await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId),
+  );
   const controls = await getPersistedThreadControls(env.DRECLAW_DB, threadId);
   const controlledState = controls ? { ...state, verbose: controls.verbose } : state;
   const workflowInstanceId = await getPersistedWorkflowInstanceId(env.DRECLAW_DB, threadId);
-  const runStatus = (await getPersistedRunStatus(env.DRECLAW_DB, threadId)) ?? controlledState.runStatus;
+  const runStatus =
+    (await getPersistedRunStatus(env.DRECLAW_DB, threadId)) ?? controlledState.runStatus;
   const busy = isRunBusy(runStatus);
 
   if (lowered === "/help") {
@@ -171,23 +180,30 @@ async function handleAsyncCommand(params: {
   }
 
   if (lowered === "/status") {
-    const workflowStatus = workflowInstanceId && env.CONVERSATION_WORKFLOW
-      ? await (await env.CONVERSATION_WORKFLOW
-          .get(workflowInstanceId))
-          .status()
-          .then((value: { status: string }) => value.status)
-          .catch(() => null)
-      : null;
+    const workflowStatus =
+      workflowInstanceId && env.CONVERSATION_WORKFLOW
+        ? await (
+            await env.CONVERSATION_WORKFLOW.get(workflowInstanceId)
+          )
+            .status()
+            .then((value: { status: string }) => value.status)
+            .catch(() => null)
+        : null;
     await sendTelegramTextMessage(
       env.TELEGRAM_BOT_TOKEN,
       chatId,
-      [await runtime.status(threadId, {
-        ...controlledState,
-        runStatus: {
-          ...runStatus,
-          workflowInstanceId,
-        },
-      }), workflowStatus ? `workflow: ${workflowStatus}` : null].filter(Boolean).join("\n"),
+      [
+        await runtime.status(threadId, {
+          ...controlledState,
+          runStatus: {
+            ...runStatus,
+            workflowInstanceId,
+          },
+        }),
+        workflowStatus ? `workflow: ${workflowStatus}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
     );
     return;
   }
@@ -227,7 +243,11 @@ async function handleAsyncCommand(params: {
     const next = runtime.reset(controlledState);
     await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: false });
     await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
-    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Session reset. Conversation context cleared.");
+    await sendTelegramTextMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      chatId,
+      "Session reset. Conversation context cleared.",
+    );
     return;
   }
 
@@ -239,29 +259,49 @@ async function handleAsyncCommand(params: {
     const next = await runtime.factoryReset(chatId);
     await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: false });
     await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
-    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Factory reset complete. Conversation, memory, runtime state, and VFS cleared.");
+    await sendTelegramTextMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      chatId,
+      "Factory reset complete. Conversation, memory, and VFS cleared.",
+    );
     return;
   }
 
   if (lowered === "/verbose") {
     if (value !== "on" && value !== "off") {
-      await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, `verbose: ${state.verbose ? "on" : "off"}\nusage: /verbose on|off`);
+      await sendTelegramTextMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        chatId,
+        `verbose: ${state.verbose ? "on" : "off"}\nusage: /verbose on|off`,
+      );
       return;
     }
     const next = runtime.setVerbose(controlledState, value === "on");
     await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: value === "on" });
     await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
-    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, `verbose ${value === "on" ? "enabled" : "disabled"}.`);
+    await sendTelegramTextMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      chatId,
+      `verbose ${value === "on" ? "enabled" : "disabled"}.`,
+    );
     return;
   }
 
   if (lowered === "/google") {
     const action = text.split(/\s+/, 3)[1]?.toLowerCase() ?? "";
     if (busy && (action === "connect" || action === "disconnect")) {
-      await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, busyMessage(`/google ${action}`));
+      await sendTelegramTextMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        chatId,
+        busyMessage(`/google ${action}`),
+      );
       return;
     }
-    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, await runtime.handleGoogleCommand(text, chatId, telegramUserId));
+    await sendTelegramTextMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      chatId,
+      await runtime.handleGoogleCommand(text, chatId, telegramUserId),
+    );
     return;
   }
 
