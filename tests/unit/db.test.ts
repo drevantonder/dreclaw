@@ -1,19 +1,21 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
-  countVfsEntries,
   createGoogleOAuthState,
-  deleteVfsEntry,
   deleteGoogleOAuthToken,
-  getVfsEntry,
-  getVfsRevision,
   getGoogleOAuthState,
   getGoogleOAuthToken,
-  listVfsEntries,
   markGoogleOAuthStateUsed,
-  markUpdateSeen,
-  putVfsEntry,
   upsertGoogleOAuthToken,
-} from "../../src/db";
+} from "../../src/integrations/google/repo";
+import { markUpdateSeen } from "../../src/chat-adapters/telegram/repo";
+import {
+  countVfsEntries,
+  deleteVfsEntry,
+  getVfsEntry,
+  getVfsRevision,
+  listVfsEntries,
+  putVfsEntry,
+} from "../../src/core/vfs/repo";
 
 type Statement = {
   bind: (...args: unknown[]) => Statement;

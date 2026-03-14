@@ -7,7 +7,7 @@ import {
   parseGoogleScopes,
   refreshGoogleAccessToken,
 } from "../../src/integrations/google";
-import type { Env } from "../../src/types";
+import type { Env } from "../../src/cloudflare/env";
 
 afterEach(() => {
   vi.restoreAllMocks();

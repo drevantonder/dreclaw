@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { getMemoryConfig } from "../../src/core/memory/config";
-import type { Env } from "../../src/types";
+import type { Env } from "../../src/cloudflare/env";
 
 function baseEnv(overrides: Partial<Env> = {}): Env {
   return {

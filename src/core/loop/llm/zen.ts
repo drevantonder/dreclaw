@@ -1,6 +1,6 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
-import { DEFAULT_BASE_URL } from "../../../types";
+import { DEFAULT_BASE_URL } from "./constants";
 
 export interface ZenRuntimeConfig {
   model: string;

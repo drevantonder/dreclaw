@@ -15,7 +15,7 @@ import { clearAllVfsEntries } from "../vfs/repo";
 import { createWorkspace } from "../vfs";
 import type { Env } from "../../cloudflare/env";
 import { createGoogleModule } from "../../integrations/google";
-import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "../../types";
+import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "./llm/constants";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
 import { RunCancelledError, createRunCoordinator, idleRunStatus } from "./run";

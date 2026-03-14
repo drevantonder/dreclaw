@@ -1,4 +1,4 @@
-import type { Env } from "../../src/types";
+import type { Env } from "../../src/cloudflare/env";
 
 type SqlResult = { meta: { changes?: number } };
 

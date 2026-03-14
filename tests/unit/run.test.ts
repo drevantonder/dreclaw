@@ -7,9 +7,9 @@ import {
   setPersistedRunStatus,
   setPersistedThreadControls,
   setPersistedWorkflowInstanceId,
-} from "../../src/db";
+} from "../../src/core/loop/repo";
 import { createRunCoordinator } from "../../src/core/loop/run";
-import type { ConversationWorkflowPayload, Env } from "../../src/types";
+import type { ConversationWorkflowPayload, Env } from "../../src/cloudflare/env";
 import { createEnv } from "../helpers/fakes";
 
 describe("run coordinator", () => {
