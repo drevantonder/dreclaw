@@ -178,7 +178,7 @@ async function buildModules(
     if (!/\.(?:[cm]?js|json)$/i.test(path)) continue;
     const content = await ctx.vfs.readFile(path);
     if (content === null) continue;
-    const moduleName = `vfs:${path}`;
+    const moduleName = toLoaderVfsModuleName(path);
     if (path.endsWith(".json")) {
       try {
         modules[moduleName] = { json: JSON.parse(content) };
@@ -187,13 +187,13 @@ async function buildModules(
         // fall through
       }
     }
-    modules[moduleName] = { js: content };
+    modules[moduleName] = { js: rewriteVfsImports(content) };
   }
   return modules;
 }
 
 function buildMainModule(code: string): string {
-  const preparedCode = maybeInjectImplicitReturn(code);
+  const preparedCode = rewriteVfsImports(maybeInjectImplicitReturn(code));
   return [
     "",
     "function formatValue(value) {",
@@ -324,6 +324,14 @@ function indentCode(code: string, spaces: number): string {
     .split("\n")
     .map((line) => `${prefix}${line}`)
     .join("\n");
+}
+
+function rewriteVfsImports(source: string): string {
+  return source.replaceAll("vfs:/", "/__vfs__/");
+}
+
+function toLoaderVfsModuleName(path: string): string {
+  return `/__vfs__${path}`;
 }
 
 function sanitizeExecuteResult(result: ExecuteResult, maxBytes: number): ExecuteResult {
