@@ -1,0 +1,334 @@
+import type { Message, SerializedThread, Thread } from "chat";
+import type { BotThreadState, RunStatus } from "../app/state";
+import { normalizeBotThreadState } from "../app/state";
+import {
+  clearPersistedWorkflowInstanceId,
+  finalizePersistedRunStop,
+  getPersistedRunStatus,
+  getPersistedThreadControls,
+  getPersistedWorkflowInstanceId,
+  requestPersistedRunStop,
+  setPersistedRunStatus,
+  setPersistedWorkflowInstanceId,
+  setThreadStateSnapshot,
+} from "../db";
+import type { ConversationWorkflowPayload, Env } from "../types";
+
+const RUN_ACTIVE_WINDOW_MS = 15_000;
+const RUN_HEARTBEAT_INTERVAL_MS = 4_000;
+
+type WorkflowThread = Thread<BotThreadState> & { toJSON(): SerializedThread };
+
+export class RunCancelledError extends Error {
+  constructor() {
+    super("Run cancelled");
+  }
+}
+
+export function createRunCoordinator(env: Pick<Env, "DRECLAW_DB" | "CONVERSATION_WORKFLOW">) {
+  return new RunCoordinator(env);
+}
+
+export class RunCoordinator {
+  constructor(private readonly env: Pick<Env, "DRECLAW_DB" | "CONVERSATION_WORKFLOW">) {}
+
+  async inspect(threadId: string, fallbackState: BotThreadState) {
+    const state = normalizeBotThreadState(fallbackState);
+    const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
+    const workflowInstanceId = await getPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
+    const runStatus = withWorkflowInstanceId(
+      (await getPersistedRunStatus(this.env.DRECLAW_DB, threadId)) ?? state.runStatus,
+      workflowInstanceId,
+    );
+    return {
+      state: {
+        ...state,
+        verbose: controls?.verbose ?? state.verbose,
+        runStatus,
+      },
+      runStatus,
+      workflowInstanceId,
+      busy: isRunBusy(runStatus),
+    };
+  }
+
+  async recoverState(threadId: string, fallbackState: BotThreadState): Promise<BotThreadState> {
+    return (await this.inspect(threadId, fallbackState)).state;
+  }
+
+  async getStatus(threadId: string, fallbackState: BotThreadState) {
+    const { runStatus, workflowInstanceId } = await this.inspect(threadId, fallbackState);
+    return {
+      runStatus,
+      workflowInstanceId,
+      busy: formatBusyState(runStatus),
+      runningFor: isRunStatusActive(runStatus) ? formatDurationSince(runStatus.startedAt) : "-",
+      lastHeartbeat: formatElapsedSince(runStatus.lastHeartbeatAt),
+    };
+  }
+
+  idleRunStatus(): RunStatus {
+    return idleRunStatus();
+  }
+
+  startRun(state: BotThreadState, workflowInstanceId?: string | null): BotThreadState {
+    const nowIso = new Date().toISOString();
+    return {
+      ...state,
+      runStatus: {
+        ...state.runStatus,
+        running: true,
+        startedAt: nowIso,
+        lastHeartbeatAt: nowIso,
+        cancelRequested: false,
+        cancelRequestedAt: null,
+        stoppedAt: null,
+        workflowInstanceId: workflowInstanceId ?? state.runStatus.workflowInstanceId ?? null,
+      },
+    };
+  }
+
+  touchHeartbeat(state: BotThreadState): BotThreadState {
+    if (!state.runStatus.running) return state;
+    return {
+      ...state,
+      runStatus: {
+        ...state.runStatus,
+        lastHeartbeatAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  finishRun(state: BotThreadState): BotThreadState {
+    return {
+      ...state,
+      runStatus: idleRunStatus(),
+    };
+  }
+
+  async persistRunState(threadId: string, state: BotThreadState): Promise<void> {
+    await setPersistedRunStatus(this.env.DRECLAW_DB, threadId, state.runStatus);
+  }
+
+  async throwIfCancelled(threadId: string): Promise<void> {
+    const status = await getPersistedRunStatus(this.env.DRECLAW_DB, threadId);
+    if (status?.cancelRequested || status?.stoppedAt) throw new RunCancelledError();
+  }
+
+  createHeartbeat(params: {
+    thread: Thread<BotThreadState>;
+    getState: () => BotThreadState;
+    setState: (state: BotThreadState) => void;
+    serializeState?: (state: BotThreadState) => BotThreadState;
+  }) {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        await this.throwIfCancelled(params.thread.id);
+      } catch (error) {
+        if (error instanceof RunCancelledError) {
+          stopped = true;
+          if (timer) clearTimeout(timer);
+          return;
+        }
+      }
+
+      try {
+        await params.thread.startTyping();
+      } catch {
+        // noop
+      }
+
+      const nextState = await this.recoverState(
+        params.thread.id,
+        this.touchHeartbeat(params.getState()),
+      );
+      params.setState(nextState);
+
+      try {
+        await params.thread.setState(params.serializeState?.(nextState) ?? nextState, {
+          replace: true,
+        });
+      } catch {
+        // noop
+      }
+
+      try {
+        await this.persistRunState(params.thread.id, nextState);
+      } catch {
+        // noop
+      }
+
+      if (!stopped) timer = setTimeout(() => void tick(), RUN_HEARTBEAT_INTERVAL_MS);
+    };
+
+    return {
+      start() {
+        if (!timer) timer = setTimeout(() => void tick(), RUN_HEARTBEAT_INTERVAL_MS);
+      },
+      stop() {
+        stopped = true;
+        if (timer) clearTimeout(timer);
+      },
+    };
+  }
+
+  async startWorkflowRun(params: {
+    thread: WorkflowThread;
+    message: Message;
+    state: BotThreadState;
+  }): Promise<string> {
+    if (!this.env.CONVERSATION_WORKFLOW) return "";
+    const workflowInstanceId = crypto.randomUUID();
+    const workflowState = this.startRun(params.state, workflowInstanceId);
+    const instance = await this.env.CONVERSATION_WORKFLOW.create({
+      id: workflowInstanceId,
+      params: {
+        thread: params.thread.toJSON(),
+        message: params.message.toJSON(),
+        state: workflowState,
+      },
+    });
+    const nextState = {
+      ...params.state,
+      runStatus: {
+        ...workflowState.runStatus,
+        workflowInstanceId: instance.id,
+      },
+    };
+    await params.thread.setState(nextState, { replace: true });
+    await this.persistRunState(params.thread.id, nextState);
+    await setPersistedWorkflowInstanceId(this.env.DRECLAW_DB, params.thread.id, instance.id);
+    return instance.id;
+  }
+
+  async requestStop(threadId: string, state: BotThreadState) {
+    const {
+      state: recoveredState,
+      runStatus,
+      workflowInstanceId,
+    } = await this.inspect(threadId, state);
+    if (!runStatus.running) {
+      return {
+        nextState: recoveredState,
+        runStatus,
+        stopped: false,
+      };
+    }
+
+    await requestPersistedRunStop(this.env.DRECLAW_DB, threadId);
+    if (workflowInstanceId && this.env.CONVERSATION_WORKFLOW) {
+      await (
+        await this.env.CONVERSATION_WORKFLOW.get(workflowInstanceId)
+      )
+        .terminate()
+        .catch(() => null);
+    }
+    await clearPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
+    const finalized = await finalizePersistedRunStop(this.env.DRECLAW_DB, threadId);
+    const nextState: BotThreadState = {
+      ...recoveredState,
+      runStatus: {
+        running: false,
+        startedAt: null,
+        lastHeartbeatAt: null,
+        cancelRequested: false,
+        cancelRequestedAt: finalized?.cancelRequestedAt ?? runStatus.cancelRequestedAt,
+        stoppedAt: finalized?.stoppedAt ?? new Date().toISOString(),
+        workflowInstanceId: null,
+      },
+    };
+    await setThreadStateSnapshot(this.env.DRECLAW_DB, threadId, nextState);
+    return {
+      nextState,
+      runStatus: nextState.runStatus,
+      stopped: true,
+    };
+  }
+
+  async clearWorkflowInstance(threadId: string): Promise<void> {
+    await clearPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
+  }
+
+  async getWorkflowStatus(threadId: string, fallbackState: BotThreadState): Promise<string | null> {
+    const { workflowInstanceId } = await this.inspect(threadId, fallbackState);
+    if (!workflowInstanceId || !this.env.CONVERSATION_WORKFLOW) return null;
+    return (await this.env.CONVERSATION_WORKFLOW.get(workflowInstanceId))
+      .status()
+      .then((value: { status: string }) => value.status)
+      .catch(() => null);
+  }
+
+  async restoreWorkflowState(params: {
+    threadId: string;
+    state: BotThreadState;
+    payloadState?: ConversationWorkflowPayload["state"];
+  }): Promise<BotThreadState> {
+    const source = params.payloadState as Parameters<typeof normalizeBotThreadState>[0];
+    return this.recoverState(params.threadId, normalizeBotThreadState(source ?? params.state));
+  }
+}
+
+export function idleRunStatus(): RunStatus {
+  return {
+    running: false,
+    startedAt: null,
+    lastHeartbeatAt: null,
+    cancelRequested: false,
+    cancelRequestedAt: null,
+    stoppedAt: null,
+    workflowInstanceId: null,
+  };
+}
+
+export function formatBusyState(runStatus: RunStatus): string {
+  if (isRunStatusActive(runStatus)) return "yes";
+  if (runStatus.running) return "stale";
+  return "no";
+}
+
+export function isRunBusy(runStatus: RunStatus): boolean {
+  return isRunStatusActive(runStatus);
+}
+
+export function isRunStatusActive(runStatus: RunStatus): boolean {
+  if (!runStatus.running) return false;
+  if (!runStatus.lastHeartbeatAt) return false;
+  const deltaMs = Date.now() - Date.parse(runStatus.lastHeartbeatAt);
+  return Number.isFinite(deltaMs) && deltaMs >= 0 && deltaMs <= RUN_ACTIVE_WINDOW_MS;
+}
+
+export function formatElapsedSince(iso: string | null): string {
+  if (!iso) return "-";
+  const deltaMs = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "-";
+  const seconds = Math.floor(deltaMs / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  return remSeconds ? `${minutes}m ${remSeconds}s ago` : `${minutes}m ago`;
+}
+
+export function formatDurationSince(iso: string | null): string {
+  if (!iso) return "-";
+  const deltaMs = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "-";
+  const seconds = Math.floor(deltaMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+}
+
+function withWorkflowInstanceId(
+  runStatus: RunStatus,
+  workflowInstanceId: string | null,
+): RunStatus {
+  return {
+    ...runStatus,
+    workflowInstanceId: workflowInstanceId ?? runStatus.workflowInstanceId ?? null,
+  };
+}

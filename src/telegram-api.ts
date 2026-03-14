@@ -1,6 +1,10 @@
 const TELEGRAM_API = "https://api.telegram.org";
 
-export async function sendTelegramTextMessage(token: string, chatId: number, text: string): Promise<void> {
+export async function sendTelegramTextMessage(
+  token: string,
+  chatId: number,
+  text: string,
+): Promise<void> {
   const response = await fetch(`${TELEGRAM_API}/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -16,7 +20,10 @@ export async function sendTelegramTextMessage(token: string, chatId: number, tex
   }
 }
 
-export async function fetchTelegramImageAsDataUrl(token: string, fileId: string): Promise<string | null> {
+export async function fetchTelegramImageAsDataUrl(
+  token: string,
+  fileId: string,
+): Promise<string | null> {
   const getFileResponse = await fetch(
     `${TELEGRAM_API}/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`,
   );

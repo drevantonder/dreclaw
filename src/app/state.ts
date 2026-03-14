@@ -30,41 +30,60 @@ export function normalizeBotThreadState(input: BotThreadState | null | undefined
     history: Array.isArray(source?.history)
       ? source.history
           .filter((entry) => entry && typeof entry === "object")
-          .map((entry): ConversationEntry => ({
-            role: entry.role === "assistant" || entry.role === "tool" ? entry.role : "user",
-            content: typeof entry.content === "string" ? entry.content : "",
-          }))
+          .map(
+            (entry): ConversationEntry => ({
+              role: entry.role === "assistant" || entry.role === "tool" ? entry.role : "user",
+              content: typeof entry.content === "string" ? entry.content : "",
+            }),
+          )
           .filter((entry) => entry.content.trim())
           .slice(-24)
       : [],
-    memoryTurns: Number.isFinite(source?.memoryTurns) ? Math.max(0, Math.trunc(source?.memoryTurns ?? 0)) : 0,
+    memoryTurns: Number.isFinite(source?.memoryTurns)
+      ? Math.max(0, Math.trunc(source?.memoryTurns ?? 0))
+      : 0,
     verbose: Boolean(source?.verbose),
     codeRuntime: normalizeCodeRuntimeState(source?.codeRuntime),
     loadedSkills: Array.isArray(source?.loadedSkills)
-      ? source.loadedSkills.filter((skill): skill is string => typeof skill === "string" && skill.trim().length > 0).slice(-12)
+      ? source.loadedSkills
+          .filter((skill): skill is string => typeof skill === "string" && skill.trim().length > 0)
+          .slice(-12)
       : [],
     runStatus: {
       running: Boolean(source?.runStatus?.running),
-      startedAt: typeof source?.runStatus?.startedAt === "string" && source.runStatus.startedAt.trim() ? source.runStatus.startedAt : null,
+      startedAt:
+        typeof source?.runStatus?.startedAt === "string" && source.runStatus.startedAt.trim()
+          ? source.runStatus.startedAt
+          : null,
       lastHeartbeatAt:
-        typeof source?.runStatus?.lastHeartbeatAt === "string" && source.runStatus.lastHeartbeatAt.trim()
+        typeof source?.runStatus?.lastHeartbeatAt === "string" &&
+        source.runStatus.lastHeartbeatAt.trim()
           ? source.runStatus.lastHeartbeatAt
           : null,
       cancelRequested: Boolean(source?.runStatus?.cancelRequested),
       cancelRequestedAt:
-        typeof source?.runStatus?.cancelRequestedAt === "string" && source.runStatus.cancelRequestedAt.trim()
+        typeof source?.runStatus?.cancelRequestedAt === "string" &&
+        source.runStatus.cancelRequestedAt.trim()
           ? source.runStatus.cancelRequestedAt
           : null,
-      stoppedAt: typeof source?.runStatus?.stoppedAt === "string" && source.runStatus.stoppedAt.trim() ? source.runStatus.stoppedAt : null,
+      stoppedAt:
+        typeof source?.runStatus?.stoppedAt === "string" && source.runStatus.stoppedAt.trim()
+          ? source.runStatus.stoppedAt
+          : null,
       workflowInstanceId:
-        typeof source?.runStatus?.workflowInstanceId === "string" && source.runStatus.workflowInstanceId.trim()
+        typeof source?.runStatus?.workflowInstanceId === "string" &&
+        source.runStatus.workflowInstanceId.trim()
           ? source.runStatus.workflowInstanceId
           : null,
     },
   };
 }
 
-export function pushHistory(state: BotThreadState, role: ConversationEntry["role"], content: string): BotThreadState {
+export function pushHistory(
+  state: BotThreadState,
+  role: ConversationEntry["role"],
+  content: string,
+): BotThreadState {
   const text = String(content ?? "").trim();
   if (!text) return state;
   return {

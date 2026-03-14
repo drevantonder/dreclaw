@@ -46,7 +46,11 @@ export function extractFacts(text: string): ExtractedFact[] {
   const facts: ExtractedFact[] = [];
   const push = (fact: ExtractedFact) => {
     if (!fact.text.trim()) return;
-    if (!facts.some((item) => item.kind === fact.kind && item.text.toLowerCase() === fact.text.toLowerCase())) {
+    if (
+      !facts.some(
+        (item) => item.kind === fact.kind && item.text.toLowerCase() === fact.text.toLowerCase(),
+      )
+    ) {
       facts.push(fact);
     }
   };

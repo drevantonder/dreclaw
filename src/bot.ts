@@ -3,19 +3,8 @@ import { Chat, type Message, type SerializedThread, type Thread } from "chat";
 import { BotRuntime } from "./app/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "./app/state";
 import { createD1StateAdapter } from "./chat-state";
-import {
-  clearPersistedWorkflowInstanceId,
-  finalizePersistedRunStop,
-  getPersistedRunStatus,
-  getPersistedThreadControls,
-  getPersistedWorkflowInstanceId,
-  getThreadStateSnapshot,
-  requestPersistedRunStop,
-  setPersistedRunStatus,
-  setPersistedThreadControls,
-  setPersistedWorkflowInstanceId,
-  setThreadStateSnapshot,
-} from "./db";
+import { getThreadStateSnapshot, setPersistedThreadControls, setThreadStateSnapshot } from "./db";
+import { createRunCoordinator } from "./run";
 import { sendTelegramTextMessage } from "./telegram-api";
 import type { Env, TelegramUpdate } from "./types";
 
@@ -39,6 +28,7 @@ export function createChat(env: Env) {
 
 export function createBot(env: Env, executionContext?: ExecutionContext) {
   const runtime = new BotRuntime(env, executionContext);
+  const runs = createRunCoordinator(env);
   const bot = createChat(env);
 
   const handleIncoming = async (
@@ -64,12 +54,12 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
 
     if (subscribe) await thread.subscribe();
 
-    let currentState = normalizeBotThreadState(await thread.state);
-    const controls = await getPersistedThreadControls(env.DRECLAW_DB, thread.id);
-    if (controls) currentState = { ...currentState, verbose: controls.verbose };
-    const runStatus =
-      (await getPersistedRunStatus(env.DRECLAW_DB, thread.id)) ?? currentState.runStatus;
-    if (isRunBusy(runStatus)) {
+    const currentState = await runs.recoverState(
+      thread.id,
+      normalizeBotThreadState(await thread.state),
+    );
+    const run = await runs.inspect(thread.id, currentState);
+    if (run.busy) {
       await thread.post("Currently busy. Not executed. Use /status or /stop.");
       return;
     }
@@ -92,40 +82,11 @@ export async function startConversationWorkflow(
   message: Message,
   state: BotThreadState,
 ): Promise<string> {
-  if (!env.CONVERSATION_WORKFLOW) return "";
-  const threadId = thread.id;
-  const startedAt = new Date().toISOString();
-  const workflowInstanceId = crypto.randomUUID();
-  const runStatus: BotThreadState["runStatus"] = {
-    running: true,
-    startedAt,
-    lastHeartbeatAt: startedAt,
-    cancelRequested: false,
-    cancelRequestedAt: null,
-    stoppedAt: null,
-    workflowInstanceId,
-  };
-  const workflowState: BotThreadState = {
-    ...state,
-    runStatus,
-  };
-  const instance = await env.CONVERSATION_WORKFLOW.create({
-    id: workflowInstanceId,
-    params: {
-      thread: (thread as Thread<BotThreadState> & { toJSON(): SerializedThread }).toJSON(),
-      message: message.toJSON(),
-      state: workflowState,
-    },
+  return createRunCoordinator(env).startWorkflowRun({
+    thread: thread as Thread<BotThreadState> & { toJSON(): SerializedThread },
+    message,
+    state,
   });
-
-  const nextState: BotThreadState = {
-    ...state,
-    runStatus: { ...runStatus, workflowInstanceId: instance.id },
-  };
-  await thread.setState(nextState, { replace: true });
-  await setPersistedRunStatus(env.DRECLAW_DB, threadId, nextState.runStatus);
-  await setPersistedWorkflowInstanceId(env.DRECLAW_DB, threadId, instance.id);
-  return instance.id;
 }
 
 export async function maybeHandleAsyncTelegramCommand(
@@ -164,15 +125,13 @@ async function handleAsyncCommand(params: {
   const { env, runtime, threadId, chatId, telegramUserId, text } = params;
   const [command, value] = text.split(/\s+/, 2);
   const lowered = command.toLowerCase();
-  const state = normalizeBotThreadState(
+  const runs = createRunCoordinator(env);
+  const snapshot = normalizeBotThreadState(
     await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId),
   );
-  const controls = await getPersistedThreadControls(env.DRECLAW_DB, threadId);
-  const controlledState = controls ? { ...state, verbose: controls.verbose } : state;
-  const workflowInstanceId = await getPersistedWorkflowInstanceId(env.DRECLAW_DB, threadId);
-  const runStatus =
-    (await getPersistedRunStatus(env.DRECLAW_DB, threadId)) ?? controlledState.runStatus;
-  const busy = isRunBusy(runStatus);
+  const controlledState = await runs.recoverState(threadId, snapshot);
+  const status = await runs.getStatus(threadId, controlledState);
+  const busy = status.busy === "yes";
 
   if (lowered === "/help") {
     await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, runtime.help());
@@ -180,25 +139,14 @@ async function handleAsyncCommand(params: {
   }
 
   if (lowered === "/status") {
-    const workflowStatus =
-      workflowInstanceId && env.CONVERSATION_WORKFLOW
-        ? await (
-            await env.CONVERSATION_WORKFLOW.get(workflowInstanceId)
-          )
-            .status()
-            .then((value: { status: string }) => value.status)
-            .catch(() => null)
-        : null;
+    const workflowStatus = await runs.getWorkflowStatus(threadId, controlledState);
     await sendTelegramTextMessage(
       env.TELEGRAM_BOT_TOKEN,
       chatId,
       [
         await runtime.status(threadId, {
           ...controlledState,
-          runStatus: {
-            ...runStatus,
-            workflowInstanceId,
-          },
+          runStatus: status.runStatus,
         }),
         workflowStatus ? `workflow: ${workflowStatus}` : null,
       ]
@@ -209,28 +157,11 @@ async function handleAsyncCommand(params: {
   }
 
   if (lowered === "/stop") {
-    if (!runStatus.running) {
+    if (!status.runStatus.running) {
       await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Nothing is running.");
       return;
     }
-    await requestPersistedRunStop(env.DRECLAW_DB, threadId);
-    if (workflowInstanceId && env.CONVERSATION_WORKFLOW) {
-      await (await env.CONVERSATION_WORKFLOW.get(workflowInstanceId)).terminate().catch(() => null);
-    }
-    await clearPersistedWorkflowInstanceId(env.DRECLAW_DB, threadId);
-    const finalized = await finalizePersistedRunStop(env.DRECLAW_DB, threadId);
-    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, {
-      ...controlledState,
-      runStatus: {
-        running: false,
-        startedAt: null,
-        lastHeartbeatAt: null,
-        cancelRequested: false,
-        cancelRequestedAt: finalized?.cancelRequestedAt ?? runStatus.cancelRequestedAt,
-        stoppedAt: finalized?.stoppedAt ?? new Date().toISOString(),
-        workflowInstanceId: null,
-      },
-    });
+    await runs.requestStop(threadId, controlledState);
     await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Stopped.");
     return;
   }
@@ -272,7 +203,7 @@ async function handleAsyncCommand(params: {
       await sendTelegramTextMessage(
         env.TELEGRAM_BOT_TOKEN,
         chatId,
-        `verbose: ${state.verbose ? "on" : "off"}\nusage: /verbose on|off`,
+        `verbose: ${snapshot.verbose ? "on" : "off"}\nusage: /verbose on|off`,
       );
       return;
     }
@@ -322,12 +253,6 @@ function getTelegramUserChatId(raw: unknown, threadId: string): number {
   const fromThread = Number(threadId.split(":").at(-1));
   if (Number.isFinite(fromThread)) return fromThread;
   throw new Error("Missing Telegram chat id");
-}
-
-function isRunBusy(runStatus: BotThreadState["runStatus"]): boolean {
-  if (!runStatus.running || !runStatus.lastHeartbeatAt) return false;
-  const deltaMs = Date.now() - Date.parse(runStatus.lastHeartbeatAt);
-  return Number.isFinite(deltaMs) && deltaMs >= 0 && deltaMs <= 15_000;
 }
 
 function busyMessage(command: string): string {

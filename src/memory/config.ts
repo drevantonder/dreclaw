@@ -17,7 +17,11 @@ export function getMemoryConfig(env: Env): MemoryConfig {
   const enabled = parseBooleanFlag(env.MEMORY_ENABLED, true);
   const config: MemoryConfig = {
     enabled,
-    retentionDays: parsePositiveInt(env.MEMORY_RETENTION_DAYS, DEFAULT_RETENTION_DAYS, "MEMORY_RETENTION_DAYS"),
+    retentionDays: parsePositiveInt(
+      env.MEMORY_RETENTION_DAYS,
+      DEFAULT_RETENTION_DAYS,
+      "MEMORY_RETENTION_DAYS",
+    ),
     maxInjectTokens: parsePositiveInt(
       env.MEMORY_MAX_INJECT_TOKENS,
       DEFAULT_MAX_INJECT_TOKENS,
@@ -43,8 +47,10 @@ export function getMemoryConfig(env: Env): MemoryConfig {
 function parseBooleanFlag(raw: string | undefined, defaultValue: boolean): boolean {
   if (raw === undefined || raw === null || raw.trim() === "") return defaultValue;
   const normalized = raw.trim().toLowerCase();
-  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true;
-  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") return false;
+  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on")
+    return true;
+  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off")
+    return false;
   throw new Error(`Invalid boolean value: ${raw}`);
 }
 

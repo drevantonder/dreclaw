@@ -24,10 +24,15 @@ export class FakeD1 {
     };
   }
 
-  private async all(sql: string, _args: unknown[]): Promise<{ results: Array<Record<string, unknown>> }> {
+  private async all(
+    sql: string,
+    _args: unknown[],
+  ): Promise<{ results: Array<Record<string, unknown>> }> {
     if (sql.includes("FROM vfs_entries")) {
       return {
-        results: [...this.vfsEntries.values()].filter((row) => row.deleted_at === null || row.deleted_at === undefined),
+        results: [...this.vfsEntries.values()].filter(
+          (row) => row.deleted_at === null || row.deleted_at === undefined,
+        ),
       };
     }
     return { results: [] };
@@ -72,22 +77,35 @@ export class FakeD1 {
       return { meta: { changes: this.oauthTokens.delete(String(args[0])) ? 1 : 0 } };
     }
     if (sql.includes("INSERT INTO chat_state_subscriptions")) {
-      this.subscriptions.set(String(args[0]), { thread_id: String(args[0]), created_at: String(args[1]), updated_at: String(args[2]) });
+      this.subscriptions.set(String(args[0]), {
+        thread_id: String(args[0]),
+        created_at: String(args[1]),
+        updated_at: String(args[2]),
+      });
       return { meta: { changes: 1 } };
     }
     if (sql.includes("DELETE FROM chat_state_subscriptions")) {
       return { meta: { changes: this.subscriptions.delete(String(args[0])) ? 1 : 0 } };
     }
-    if (sql.includes("INSERT INTO chat_state_kv") || sql.includes("INSERT OR IGNORE INTO chat_state_kv")) {
+    if (
+      sql.includes("INSERT INTO chat_state_kv") ||
+      sql.includes("INSERT OR IGNORE INTO chat_state_kv")
+    ) {
       const key = String(args[0]);
       const exists = this.kv.has(key);
       if (sql.includes("INSERT OR IGNORE") && exists) return { meta: { changes: 0 } };
-      this.kv.set(key, { key, value_json: String(args[1]), expires_at: args[2] == null ? null : String(args[2]), updated_at: String(args[3]) });
+      this.kv.set(key, {
+        key,
+        value_json: String(args[1]),
+        expires_at: args[2] == null ? null : String(args[2]),
+        updated_at: String(args[3]),
+      });
       return { meta: { changes: 1 } };
     }
     if (sql.includes("DELETE FROM chat_state_kv WHERE key = ? AND expires_at")) {
       const row = this.kv.get(String(args[0]));
-      if (!row || row.expires_at == null || String(row.expires_at) > String(args[1])) return { meta: { changes: 0 } };
+      if (!row || row.expires_at == null || String(row.expires_at) > String(args[1]))
+        return { meta: { changes: 0 } };
       this.kv.delete(String(args[0]));
       return { meta: { changes: 1 } };
     }
@@ -103,12 +121,23 @@ export class FakeD1 {
     if (sql.includes("INSERT OR IGNORE INTO chat_state_locks")) {
       const key = String(args[0]);
       if (this.locks.has(key)) return { meta: { changes: 0 } };
-      this.locks.set(key, { thread_id: key, token: String(args[1]), expires_at: String(args[2]), created_at: String(args[3]), updated_at: String(args[4]) });
+      this.locks.set(key, {
+        thread_id: key,
+        token: String(args[1]),
+        expires_at: String(args[2]),
+        created_at: String(args[3]),
+        updated_at: String(args[4]),
+      });
       return { meta: { changes: 1 } };
     }
     if (sql.includes("UPDATE chat_state_locks SET expires_at")) {
       const row = this.locks.get(String(args[2]));
-      if (!row || String(row.token) !== String(args[3]) || String(row.expires_at) <= String(args[4])) return { meta: { changes: 0 } };
+      if (
+        !row ||
+        String(row.token) !== String(args[3]) ||
+        String(row.expires_at) <= String(args[4])
+      )
+        return { meta: { changes: 0 } };
       row.expires_at = String(args[0]);
       row.updated_at = String(args[1]);
       return { meta: { changes: 1 } };
@@ -132,7 +161,11 @@ export class FakeD1 {
       });
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE path = ?")) {
+    if (
+      sql.includes(
+        "UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE path = ?",
+      )
+    ) {
       const row = this.vfsEntries.get(String(args[2]));
       if (!row || row.deleted_at) return { meta: { changes: 0 } };
       row.deleted_at = String(args[0]);
@@ -140,7 +173,11 @@ export class FakeD1 {
       row.version = Number(row.version ?? 0) + 1;
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE deleted_at IS NULL")) {
+    if (
+      sql.includes(
+        "UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE deleted_at IS NULL",
+      )
+    ) {
       let changes = 0;
       for (const row of this.vfsEntries.values()) {
         if (row.deleted_at) continue;
@@ -160,17 +197,27 @@ export class FakeD1 {
   }
 
   private async first(sql: string, args: unknown[]): Promise<Record<string, unknown> | null> {
-    if (sql.includes("FROM google_oauth_states")) return this.oauthStates.get(String(args[0])) ?? null;
-    if (sql.includes("FROM google_oauth_tokens")) return this.oauthTokens.get(String(args[0])) ?? null;
-    if (sql.includes("FROM chat_state_subscriptions")) return this.subscriptions.get(String(args[0])) ?? null;
-    if (sql.includes("SELECT value_json FROM chat_state_kv")) return this.kv.get(String(args[0])) ?? null;
-    if (sql.includes("SELECT path, content, size_bytes, sha256, version, created_at, updated_at FROM vfs_entries WHERE path = ?")) {
+    if (sql.includes("FROM google_oauth_states"))
+      return this.oauthStates.get(String(args[0])) ?? null;
+    if (sql.includes("FROM google_oauth_tokens"))
+      return this.oauthTokens.get(String(args[0])) ?? null;
+    if (sql.includes("FROM chat_state_subscriptions"))
+      return this.subscriptions.get(String(args[0])) ?? null;
+    if (sql.includes("SELECT value_json FROM chat_state_kv"))
+      return this.kv.get(String(args[0])) ?? null;
+    if (
+      sql.includes(
+        "SELECT path, content, size_bytes, sha256, version, created_at, updated_at FROM vfs_entries WHERE path = ?",
+      )
+    ) {
       const row = this.vfsEntries.get(String(args[0]));
       return !row || row.deleted_at ? null : row;
     }
     if (sql.includes("SELECT revision FROM vfs_meta")) return { revision: this.vfsRevision };
     if (sql.includes("SELECT COUNT(*) AS count FROM vfs_entries")) {
-      return { count: [...this.vfsEntries.values()].filter((row) => row.deleted_at == null).length };
+      return {
+        count: [...this.vfsEntries.values()].filter((row) => row.deleted_at == null).length,
+      };
     }
     return null;
   }

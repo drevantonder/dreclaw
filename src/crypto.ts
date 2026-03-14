@@ -18,7 +18,10 @@ export function decodeEncryptionKey(raw: string): Uint8Array {
   return bytes;
 }
 
-export async function encryptSecret(plaintext: string, keyBytes: Uint8Array): Promise<EncryptedSecret> {
+export async function encryptSecret(
+  plaintext: string,
+  keyBytes: Uint8Array,
+): Promise<EncryptedSecret> {
   const plain = String(plaintext ?? "");
   if (!plain) {
     throw new Error("plaintext is required");
@@ -37,7 +40,10 @@ export async function encryptSecret(plaintext: string, keyBytes: Uint8Array): Pr
   };
 }
 
-export async function decryptSecret(payload: EncryptedSecret, keyBytes: Uint8Array): Promise<string> {
+export async function decryptSecret(
+  payload: EncryptedSecret,
+  keyBytes: Uint8Array,
+): Promise<string> {
   const key = await importAesKey(keyBytes, ["decrypt"]);
   const nonce = base64ToBytes(payload.nonce);
   if (nonce.byteLength !== AES_GCM_NONCE_BYTES) {
@@ -56,7 +62,13 @@ async function importAesKey(keyBytes: Uint8Array, usages: KeyUsage[]): Promise<C
   if (keyBytes.byteLength !== AES_GCM_KEY_BYTES) {
     throw new Error("encryption key must be 32 bytes");
   }
-  return crypto.subtle.importKey("raw", toOwnedBytes(keyBytes), { name: "AES-GCM", length: 256 }, false, usages);
+  return crypto.subtle.importKey(
+    "raw",
+    toOwnedBytes(keyBytes),
+    { name: "AES-GCM", length: 256 },
+    false,
+    usages,
+  );
 }
 
 function toOwnedBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {

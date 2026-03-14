@@ -1,10 +1,10 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { deleteVfsEntry, getVfsEntry, listVfsEntries, putVfsEntry } from "./db";
 import { decodeEncryptionKey, decryptSecret } from "./crypto";
 import { getGoogleOAuthToken } from "./db";
 import { getGoogleOAuthConfig, refreshGoogleAccessToken } from "./google-oauth";
 import { createMemoryRuntime } from "./memory";
 import type { Env } from "./types";
+import { createWorkspace } from "./workspace";
 
 const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const DISCOVERY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -99,65 +99,27 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
     return (this.ctx.props ?? {}) as ExecuteHostProps;
   }
 
-  private normalizeVfsPath(path: string): string {
-    const input = String(path ?? "").trim();
-    if (!input) throw new Error("VFS_INVALID_PATH: path is required");
-    const value = input.startsWith("vfs:/") ? input.slice(4) : input;
-    if (!value.startsWith("/")) throw new Error("VFS_INVALID_PATH: path must be absolute");
-    const normalized: string[] = [];
-    for (const part of value.split("/")) {
-      if (!part || part === ".") continue;
-      if (part === "..") {
-        if (!normalized.length) throw new Error("VFS_INVALID_PATH: path traversal is not allowed");
-        normalized.pop();
-        continue;
-      }
-      if (part.includes("\\")) throw new Error("VFS_INVALID_PATH: invalid separator");
-      normalized.push(part);
-    }
-    return `/${normalized.join("/")}`;
-  }
-
   private async readVfsContent(path: string): Promise<string | null> {
-    const entry = await getVfsEntry(this.env.DRECLAW_DB, this.normalizeVfsPath(path));
-    return entry?.content ?? null;
+    return this.workspace().readFile(path);
   }
 
   private async writeVfsContent(path: string, content: string, overwrite: boolean) {
-    const normalized = this.normalizeVfsPath(path);
-    if (normalized.startsWith("/skills/system/"))
-      return { ok: false as const, code: "VFS_READ_ONLY" as const };
-    const sizeBytes = new TextEncoder().encode(content).byteLength;
-    if (sizeBytes > this.props().limits.vfsMaxFileBytes) {
-      return { ok: false as const, code: "VFS_LIMIT_EXCEEDED" as const };
-    }
-    const nowIso = new Date().toISOString();
-    const result = await putVfsEntry(this.env.DRECLAW_DB, {
-      path: normalized,
-      content,
-      sizeBytes,
-      sha256: await sha256Hex(content),
-      nowIso,
-      overwrite,
-    });
-    return result.ok
-      ? { ok: true as const, path: normalized }
-      : { ok: false as const, code: result.code };
+    return this.workspace().writeFile(path, content, overwrite);
   }
 
   private async listVfsPaths(prefix: string): Promise<string[]> {
-    const rows = await listVfsEntries(
-      this.env.DRECLAW_DB,
-      this.normalizeVfsPath(prefix || "/"),
-      Math.max(1, this.props().limits.vfsListLimit),
-    );
-    return rows.map((row) => row.path);
+    return this.workspace().listFiles(prefix || "/", Math.max(1, this.props().limits.vfsListLimit));
   }
 
   private async deleteVfsContent(path: string): Promise<boolean> {
-    const normalized = this.normalizeVfsPath(path);
-    if (normalized.startsWith("/skills/system/")) return false;
-    return deleteVfsEntry(this.env.DRECLAW_DB, normalized, new Date().toISOString());
+    return this.workspace().removeFile(path);
+  }
+
+  private workspace() {
+    return createWorkspace({
+      db: this.env.DRECLAW_DB,
+      maxFileBytes: this.props().limits.vfsMaxFileBytes,
+    });
   }
 
   private async executeMemoryFindPayload(payload: unknown): Promise<unknown> {
@@ -242,7 +204,7 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
         for (const item of value) url.searchParams.append(key, String(item));
         continue;
       }
-      url.searchParams.set(key, String(value));
+      url.searchParams.set(key, formatQueryValue(value));
     }
     const response = await fetch(url.toString(), {
       method: methodInfo.httpMethod,
@@ -316,8 +278,8 @@ function flattenGoogleDiscoveryMethods(
         const method = methodValue as Record<string, unknown>;
         out[`${nextPrefix}.${methodName}`] = {
           methodPath: `${nextPrefix}.${methodName}`,
-          httpMethod: String(method.httpMethod ?? "GET"),
-          path: String(method.path ?? ""),
+          httpMethod: typeof method.httpMethod === "string" ? method.httpMethod : "GET",
+          path: typeof method.path === "string" ? method.path : "",
           parameters: (method.parameters as Record<string, unknown> | undefined) ?? {},
           request: method.request,
           response: method.response,
@@ -346,7 +308,7 @@ function expandGooglePathTemplate(template: string, params: Record<string, unkno
     if (value === undefined || value === null)
       throw new Error(`GOOGLE_PATH_PARAM_MISSING: ${name}`);
     delete params[name];
-    const source = String(value);
+    const source = formatQueryValue(value);
     if (plus === "+")
       return source
         .split("/")
@@ -391,10 +353,13 @@ function collectHeaders(headers: Headers): Array<[string, string]> {
   return values;
 }
 
-async function sha256Hex(input: string): Promise<string> {
-  const bytes = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+function formatQueryValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return `${value}`;
+  }
+  if (typeof value === "symbol") return value.description ?? "Symbol";
+  return JSON.stringify(value);
 }
 
 function encodeBase64(input: ArrayBuffer): string {

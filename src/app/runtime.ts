@@ -6,16 +6,8 @@ import {
   clearAllVfsEntries,
   createGoogleOAuthState,
   deleteGoogleOAuthToken,
-  deleteVfsEntry,
   getGoogleOAuthToken,
-  getPersistedRunStatus,
   getPersistedThreadControls,
-  getPersistedWorkflowInstanceId,
-  getVfsEntry,
-  getVfsRevision,
-  listVfsEntries,
-  putVfsEntry,
-  setPersistedRunStatus,
 } from "../db";
 import {
   executeCode,
@@ -33,18 +25,11 @@ import {
 import { createZenModel } from "../llm/zen";
 import { createWorkersModel } from "../llm/workers";
 import { createMemoryRuntime } from "../memory";
+import { RunCancelledError, createRunCoordinator, idleRunStatus } from "../run";
 import { fetchTelegramImageAsDataUrl } from "../telegram-api";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, type Env } from "../types";
-import {
-  getBuiltinSkillByName,
-  getBuiltinSkillByPath,
-  isSystemSkillName,
-  listBuiltinSkills,
-  parseSkillDocument,
-  renderLoadedSkill,
-  renderSkillCatalog,
-  type SkillRecord,
-} from "./skills";
+import { createWorkspace } from "../workspace";
+import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "./skills";
 import { normalizeBotThreadState, pushHistory, type BotThreadState } from "./state";
 
 type RuntimeConfig =
@@ -64,17 +49,20 @@ const GOOGLE_OAUTH_DEFAULT_PRINCIPAL = "default";
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 25_000;
-const RUN_HEARTBEAT_INTERVAL_MS = 4_000;
 const SYSTEM_PROMPT =
   "Be concise. Solve tasks with runtime-native tools and sandboxed execute scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape.";
 
 export class BotRuntime {
+  private readonly runs: ReturnType<typeof createRunCoordinator>;
+
   constructor(
     private readonly env: Env,
     private readonly executionContext?: ExecutionContext & {
       exports?: Record<string, (options?: { props?: unknown }) => ExecuteHostBinding>;
     },
-  ) {}
+  ) {
+    this.runs = createRunCoordinator(env);
+  }
 
   async status(threadId: string, state: BotThreadState): Promise<string> {
     const runtime = this.getRuntimeConfig();
@@ -83,21 +71,18 @@ export class BotRuntime {
       await getGoogleOAuthToken(this.env.DRECLAW_DB, GOOGLE_OAUTH_DEFAULT_PRINCIPAL),
     );
     const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
-    const workflowInstanceId = await getPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
-    const persistedRunStatus =
-      (await getPersistedRunStatus(this.env.DRECLAW_DB, threadId)) ?? state.runStatus;
-    const busy = formatBusyState(persistedRunStatus);
+    const run = await this.runs.getStatus(threadId, state);
     return [
       `model: ${runtime.model}`,
       `provider: ${runtime.provider}`,
       `memory: ${memory.enabled ? "on" : "off"}`,
       `google: ${googleLinked ? "linked" : "not linked"}`,
-      `busy: ${busy}`,
-      `cancel_requested: ${persistedRunStatus.cancelRequested ? "yes" : "no"}`,
-      `stopped: ${persistedRunStatus.stoppedAt ? "yes" : "no"}`,
-      `workflow_id: ${workflowInstanceId ?? persistedRunStatus.workflowInstanceId ?? "-"}`,
-      `running_for: ${isRunStatusActive(persistedRunStatus) ? formatDurationSince(persistedRunStatus.startedAt) : "-"}`,
-      `last_heartbeat: ${formatElapsedSince(persistedRunStatus.lastHeartbeatAt)}`,
+      `busy: ${run.busy}`,
+      `cancel_requested: ${run.runStatus.cancelRequested ? "yes" : "no"}`,
+      `stopped: ${run.runStatus.stoppedAt ? "yes" : "no"}`,
+      `workflow_id: ${run.workflowInstanceId ?? run.runStatus.workflowInstanceId ?? "-"}`,
+      `running_for: ${run.runningFor}`,
+      `last_heartbeat: ${run.lastHeartbeat}`,
       `verbose: ${(controls?.verbose ?? state.verbose) ? "on" : "off"}`,
       `history: ${state.history.length}`,
       `thread: ${threadId}`,
@@ -225,10 +210,10 @@ export class BotRuntime {
     });
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
     const messages = buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks);
-    state = markRunStarted(state);
-    state = await this.mergeAsyncControls(thread.id, state);
+    state = this.runs.startRun(state);
+    state = await this.runs.recoverState(thread.id, state);
     await thread.setState(stripEphemeralState(state), { replace: true });
-    await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+    await this.runs.persistRunState(thread.id, state);
 
     const agent = new ToolLoopAgent({
       model,
@@ -246,13 +231,14 @@ export class BotRuntime {
       }),
     });
 
-    const heartbeat = this.createRunHeartbeat(
+    const heartbeat = this.runs.createHeartbeat({
       thread,
-      () => state,
-      (nextState) => {
+      getState: () => state,
+      setState: (nextState) => {
         state = nextState;
       },
-    );
+      serializeState: stripEphemeralState,
+    });
 
     try {
       await thread.startTyping();
@@ -264,10 +250,10 @@ export class BotRuntime {
     let finalText = "";
     const runTimeoutMs = params.runTimeoutMs ?? getRunTimeoutMs(userText);
     try {
-      await this.throwIfCancelled(thread.id);
+      await this.runs.throwIfCancelled(thread.id);
       finalText = await withTimeout(
         (async () => {
-          await this.throwIfCancelled(thread.id);
+          await this.runs.throwIfCancelled(thread.id);
           const stream = await withTimeout(
             agent.stream({ messages }),
             runTimeoutMs,
@@ -278,7 +264,7 @@ export class BotRuntime {
             runTimeoutMs,
             "Assistant response timed out",
           );
-          await this.throwIfCancelled(thread.id);
+          await this.runs.throwIfCancelled(thread.id);
           const response = await withTimeout(
             Promise.resolve(stream.response),
             runTimeoutMs,
@@ -289,7 +275,7 @@ export class BotRuntime {
             runTimeoutMs,
             "Assistant text timed out",
           );
-          await this.throwIfCancelled(thread.id);
+          await this.runs.throwIfCancelled(thread.id);
           return (
             (typeof generatedText === "string" ? generatedText : "").trim() ||
             extractAssistantText(response.messages as ModelMessage[])
@@ -301,20 +287,23 @@ export class BotRuntime {
     } catch (error) {
       if (isRunCancelledError(error)) {
         heartbeat.stop();
-        const persisted = await getPersistedRunStatus(this.env.DRECLAW_DB, thread.id);
-        state = markRunFinished(state);
-        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, {
-          ...state.runStatus,
-          stoppedAt: persisted?.stoppedAt ?? new Date().toISOString(),
+        const persisted = (await this.runs.getStatus(thread.id, state)).runStatus;
+        state = this.runs.finishRun(state);
+        await this.runs.persistRunState(thread.id, {
+          ...state,
+          runStatus: {
+            ...state.runStatus,
+            stoppedAt: persisted.stoppedAt ?? new Date().toISOString(),
+          },
         });
-        if (!persisted?.stoppedAt) {
+        if (!persisted.stoppedAt) {
           try {
             await thread.post("Stopped.");
           } catch {
             // noop
           }
         }
-        state = await this.mergeAsyncControls(thread.id, state);
+        state = await this.runs.recoverState(thread.id, state);
         return stripEphemeralState(state);
       }
       finalText = await this.recoverTimedOutRun({
@@ -331,11 +320,11 @@ export class BotRuntime {
       for (const trace of toolTraces) {
         state = pushHistory(state, "tool", renderToolTranscript(trace));
       }
-      state = markRunFinished(state);
+      state = this.runs.finishRun(state);
       state = pushHistory(state, "assistant", finalText);
       heartbeat.stop();
-      await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
-      state = await this.mergeAsyncControls(thread.id, state);
+      await this.runs.persistRunState(thread.id, state);
+      state = await this.runs.recoverState(thread.id, state);
       return stripEphemeralState(state);
     }
 
@@ -344,10 +333,10 @@ export class BotRuntime {
       state = pushHistory(state, "tool", renderToolTranscript(trace));
     }
     if (finalText) state = pushHistory(state, "assistant", finalText);
-    state = markRunFinished(state);
+    state = this.runs.finishRun(state);
     heartbeat.stop();
-    await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
-    state = await this.mergeAsyncControls(thread.id, state);
+    await this.runs.persistRunState(thread.id, state);
+    state = await this.runs.recoverState(thread.id, state);
 
     await this.persistMemoryTurn({
       chatId,
@@ -401,13 +390,14 @@ export class BotRuntime {
       }),
     });
 
-    const heartbeat = this.createRunHeartbeat(
+    const heartbeat = this.runs.createHeartbeat({
       thread,
-      () => state,
-      (nextState) => {
+      getState: () => state,
+      setState: (nextState) => {
         state = nextState;
       },
-    );
+      serializeState: stripEphemeralState,
+    });
 
     try {
       await thread.startTyping();
@@ -417,7 +407,7 @@ export class BotRuntime {
     heartbeat.start();
 
     try {
-      await this.throwIfCancelled(thread.id);
+      await this.runs.throwIfCancelled(thread.id);
       const stream = await withTimeout(
         agent.stream({
           messages: inputMessages,
@@ -439,7 +429,7 @@ export class BotRuntime {
         runTimeoutMs,
         "Assistant text timed out",
       );
-      await this.throwIfCancelled(thread.id);
+      await this.runs.throwIfCancelled(thread.id);
       const responseMessages = isModelMessageArray(response.messages) ? response.messages : [];
       const nextMessages = mergeContinuationMessages(inputMessages, responseMessages);
 
@@ -460,15 +450,15 @@ export class BotRuntime {
         state = pushHistory(state, "assistant", assistantText);
       }
       if (!stepHadToolCalls) {
-        state = markRunFinished(state);
-        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+        state = this.runs.finishRun(state);
+        await this.runs.persistRunState(thread.id, state);
       }
       return { state: stripEphemeralState(state), nextMessages, shouldContinue: stepHadToolCalls };
     } catch (error) {
       heartbeat.stop();
       if (isRunCancelledError(error)) {
-        state = markRunFinished(state);
-        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, state.runStatus);
+        state = this.runs.finishRun(state);
+        await this.runs.persistRunState(thread.id, state);
         return {
           state: stripEphemeralState(state),
           nextMessages: inputMessages,
@@ -506,74 +496,6 @@ export class BotRuntime {
     return buildAgentMessages(promptSections.join("\n\n"), params.userText, params.imageBlocks);
   }
 
-  private createRunHeartbeat(
-    thread: Thread<BotThreadState>,
-    getState: () => BotThreadState,
-    setState: (state: BotThreadState) => void,
-  ) {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const tick = async () => {
-      if (stopped) return;
-      try {
-        await this.throwIfCancelled(thread.id);
-      } catch (error) {
-        if (isRunCancelledError(error)) {
-          stopped = true;
-          if (timer) clearTimeout(timer);
-          return;
-        }
-      }
-      try {
-        await thread.startTyping();
-      } catch {
-        // noop
-      }
-      const nextState = touchRunHeartbeat(getState());
-      const mergedState = await this.mergeAsyncControls(thread.id, nextState);
-      setState(mergedState);
-      try {
-        await thread.setState(stripEphemeralState(mergedState), { replace: true });
-      } catch {
-        // noop
-      }
-      try {
-        await setPersistedRunStatus(this.env.DRECLAW_DB, thread.id, mergedState.runStatus);
-      } catch {
-        // noop
-      }
-      if (!stopped) timer = setTimeout(() => void tick(), RUN_HEARTBEAT_INTERVAL_MS);
-    };
-
-    return {
-      start() {
-        if (!timer) timer = setTimeout(() => void tick(), RUN_HEARTBEAT_INTERVAL_MS);
-      },
-      stop() {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-      },
-    };
-  }
-
-  private async throwIfCancelled(threadId: string): Promise<void> {
-    const status = await getPersistedRunStatus(this.env.DRECLAW_DB, threadId);
-    if (status?.cancelRequested || status?.stoppedAt) throw new RunCancelledError();
-  }
-
-  private async mergeAsyncControls(
-    threadId: string,
-    state: BotThreadState,
-  ): Promise<BotThreadState> {
-    const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
-    if (!controls) return state;
-    return {
-      ...state,
-      verbose: controls.verbose,
-    };
-  }
-
   private createAgentTools(params: {
     chatId: number;
     threadId: string;
@@ -588,11 +510,11 @@ export class BotRuntime {
       execute: () => Promise<T>,
       writes?: string[],
     ) => {
-      await this.throwIfCancelled(params.threadId);
+      await this.runs.throwIfCancelled(params.threadId);
       await params.tracer.onToolStart(name, args);
       try {
         const result = await execute();
-        await this.throwIfCancelled(params.threadId);
+        await this.runs.throwIfCancelled(params.threadId);
         const trace: ToolTrace = { name, args, ok: true, output: result, writes };
         params.toolTraces.push(trace);
         await params.tracer.onToolResult(trace);
@@ -653,19 +575,20 @@ export class BotRuntime {
                 case "list": {
                   const prefix = input.prefix || "/";
                   const limit = input.limit ?? 50;
-                  const paths = await this.listVfsPaths(prefix, limit);
-                  return { prefix: this.normalizeVfsPath(prefix), paths };
+                  const workspace = this.getWorkspace();
+                  const paths = await workspace.listFiles(prefix, limit);
+                  return { prefix: workspace.normalizePath(prefix), paths };
                 }
                 case "read": {
-                  const content = await this.readVfsContent(input.path);
+                  const content = await this.getWorkspace().readFile(input.path);
                   if (content === null) throw new Error(`ENOENT: ${input.path}`);
                   return {
-                    path: this.normalizeVfsPath(input.path),
+                    path: this.getWorkspace().normalizePath(input.path),
                     ...sliceVfsContent(content, input.startLine, input.endLine),
                   };
                 }
                 case "write": {
-                  const result = await this.writeVfsContent(
+                  const result = await this.writeWorkspaceFile(
                     input.path,
                     input.content,
                     input.mode === "overwrite",
@@ -680,7 +603,7 @@ export class BotRuntime {
                   };
                 }
                 case "patch": {
-                  const current = await this.readVfsContent(input.path);
+                  const current = await this.getWorkspace().readFile(input.path);
                   if (current === null) throw new Error(`ENOENT: ${input.path}`);
                   const patched = patchVfsContent(
                     current,
@@ -688,7 +611,7 @@ export class BotRuntime {
                     input.replace,
                     Boolean(input.replaceAll),
                   );
-                  const result = await this.writeVfsContent(
+                  const result = await this.writeWorkspaceFile(
                     input.path,
                     patched.content,
                     true,
@@ -702,9 +625,9 @@ export class BotRuntime {
                   };
                 }
                 case "delete": {
-                  const deleted = await this.deleteVfsContent(input.path, writes);
+                  const deleted = await this.deleteWorkspaceFile(input.path, writes);
                   if (!deleted) throw new Error(`ENOENT: ${input.path}`);
-                  return { path: this.normalizeVfsPath(input.path), deleted: true };
+                  return { path: this.getWorkspace().normalizePath(input.path), deleted: true };
                 }
               }
             },
@@ -716,14 +639,16 @@ export class BotRuntime {
         description: "List available built-in and user skills by name and description",
         inputSchema: z.object({}),
         execute: async () =>
-          runTool("list_skills", {}, async () => ({ skills: await this.listSkills() })),
+          runTool("list_skills", {}, async () => ({
+            skills: await this.getWorkspace().listSkills(),
+          })),
       }),
       load_skill: tool({
         description: "Load full instructions for a named skill for the current turn",
         inputSchema: z.object({ name: z.string() }),
         execute: async (input) =>
           runTool("load_skill", input as Record<string, unknown>, async () => {
-            const skill = await this.getSkillByName(input.name);
+            const skill = await this.getWorkspace().loadSkill(input.name);
             if (!skill) throw new Error(`SKILL_NOT_FOUND: ${input.name}`);
             return {
               name: skill.name,
@@ -827,138 +752,54 @@ export class BotRuntime {
   }
 
   private async listSkills(): Promise<Array<Pick<SkillRecord, "name" | "description" | "scope">>> {
-    const builtin = listBuiltinSkills().map(({ name, description, scope }) => ({
-      name,
-      description,
-      scope,
-    }));
-    const userRows = await listVfsEntries(this.env.DRECLAW_DB, "/skills/user/", 200);
-    const userSkills = userRows
-      .filter((row) => row.path.endsWith("/SKILL.md"))
-      .map((row) => {
-        try {
-          const parsed = parseSkillDocument(row.content);
-          return { name: parsed.name, description: parsed.description, scope: "user" as const };
-        } catch {
-          return null;
-        }
-      })
-      .filter((skill): skill is { name: string; description: string; scope: "user" } =>
-        Boolean(skill),
-      )
-      .filter((skill) => !isSystemSkillName(skill.name));
-    return [...builtin, ...userSkills].sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  private async getSkillByName(name: string): Promise<SkillRecord | null> {
-    const normalized = String(name ?? "").trim();
-    if (!normalized) return null;
-    const builtin = getBuiltinSkillByName(normalized);
-    if (builtin) return builtin;
-    const row = await getVfsEntry(this.env.DRECLAW_DB, `/skills/user/${normalized}/SKILL.md`);
-    if (!row) return null;
-    const parsed = parseSkillDocument(row.content);
-    if (parsed.name !== normalized)
-      throw new Error(`SKILL_INVALID: name mismatch for ${normalized}`);
-    return {
-      name: parsed.name,
-      description: parsed.description,
-      scope: "user",
-      path: row.path,
-      content: row.content,
-    };
+    return this.getWorkspace().listSkills();
   }
 
   private async getLoadedSkills(names: string[]): Promise<SkillRecord[]> {
     const loaded: SkillRecord[] = [];
     for (const name of names) {
-      const skill = await this.getSkillByName(name);
+      const skill = await this.getWorkspace().loadSkill(name);
       if (skill) loaded.push(skill);
     }
     return loaded;
   }
 
-  private normalizeVfsPath(path: string): string {
-    return normalizeSessionVfsPath(path);
-  }
-
-  private async readVfsContent(path: string): Promise<string | null> {
-    const normalized = this.normalizeVfsPath(path);
-    const builtin = getBuiltinSkillByPath(normalized);
-    if (builtin) return builtin.content;
-    const row = await getVfsEntry(this.env.DRECLAW_DB, normalized);
-    return row ? row.content : null;
-  }
-
-  private async listVfsPaths(prefix: string, limit: number): Promise<string[]> {
-    const normalized = this.normalizeVfsPath(prefix || "/");
-    const rows = await listVfsEntries(this.env.DRECLAW_DB, normalized, Math.max(1, limit));
-    const dynamic = listBuiltinSkills()
-      .map((item) => item.path)
-      .filter((path) => path.startsWith(normalized));
-    return [...new Set([...dynamic, ...rows.map((item) => item.path)])]
-      .sort()
-      .slice(0, Math.max(1, limit));
-  }
-
-  private async writeVfsContent(
+  private async writeWorkspaceFile(
     path: string,
     content: string,
     overwrite: boolean,
     writes?: string[],
   ) {
-    const normalized = this.normalizeVfsPath(path);
-    if (normalized.startsWith("/skills/system/"))
-      return { ok: false as const, code: "VFS_READ_ONLY" as const };
-    if (normalized.startsWith("/skills/user/")) this.validateUserSkillWrite(normalized, content);
+    const workspace = this.getWorkspace();
+    const normalized = workspace.normalizePath(path);
     writes?.push(`write ${normalized}`);
-    const config = this.getCodeExecutionConfig();
-    const sizeBytes = new TextEncoder().encode(content).byteLength;
-    if (sizeBytes > config.limits.vfsMaxFileBytes)
-      return { ok: false as const, code: "VFS_LIMIT_EXCEEDED" as const };
-    const result = await putVfsEntry(this.env.DRECLAW_DB, {
-      path: normalized,
-      content,
-      sizeBytes,
-      sha256: await sha256Hex(content),
-      nowIso: new Date().toISOString(),
-      overwrite,
-    });
-    return result.ok
-      ? { ok: true as const, path: normalized }
-      : { ok: false as const, code: result.code };
+    return workspace.writeFile(normalized, content, overwrite);
   }
 
-  private async deleteVfsContent(path: string, writes?: string[]): Promise<boolean> {
-    const normalized = this.normalizeVfsPath(path);
-    if (normalized.startsWith("/skills/system/")) return false;
+  private async deleteWorkspaceFile(path: string, writes?: string[]): Promise<boolean> {
+    const workspace = this.getWorkspace();
+    const normalized = workspace.normalizePath(path);
     writes?.push(`remove ${normalized}`);
-    return deleteVfsEntry(this.env.DRECLAW_DB, normalized, new Date().toISOString());
+    return workspace.removeFile(normalized);
   }
 
   private createVfsAdapter(writes: string[]) {
+    const workspace = this.getWorkspace();
     return {
-      readFile: async (path: string) => this.readVfsContent(path),
+      readFile: async (path: string) => workspace.readFile(path),
       writeFile: async (path: string, content: string, overwrite: boolean) =>
-        this.writeVfsContent(path, content, overwrite, writes),
-      listFiles: async (prefix: string, limit: number) => this.listVfsPaths(prefix, limit),
-      removeFile: async (path: string) => this.deleteVfsContent(path, writes),
-      revision: async () => getVfsRevision(this.env.DRECLAW_DB),
+        this.writeWorkspaceFile(path, content, overwrite, writes),
+      listFiles: async (prefix: string, limit: number) => workspace.listFiles(prefix, limit),
+      removeFile: async (path: string) => this.deleteWorkspaceFile(path, writes),
+      revision: async () => workspace.getRevision(),
     };
   }
 
-  private validateUserSkillWrite(path: string, content: string): void {
-    if (!path.startsWith("/skills/user/")) return;
-    const parts = path.split("/").filter(Boolean);
-    if (parts.length >= 3 && parts[2] && isSystemSkillName(parts[2])) {
-      throw new Error(`SKILL_RESERVED: ${parts[2]}`);
-    }
-    if (!path.endsWith("/SKILL.md")) return;
-    const parsed = parseSkillDocument(content);
-    const dirName = parts[2] ?? "";
-    if (parsed.name !== dirName)
-      throw new Error(`SKILL_INVALID: name must match directory (${dirName})`);
-    if (isSystemSkillName(parsed.name)) throw new Error(`SKILL_RESERVED: ${parsed.name}`);
+  private getWorkspace() {
+    return createWorkspace({
+      db: this.env.DRECLAW_DB,
+      maxFileBytes: this.getCodeExecutionConfig().limits.vfsMaxFileBytes,
+    });
   }
 
   private getCodeExecutionConfig() {
@@ -1097,12 +938,6 @@ class VerboseTracer {
   }
 }
 
-class RunCancelledError extends Error {
-  constructor() {
-    super("Run cancelled");
-  }
-}
-
 function isRunCancelledError(error: unknown): error is RunCancelledError {
   return error instanceof RunCancelledError;
 }
@@ -1203,52 +1038,6 @@ function stripEphemeralState(state: BotThreadState): BotThreadState {
   };
 }
 
-function idleRunStatus() {
-  return {
-    running: false,
-    startedAt: null,
-    lastHeartbeatAt: null,
-    cancelRequested: false,
-    cancelRequestedAt: null,
-    stoppedAt: null,
-    workflowInstanceId: null,
-  };
-}
-
-function markRunStarted(state: BotThreadState): BotThreadState {
-  const nowIso = new Date().toISOString();
-  return {
-    ...state,
-    runStatus: {
-      ...state.runStatus,
-      running: true,
-      startedAt: nowIso,
-      lastHeartbeatAt: nowIso,
-      cancelRequested: false,
-      cancelRequestedAt: null,
-      stoppedAt: null,
-    },
-  };
-}
-
-function touchRunHeartbeat(state: BotThreadState): BotThreadState {
-  if (!state.runStatus.running) return state;
-  return {
-    ...state,
-    runStatus: {
-      ...state.runStatus,
-      lastHeartbeatAt: new Date().toISOString(),
-    },
-  };
-}
-
-function markRunFinished(state: BotThreadState): BotThreadState {
-  return {
-    ...state,
-    runStatus: idleRunStatus(),
-  };
-}
-
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -1284,41 +1073,6 @@ function getRunTimeoutMs(userText: string): number {
     return 22_000;
   }
   return DEFAULT_RUN_TIMEOUT_MS;
-}
-
-function formatElapsedSince(iso: string | null): string {
-  if (!iso) return "-";
-  const deltaMs = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "-";
-  const seconds = Math.floor(deltaMs / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  const remSeconds = seconds % 60;
-  return remSeconds ? `${minutes}m ${remSeconds}s ago` : `${minutes}m ago`;
-}
-
-function formatBusyState(runStatus: BotThreadState["runStatus"]): string {
-  if (isRunStatusActive(runStatus)) return "yes";
-  if (runStatus.running) return "stale";
-  return "no";
-}
-
-function isRunStatusActive(runStatus: BotThreadState["runStatus"]): boolean {
-  if (!runStatus.running) return false;
-  if (!runStatus.lastHeartbeatAt) return false;
-  const deltaMs = Date.now() - Date.parse(runStatus.lastHeartbeatAt);
-  return Number.isFinite(deltaMs) && deltaMs >= 0 && deltaMs <= 15_000;
-}
-
-function formatDurationSince(iso: string | null): string {
-  if (!iso) return "-";
-  const deltaMs = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "-";
-  const seconds = Math.floor(deltaMs / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remSeconds = seconds % 60;
-  return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
 }
 
 function inferImplicitSkillNames(userText: string): string[] {
@@ -1383,10 +1137,13 @@ function renderToolTranscript(trace: ToolTrace): string {
 }
 
 function renderTraceStart(name: string, args: Record<string, unknown>): string {
-  if (name === "load_skill") return `Tool: ${name}\nname: ${String(args.name ?? "")}`;
+  if (name === "load_skill") {
+    const skillName = typeof args.name === "string" ? args.name : serializeUnknown(args.name);
+    return `Tool: ${name}\nname: ${skillName}`;
+  }
   if (name === "list_skills") return `Tool: ${name}`;
   if (name === "vfs") {
-    const action = String(args.action ?? "");
+    const action = typeof args.action === "string" ? args.action : serializeUnknown(args.action);
     const path = typeof args.path === "string" ? `\npath: ${args.path}` : "";
     const prefix = typeof args.prefix === "string" ? `\nprefix: ${args.prefix}` : "";
     return `Tool: ${name}\naction: ${action}${path}${prefix}`;
@@ -1422,9 +1179,9 @@ function renderTraceResult(trace: ToolTrace): string {
   lines[0] = `Tool result: ${trace.name} ${executeOk ? "ok" : "failed"}`;
   if (trace.ok && trace.name === "load_skill" && trace.output && typeof trace.output === "object") {
     const output = trace.output as Record<string, unknown>;
-    lines.push(`loaded: ${String(output.name ?? "")}`);
-    lines.push(`scope: ${String(output.scope ?? "")}`);
-    lines.push(`path: ${String(output.path ?? "")}`);
+    lines.push(`loaded: ${serializeUnknown(output.name)}`);
+    lines.push(`scope: ${serializeUnknown(output.scope)}`);
+    lines.push(`path: ${serializeUnknown(output.path)}`);
     return lines.join("\n");
   }
   if (
@@ -1474,31 +1231,6 @@ function getTelegramChatId(threadId: string, rawMessage: unknown): number {
   throw new Error("Unable to resolve Telegram chat id");
 }
 
-function normalizeSessionVfsPath(rawPath: string): string {
-  const input = String(rawPath ?? "").trim();
-  if (!input) throw new Error("VFS_INVALID_PATH: path is required");
-  const path = input.startsWith("vfs:/") ? input.slice(4) : input;
-  if (!path.startsWith("/")) throw new Error("VFS_INVALID_PATH: path must be absolute");
-  const normalized: string[] = [];
-  for (const part of path.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (!normalized.length) throw new Error("VFS_INVALID_PATH: path traversal is not allowed");
-      normalized.pop();
-      continue;
-    }
-    if (part.includes("\\")) throw new Error("VFS_INVALID_PATH: invalid separator");
-    normalized.push(part);
-  }
-  return `/${normalized.join("/")}`;
-}
-
-async function sha256Hex(input: string): Promise<string> {
-  const bytes = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
-}
-
 function truncateForLog(input: string, max: number): string {
   const compact = String(input ?? "")
     .replace(/\s+/g, " ")
@@ -1510,19 +1242,27 @@ function truncateForLog(input: string, max: number): string {
 function compactErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
+  if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
+    return `${error}`;
+  }
+  if (typeof error === "symbol") return error.description ?? "Symbol";
   try {
     return JSON.stringify(error);
   } catch {
-    return String(error ?? "unknown error");
+    return error == null ? "unknown error" : Object.prototype.toString.call(error);
   }
 }
 
 function serializeUnknown(value: unknown): string {
   if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return `${value}`;
+  }
+  if (typeof value === "symbol") return value.description ?? "Symbol";
   try {
     return JSON.stringify(value);
   } catch {
-    return String(value ?? "");
+    return value == null ? "" : Object.prototype.toString.call(value);
   }
 }
 

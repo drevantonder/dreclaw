@@ -21,7 +21,11 @@ function extractEmbeddingVector(payload: unknown): number[] {
   if (Array.isArray(row.data) && row.data.length > 0) {
     const first = row.data[0];
     if (Array.isArray(first)) return first.map((value) => Number(value)).filter(Number.isFinite);
-    if (first && typeof first === "object" && Array.isArray((first as Record<string, unknown>).embedding)) {
+    if (
+      first &&
+      typeof first === "object" &&
+      Array.isArray((first as Record<string, unknown>).embedding)
+    ) {
       return ((first as Record<string, unknown>).embedding as unknown[])
         .map((value) => Number(value))
         .filter(Number.isFinite);

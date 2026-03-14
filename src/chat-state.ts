@@ -26,7 +26,10 @@ class D1StateAdapter implements StateAdapter {
   }
 
   async unsubscribe(threadId: string): Promise<void> {
-    await this.db.prepare("DELETE FROM chat_state_subscriptions WHERE thread_id = ?").bind(threadId).run();
+    await this.db
+      .prepare("DELETE FROM chat_state_subscriptions WHERE thread_id = ?")
+      .bind(threadId)
+      .run();
   }
 
   async isSubscribed(threadId: string): Promise<boolean> {
@@ -63,7 +66,9 @@ class D1StateAdapter implements StateAdapter {
     const nowIso = now();
     const expiresAt = ttlMs ? new Date(Date.now() + ttlMs).toISOString() : null;
     const result = await this.db
-      .prepare("INSERT OR IGNORE INTO chat_state_kv (key, value_json, expires_at, updated_at) VALUES (?, ?, ?, ?)")
+      .prepare(
+        "INSERT OR IGNORE INTO chat_state_kv (key, value_json, expires_at, updated_at) VALUES (?, ?, ?, ?)",
+      )
       .bind(key, JSON.stringify(value), expiresAt, nowIso)
       .run();
     return Boolean(result.meta.changes && result.meta.changes > 0);
@@ -117,7 +122,9 @@ class D1StateAdapter implements StateAdapter {
 
   private async deleteExpiredKv(key: string): Promise<void> {
     await this.db
-      .prepare("DELETE FROM chat_state_kv WHERE key = ? AND expires_at IS NOT NULL AND expires_at <= ?")
+      .prepare(
+        "DELETE FROM chat_state_kv WHERE key = ? AND expires_at IS NOT NULL AND expires_at <= ?",
+      )
       .bind(key, now())
       .run();
   }

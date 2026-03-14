@@ -3,16 +3,18 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import type { ModelMessage } from "ai";
 import { BotRuntime } from "./app/runtime";
 import type { BotThreadState } from "./app/state";
-import { normalizeBotThreadState } from "./app/state";
 import { createChat } from "./bot";
-import { clearPersistedWorkflowInstanceId } from "./db";
+import { createRunCoordinator } from "./run";
 import type { ConversationWorkflowPayload, Env } from "./types";
 
 export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWorkflowPayload> {
   async run(event: WorkflowEvent<ConversationWorkflowPayload>, step: WorkflowStep): Promise<void> {
-    let state = normalizeBotThreadState(
-      event.payload.state as Parameters<typeof normalizeBotThreadState>[0],
-    );
+    const runs = createRunCoordinator(this.env);
+    let state = await runs.restoreWorkflowState({
+      threadId: event.payload.thread.id,
+      state: event.payload.state as BotThreadState,
+      payloadState: event.payload.state,
+    });
     let messages: unknown[] | undefined;
     let shouldContinue = true;
 
@@ -46,11 +48,11 @@ export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWo
         shouldContinue: boolean;
       };
 
-      state = normalizeBotThreadState(
-        JSON.parse(String(result.stateJson ?? "{}")) as Parameters<
-          typeof normalizeBotThreadState
-        >[0],
-      );
+      state = await runs.restoreWorkflowState({
+        threadId: event.payload.thread.id,
+        state,
+        payloadState: JSON.parse(String(result.stateJson ?? "{}")),
+      });
       messages = JSON.parse(String(result.nextMessagesJson ?? "[]")) as unknown[];
       shouldContinue = Boolean(result.shouldContinue);
     }
@@ -59,6 +61,6 @@ export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWo
     void chat;
     const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
     await thread.setState(state as unknown as Record<string, unknown>, { replace: true });
-    await clearPersistedWorkflowInstanceId(this.env.DRECLAW_DB, thread.id);
+    await runs.clearWorkflowInstance(thread.id);
   }
 }

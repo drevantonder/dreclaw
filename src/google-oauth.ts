@@ -107,7 +107,9 @@ export async function exchangeGoogleOAuthCode(
 
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
-    const description = String(payload.error_description ?? payload.error ?? "token exchange failed");
+    const description = String(
+      payload.error_description ?? payload.error ?? "token exchange failed",
+    );
     throw new Error(`Google OAuth token exchange failed: ${description}`);
   }
 
@@ -148,7 +150,9 @@ export async function refreshGoogleAccessToken(
 
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
-    const description = String(payload.error_description ?? payload.error ?? "token refresh failed");
+    const description = String(
+      payload.error_description ?? payload.error ?? "token refresh failed",
+    );
     throw new Error(`Google OAuth token refresh failed: ${description}`);
   }
 
@@ -165,7 +169,11 @@ export async function refreshGoogleAccessToken(
   };
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

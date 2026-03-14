@@ -5,10 +5,17 @@ export interface VectorMatch {
   score: number;
 }
 
-export async function upsertFactVector(env: Env, factId: string, chatId: number, values: number[]): Promise<void> {
+export async function upsertFactVector(
+  env: Env,
+  factId: string,
+  chatId: number,
+  values: number[],
+): Promise<void> {
   if (!env.VECTORIZE_MEMORY) throw new Error("VECTORIZE_MEMORY binding missing");
   const index = env.VECTORIZE_MEMORY as unknown as {
-    upsert: (items: Array<{ id: string; values: number[]; metadata?: Record<string, unknown> }>) => Promise<unknown>;
+    upsert: (
+      items: Array<{ id: string; values: number[]; metadata?: Record<string, unknown> }>,
+    ) => Promise<unknown>;
   };
   await index.upsert([
     {

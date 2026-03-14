@@ -16,7 +16,11 @@ export interface BashExecutionConfig {
 
 export interface BashVfsAdapter {
   readFile: (path: string) => Promise<string | null>;
-  writeFile: (path: string, content: string, overwrite: boolean) => Promise<{ ok: true } | { ok: false; code: string }>;
+  writeFile: (
+    path: string,
+    content: string,
+    overwrite: boolean,
+  ) => Promise<{ ok: true } | { ok: false; code: string }>;
   listFiles: (prefix: string, limit: number) => Promise<string[]>;
   removeFile: (path: string) => Promise<boolean>;
 }
@@ -40,7 +44,9 @@ type BashHostContext = {
 };
 
 const DISABLED_COMMANDS = new Set(["sqlite3"]);
-const ENABLED_COMMANDS = getCommandNames().filter((name) => !DISABLED_COMMANDS.has(name)) as CommandName[];
+const ENABLED_COMMANDS = getCommandNames().filter(
+  (name) => !DISABLED_COMMANDS.has(name),
+) as CommandName[];
 
 let systemPathCache: Promise<Set<string>> | null = null;
 
@@ -79,7 +85,14 @@ export async function executeBash(payload: BashInput, ctx: BashHostContext): Pro
       exitCode: result.exitCode,
       cwd: String(result.env.PWD || cwd),
       writes: sync.writes,
-      ...(ok ? {} : { error: { code: sync.errors.length ? "BASH_PERSIST_FAILED" : "BASH_EXIT_NONZERO", message: stderr || `Command exited with ${result.exitCode}` } }),
+      ...(ok
+        ? {}
+        : {
+            error: {
+              code: sync.errors.length ? "BASH_PERSIST_FAILED" : "BASH_EXIT_NONZERO",
+              message: stderr || `Command exited with ${result.exitCode}`,
+            },
+          }),
     };
   } catch (error) {
     const message = compactErrorMessage(error);
@@ -95,7 +108,10 @@ export async function executeBash(payload: BashInput, ctx: BashHostContext): Pro
   }
 }
 
-async function loadInitialFiles(vfs: BashVfsAdapter, limit: number): Promise<Record<string, string>> {
+async function loadInitialFiles(
+  vfs: BashVfsAdapter,
+  limit: number,
+): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   const paths = await vfs.listFiles("/", limit);
   for (const path of paths) {
