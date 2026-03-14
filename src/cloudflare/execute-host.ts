@@ -1,8 +1,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { createGoogleModule } from "./google";
-import { createMemoryRuntime } from "./memory";
-import type { Env } from "./types";
-import { createWorkspace } from "./workspace";
+import { createGoogleModule } from "../google";
+import { createMemoryRuntime } from "../memory";
+import type { Env } from "../types";
+import { createWorkspace } from "../workspace";
 
 export interface ExecuteHostProps {
   chatId: number;

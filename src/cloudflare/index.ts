@@ -1,9 +1,9 @@
+import { handleTelegramWebhookRequest } from "../telegram/webhook";
+import type { Env } from "../types";
 import { ConversationWorkflow } from "./conversation-workflow";
 import { ExecuteHost } from "./execute-host";
 import { handleGoogleOAuthCallbackRequest } from "./http/controllers/google-oauth-callback";
 import { handleHealthRequest } from "./http/controllers/health";
-import { handleTelegramWebhookRequest } from "./telegram/webhook";
-import type { Env } from "./types";
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {

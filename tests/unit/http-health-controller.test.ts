@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { handleHealthRequest } from "../../src/http/controllers/health";
+import { handleHealthRequest } from "../../src/cloudflare/http/controllers/health";
 
 describe("handleHealthRequest", () => {
   it("returns the service health payload", async () => {

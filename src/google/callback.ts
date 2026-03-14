@@ -1,7 +1,7 @@
 import { decodeEncryptionKey, encryptSecret } from "../crypto";
 import { sendTelegramTextMessage } from "../telegram/api";
 import type { Env } from "../types";
-import { htmlResponse } from "../http/response";
+import { htmlResponse } from "../cloudflare/http/response";
 import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig } from "./config";
 import { exchangeGoogleOAuthCode } from "./oauth";
 import { getGoogleOAuthState, markGoogleOAuthStateUsed, upsertGoogleOAuthToken } from "./repo";

@@ -10,7 +10,7 @@ vi.mock("../../src/google", () => ({
   createGoogleModule: mocks.createGoogleModule,
 }));
 
-import { handleGoogleOAuthCallbackRequest } from "../../src/http/controllers/google-oauth-callback";
+import { handleGoogleOAuthCallbackRequest } from "../../src/cloudflare/http/controllers/google-oauth-callback";
 
 describe("handleGoogleOAuthCallbackRequest", () => {
   beforeEach(() => {

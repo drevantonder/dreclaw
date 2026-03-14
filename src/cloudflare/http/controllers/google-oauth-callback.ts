@@ -1,5 +1,5 @@
-import { createGoogleModule } from "../../google";
-import type { Env } from "../../types";
+import { createGoogleModule } from "../../../google";
+import type { Env } from "../../../types";
 
 export async function handleGoogleOAuthCallbackRequest(
   request: Request,

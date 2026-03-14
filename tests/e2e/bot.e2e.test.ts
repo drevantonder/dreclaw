@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import worker from "../../src/index";
+import worker from "../../src/cloudflare/index";
 import { createEnv } from "../helpers/fakes";
 
 const app = worker as unknown as {

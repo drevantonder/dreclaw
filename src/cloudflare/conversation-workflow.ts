@@ -1,12 +1,12 @@
 import { Message as ChatMessage, ThreadImpl } from "chat";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { ModelMessage } from "ai";
-import { BotRuntime } from "./app/runtime";
-import type { BotThreadState } from "./app/state";
-import { createChat } from "./telegram/gateway";
-import { getTelegramUserChatId, loadTelegramImageBlocks } from "./telegram/message";
-import { createRunCoordinator } from "./run";
-import type { ConversationWorkflowPayload, Env } from "./types";
+import { BotRuntime } from "../app/runtime";
+import type { BotThreadState } from "../app/state";
+import { createRunCoordinator } from "../run";
+import { createChat } from "../telegram/gateway";
+import { getTelegramUserChatId, loadTelegramImageBlocks } from "../telegram/message";
+import type { ConversationWorkflowPayload, Env } from "../types";
 
 export class ConversationWorkflow extends WorkflowEntrypoint<Env, ConversationWorkflowPayload> {
   async run(event: WorkflowEvent<ConversationWorkflowPayload>, step: WorkflowStep): Promise<void> {
