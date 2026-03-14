@@ -169,16 +169,21 @@ async function buildModules(
   code: string,
   ctx: HostContext,
 ): Promise<Record<string, { js: string } | { json: unknown }>> {
+  const paths = ctx.vfs ? await ctx.vfs.listFiles("/", ctx.config.limits.vfsMaxFiles) : [];
+  const vfsSpecifiers = new Map(
+    paths
+      .filter((path) => /\.(?:[cm]?js|json)$/i.test(path))
+      .map((path) => [path, toLoaderVfsModuleName(path)]),
+  );
   const modules: Record<string, { js: string } | { json: unknown }> = {
-    "main.js": { js: buildMainModule(code) },
+    "main.js": { js: buildMainModule(code, vfsSpecifiers) },
   };
   if (!ctx.vfs) return modules;
-  const paths = await ctx.vfs.listFiles("/", ctx.config.limits.vfsMaxFiles);
   for (const path of paths) {
     if (!/\.(?:[cm]?js|json)$/i.test(path)) continue;
     const content = await ctx.vfs.readFile(path);
     if (content === null) continue;
-    const moduleName = toLoaderVfsModuleName(path);
+    const moduleName = vfsSpecifiers.get(path) ?? toLoaderVfsModuleName(path);
     if (path.endsWith(".json")) {
       try {
         modules[moduleName] = { json: JSON.parse(content) };
@@ -187,13 +192,13 @@ async function buildModules(
         // fall through
       }
     }
-    modules[moduleName] = { js: rewriteVfsImports(content) };
+    modules[moduleName] = { js: rewriteVfsImports(content, vfsSpecifiers) };
   }
   return modules;
 }
 
-function buildMainModule(code: string): string {
-  const preparedCode = rewriteVfsImports(maybeInjectImplicitReturn(code));
+function buildMainModule(code: string, vfsSpecifiers: Map<string, string>): string {
+  const preparedCode = rewriteVfsImports(maybeInjectImplicitReturn(code), vfsSpecifiers);
   return [
     "",
     "function formatValue(value) {",
@@ -326,12 +331,16 @@ function indentCode(code: string, spaces: number): string {
     .join("\n");
 }
 
-function rewriteVfsImports(source: string): string {
-  return source.replaceAll("vfs:/", "/__vfs__/");
+function rewriteVfsImports(source: string, vfsSpecifiers: Map<string, string>): string {
+  let next = source;
+  for (const [path, specifier] of vfsSpecifiers.entries()) {
+    next = next.replaceAll(`vfs:${path}`, specifier);
+  }
+  return next;
 }
 
 function toLoaderVfsModuleName(path: string): string {
-  return `/__vfs__${path}`;
+  return `vfs_${path.replace(/[^a-zA-Z0-9]+/g, "_")}`;
 }
 
 function sanitizeExecuteResult(result: ExecuteResult, maxBytes: number): ExecuteResult {
