@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { buildRuntimeDeps } from "../app/deps";
 import { createMemoryRuntime } from "../core/memory";
-import { createAgendaService, type AgendaUpdateInput } from "../core/agenda";
+import { getRemindersPlugin, type ReminderUpdateInput } from "../plugins/reminders";
 import type { Env } from "./env";
 import { createWorkspace } from "../core/vfs";
 
@@ -27,8 +27,8 @@ type ExecuteHostCall =
   | { action: "memory.find"; payload: unknown }
   | { action: "memory.save"; payload: unknown }
   | { action: "memory.remove"; payload: unknown }
-  | { action: "agenda.query"; payload: { filter?: unknown; limit?: number } }
-  | { action: "agenda.update"; payload: AgendaUpdateInput }
+  | { action: "reminders.query"; payload: { filter?: unknown; limit?: number } }
+  | { action: "reminders.update"; payload: ReminderUpdateInput }
   | {
       action: "fetch";
       request: {
@@ -66,10 +66,10 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
         return this.executeMemorySavePayload(input.payload);
       case "memory.remove":
         return this.executeMemoryRemovePayload(input.payload);
-      case "agenda.query":
-        return this.executeAgendaQuery(input.payload);
-      case "agenda.update":
-        return this.executeAgendaUpdate(input.payload);
+      case "reminders.query":
+        return this.executeRemindersQuery(input.payload);
+      case "reminders.update":
+        return this.executeRemindersUpdate(input.payload);
       case "fetch":
         return this.executeFetch(input.request);
       case "google.execute":
@@ -134,19 +134,18 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
     });
   }
 
-  private agenda() {
-    return createAgendaService(this.env.DRECLAW_DB, {
-      timezone: this.env.USER_TIMEZONE,
-      primaryChatId: this.props().chatId,
-    });
+  private reminders() {
+    return getRemindersPlugin(buildRuntimeDeps(this.env).pluginRegistry.getByName("reminders"));
   }
 
-  private async executeAgendaQuery(payload: { filter?: unknown; limit?: number }) {
-    return { items: await this.agenda().query(payload.filter as never, payload.limit ?? 20) };
+  private async executeRemindersQuery(payload: { filter?: unknown; limit?: number }) {
+    return {
+      items: await this.reminders().queryReminders(payload.filter as never, payload.limit ?? 20),
+    };
   }
 
-  private async executeAgendaUpdate(payload: AgendaUpdateInput): Promise<unknown> {
-    return this.agenda().update(payload, { sourceChatId: this.props().chatId });
+  private async executeRemindersUpdate(payload: ReminderUpdateInput): Promise<unknown> {
+    return this.reminders().updateReminder(payload, { sourceChatId: this.props().chatId });
   }
 
   private async executeFetch(request: {

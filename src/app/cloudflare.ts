@@ -5,14 +5,14 @@ import { sendTelegramTypingAction } from "../chat-adapters/telegram/api";
 import { handleTelegramWebhookRequest as handleTelegramWebhookAdapter } from "../chat-adapters/telegram/webhook";
 import { getTelegramUserChatId, loadTelegramImageBlocks } from "../chat-adapters/telegram/message";
 import type { Env } from "../cloudflare/env";
-import { createAgendaService } from "../core/agenda";
+import { getRemindersPlugin } from "../plugins/reminders";
 import { handlePluginOAuthCallback, getHealthPayload } from "../core/http";
 import { getThreadStateSnapshot, setThreadStateSnapshot } from "../core/loop/repo";
 import { BotRuntime } from "../core/loop/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "../core/loop/state";
 import type {
   ConversationWorkflowPayload,
-  ProactiveWakeWorkflowPayload,
+  ReminderWakeWorkflowPayload,
 } from "../core/loop/workflow";
 import { htmlResponse } from "../cloudflare/http/response";
 import { buildRuntimeDeps } from "./deps";
@@ -107,23 +107,26 @@ export async function runConversationWorkflow(
   }
 }
 
-export async function runProactiveWakeWorkflow(
+export async function runRemindersWakeWorkflow(
   env: Env,
   ctx: ExecutionContext,
-  event: WorkflowEvent<ProactiveWakeWorkflowPayload>,
+  event: WorkflowEvent<ReminderWakeWorkflowPayload>,
   step: WorkflowStep,
 ): Promise<void> {
-  const agenda = createAgendaService(env.DRECLAW_DB, { timezone: env.USER_TIMEZONE });
-  const item = await agenda.getItem(event.payload.agendaItemId);
+  const runtimeDeps = buildRuntimeDeps(env);
+  const reminders = getRemindersPlugin(runtimeDeps.pluginRegistry.getByName("reminders"));
+  const item = await reminders.getReminder(event.payload.reminderId);
   if (!item || item.claimToken !== event.payload.claimToken) return;
-  const profile = await agenda.ensureProfile({ primaryChatId: item.sourceChatId ?? null });
+  const profile = await reminders.ensureReminderProfile({
+    primaryChatId: item.sourceChatId ?? null,
+  });
   const chatId = item.sourceChatId ?? profile.primaryChatId;
   if (!chatId) {
-    const runId = await agenda.openWakeRun({
-      agendaItemId: item.id,
+    const runId = await reminders.openReminderWakeRun({
+      reminderId: item.id,
       scheduledFor: item.nextWakeAt ?? new Date().toISOString(),
     });
-    await agenda.finalizeWake({
+    await reminders.finalizeReminderWake({
       itemId: item.id,
       claimToken: event.payload.claimToken,
       runId,
@@ -135,14 +138,14 @@ export async function runProactiveWakeWorkflow(
     return;
   }
   const threadId = `telegram:${chatId}`;
-  const runId = await agenda.openWakeRun({
-    agendaItemId: item.id,
+  const runId = await reminders.openReminderWakeRun({
+    reminderId: item.id,
     scheduledFor: item.nextWakeAt ?? new Date().toISOString(),
   });
-  const recentWakeRuns = await agenda.listRecentWakeRuns(item.id, 5);
+  const recentWakeRuns = await reminders.listRecentReminderWakeRuns(item.id, 5);
   try {
     const result = await step.do("run-proactive-wake", async () => {
-      const runtime = new BotRuntime(buildRuntimeDeps(env), ctx as never);
+      const runtime = new BotRuntime(runtimeDeps, ctx as never);
       const state = normalizeBotThreadState(await getThreadStateSnapshot(env.DRECLAW_DB, threadId));
       return runtime.runProactiveWake({
         threadId,
@@ -164,7 +167,7 @@ export async function runProactiveWakeWorkflow(
         },
       ]);
     }
-    await agenda.finalizeWake({
+    await reminders.finalizeReminderWake({
       itemId: item.id,
       claimToken: event.payload.claimToken,
       runId,
@@ -173,7 +176,7 @@ export async function runProactiveWakeWorkflow(
       summary: result.summary,
     });
   } catch (error) {
-    await agenda.finalizeWake({
+    await reminders.finalizeReminderWake({
       itemId: item.id,
       claimToken: event.payload.claimToken,
       runId,
@@ -226,4 +229,9 @@ function getWorkflowBurstMs(
 function parsePositiveMs(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export async function handleScheduled(env: Env): Promise<void> {
+  const runtimeDeps = buildRuntimeDeps(env);
+  await runtimeDeps.pluginRegistry.runScheduled({ nowIso: new Date().toISOString() });
 }

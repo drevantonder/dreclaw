@@ -34,9 +34,9 @@ binding = "CONVERSATION_WORKFLOW"
 class_name = "ConversationWorkflow"
 
 [[workflows]]
-name = "dreclaw-proactive-wake"
-binding = "PROACTIVE_WAKE_WORKFLOW"
-class_name = "ProactiveWakeWorkflow"
+name = "dreclaw-reminders-wake"
+binding = "REMINDERS_WAKE_WORKFLOW"
+class_name = "RemindersWakeWorkflow"
 
 [limits]
 cpu_ms = 300_000

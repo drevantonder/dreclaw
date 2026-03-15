@@ -9,7 +9,7 @@ import {
   normalizeCodeRuntimeState,
   type ExecuteHostBinding,
 } from "../tools/code-exec";
-import { createAgendaService, type AssistantAgendaItem } from "../agenda";
+import { getRemindersPlugin, type Reminder } from "../../plugins/reminders";
 import { executeBash } from "../tools/bash";
 import { createMemoryRuntime } from "../memory";
 import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../skills";
@@ -59,7 +59,7 @@ const scheduleSchema = z.discriminatedUnion("type", [
   }),
 ]);
 const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and sandboxed execute scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape. Use agenda tools to track follow-ups, recurring responsibilities, and commitments you should wake for later.";
+  "Be concise. Solve tasks with runtime-native tools and sandboxed execute scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape. Use reminders tools to track follow-ups, recurring responsibilities, and commitments you should wake for later.";
 
 export class BotRuntime {
   private readonly runs: ReturnType<typeof createRunCoordinator>;
@@ -275,7 +275,7 @@ export class BotRuntime {
     threadId: string;
     chatId: number;
     state: BotThreadState;
-    item: AssistantAgendaItem;
+    item: Reminder;
     recentWakeSummaries: string[];
   }): Promise<{ state: BotThreadState; messageText: string | null; summary: string }> {
     let state = normalizeBotThreadState(params.state);
@@ -286,11 +286,11 @@ export class BotRuntime {
     const promptSections = [
       SYSTEM_PROMPT,
       [
-        "You are waking proactively on your own agenda.",
-        "You woke because an internal agenda item became due.",
+        "You are waking proactively on your own reminders.",
+        "You woke because an internal reminder became due.",
         `If no user-facing message is needed after any background work, reply exactly with ${PROACTIVE_NO_MESSAGE}.`,
         "If a message is useful, make it concise and action-oriented.",
-        "Keep your agenda tidy by updating, rescheduling, snoozing, or completing items.",
+        "Keep your reminders tidy by updating, rescheduling, snoozing, or completing items.",
       ].join(" "),
       `Current date/time (UTC): ${new Date().toISOString()}`,
     ];
@@ -304,7 +304,7 @@ export class BotRuntime {
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
     const memoryContext = await this.getMemoryRuntime().renderContext({
       chatId: params.chatId,
-      query: `${params.item.title}\n${params.item.notes}`.trim() || "[agenda wake]",
+      query: `${params.item.title}\n${params.item.notes}`.trim() || "[reminder wake]",
       factTopK: MEMORY_FACT_TOP_K,
       episodeTopK: MEMORY_EPISODE_TOP_K,
     });
@@ -398,7 +398,7 @@ export class BotRuntime {
     tracer: ToolTracer;
     toolTraces: ToolTrace[];
   }) {
-    const agenda = this.getAgendaService(params.chatId);
+    const reminders = this.getRemindersPlugin();
     const runTool = async <T>(
       name: string,
       args: Record<string, unknown>,
@@ -554,9 +554,9 @@ export class BotRuntime {
             };
           }),
       }),
-      agenda_query: tool({
+      reminders_query: tool({
         description:
-          "Query the assistant's internal agenda of follow-ups, recurring responsibilities, and reminders.",
+          "Query the assistant's internal reminders of follow-ups, recurring responsibilities, and wake-ups.",
         inputSchema: z.object({
           filter: z
             .object({
@@ -570,13 +570,13 @@ export class BotRuntime {
           limit: z.number().int().min(1).max(50).optional(),
         }),
         execute: async (input) =>
-          runTool("agenda_query", input as Record<string, unknown>, async () => ({
-            items: await agenda.query(input.filter, input.limit ?? 20),
+          runTool("reminders_query", input as Record<string, unknown>, async () => ({
+            items: await reminders.queryReminders(input.filter, input.limit ?? 20),
           })),
       }),
-      agenda_update: tool({
+      reminders_update: tool({
         description:
-          "Create or update the assistant's internal agenda items. Use this to track follow-ups, reschedule wakes, snooze items, or mark them complete.",
+          "Create or update the assistant's internal reminders. Use this to track follow-ups, reschedule wakes, snooze items, or mark them complete.",
         inputSchema: z.discriminatedUnion("action", [
           z.object({
             action: z.literal("create"),
@@ -615,8 +615,8 @@ export class BotRuntime {
           z.object({ action: z.literal("append_note"), itemId: z.string(), note: z.string() }),
         ]),
         execute: async (input) =>
-          runTool("agenda_update", input as Record<string, unknown>, async () =>
-            agenda.update(input, { sourceChatId: params.chatId }),
+          runTool("reminders_update", input as Record<string, unknown>, async () =>
+            reminders.updateReminder(input, { sourceChatId: params.chatId }),
           ),
       }),
       bash: tool({
@@ -774,11 +774,8 @@ export class BotRuntime {
     return this.workspace;
   }
 
-  private getAgendaService(primaryChatId?: number | null) {
-    return createAgendaService(this.deps.DRECLAW_DB, {
-      timezone: this.deps.USER_TIMEZONE,
-      primaryChatId: primaryChatId ?? null,
-    });
+  private getRemindersPlugin() {
+    return getRemindersPlugin(this.deps.pluginRegistry.getByName("reminders"));
   }
 
   private getCodeExecutionConfig() {
@@ -997,7 +994,7 @@ function renderHistoryContext(history: BotThreadState["history"]): string {
   return history.map((entry) => `${entry.role}: ${entry.content}`).join("\n");
 }
 
-function renderWakePacket(item: AssistantAgendaItem, recentWakeSummaries: string[]): string {
+function renderWakePacket(item: Reminder, recentWakeSummaries: string[]): string {
   return [
     "Proactive wake packet:",
     `title: ${item.title}`,
@@ -1018,7 +1015,7 @@ function normalizeProactiveMessage(text: string): string | null {
 }
 
 function summarizeProactiveWake(
-  item: AssistantAgendaItem,
+  item: Reminder,
   messageText: string | null,
   toolTraces: ToolTrace[],
 ): string {

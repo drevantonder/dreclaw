@@ -1,36 +1,36 @@
 import { retryOnce } from "../../utils/retry";
 import type {
-  AgendaQueryFilter,
-  AssistantAgendaItem,
-  AssistantAgendaOutcome,
-  AssistantProfile,
-  AssistantWakeRun,
+  ReminderQueryFilter,
+  Reminder,
+  ReminderOutcome,
+  ReminderProfile,
+  ReminderRun,
 } from "./types";
 
-export async function getAssistantProfile(db: D1Database): Promise<AssistantProfile | null> {
+export async function getReminderProfile(db: D1Database): Promise<ReminderProfile | null> {
   return retryOnce(async () => {
     const row = await db
-      .prepare("SELECT timezone, primary_chat_id, updated_at FROM assistant_profile WHERE id = 1")
+      .prepare("SELECT timezone, primary_chat_id, updated_at FROM reminders_profile WHERE id = 1")
       .first<Record<string, unknown>>();
-    return row ? mapAssistantProfile(row) : null;
+    return row ? mapReminderProfile(row) : null;
   }, 150);
 }
 
-export async function upsertAssistantProfile(
+export async function upsertReminderProfile(
   db: D1Database,
   input: { timezone: string; primaryChatId: number | null; updatedAt: string },
 ): Promise<void> {
   await retryOnce(async () => {
     await db
       .prepare(
-        "INSERT INTO assistant_profile (id, timezone, primary_chat_id, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timezone = excluded.timezone, primary_chat_id = COALESCE(excluded.primary_chat_id, assistant_profile.primary_chat_id), updated_at = excluded.updated_at",
+        "INSERT INTO reminders_profile (id, timezone, primary_chat_id, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timezone = excluded.timezone, primary_chat_id = COALESCE(excluded.primary_chat_id, reminders_profile.primary_chat_id), updated_at = excluded.updated_at",
       )
       .bind(input.timezone, input.primaryChatId, input.updatedAt)
       .run();
   }, 150);
 }
 
-export async function insertAssistantAgendaItem(
+export async function insertReminder(
   db: D1Database,
   input: {
     id: string;
@@ -51,7 +51,7 @@ export async function insertAssistantAgendaItem(
   await retryOnce(async () => {
     await db
       .prepare(
-        "INSERT INTO assistant_agenda_items (id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
+        "INSERT INTO reminders_items (id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
       )
       .bind(
         input.id,
@@ -72,25 +72,22 @@ export async function insertAssistantAgendaItem(
   }, 150);
 }
 
-export async function getAssistantAgendaItem(
-  db: D1Database,
-  id: string,
-): Promise<AssistantAgendaItem | null> {
+export async function getReminder(db: D1Database, id: string): Promise<Reminder | null> {
   return retryOnce(async () => {
     const row = await db
       .prepare(
-        "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM assistant_agenda_items WHERE id = ?",
+        "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items WHERE id = ?",
       )
       .bind(id)
       .first<Record<string, unknown>>();
-    return row ? mapAssistantAgendaItem(row) : null;
+    return row ? mapReminder(row) : null;
   }, 150);
 }
 
-export async function listAssistantAgendaItems(
+export async function listReminders(
   db: D1Database,
-  params: { filter?: AgendaQueryFilter; limit: number },
-): Promise<AssistantAgendaItem[]> {
+  params: { filter?: ReminderQueryFilter; limit: number },
+): Promise<Reminder[]> {
   const conditions: string[] = [];
   const binds: Array<string | number> = [];
   const filter = params.filter ?? {};
@@ -116,7 +113,7 @@ export async function listAssistantAgendaItems(
   }
   binds.push(Math.max(1, Math.min(100, Math.trunc(params.limit))));
   const sql = [
-    "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM assistant_agenda_items",
+    "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items",
     conditions.length ? `WHERE ${conditions.join(" AND ")}` : "",
     "ORDER BY CASE WHEN status = 'open' THEN 0 ELSE 1 END, priority ASC, COALESCE(next_wake_at, updated_at) ASC LIMIT ?",
   ]
@@ -127,11 +124,11 @@ export async function listAssistantAgendaItems(
       .prepare(sql)
       .bind(...binds)
       .all<Record<string, unknown>>();
-    return (rows.results ?? []).map(mapAssistantAgendaItem);
+    return (rows.results ?? []).map(mapReminder);
   }, 150);
 }
 
-export async function updateAssistantAgendaItem(
+export async function updateReminder(
   db: D1Database,
   input: {
     id: string;
@@ -176,21 +173,21 @@ export async function updateAssistantAgendaItem(
   binds.push(input.updatedAt, input.id);
   return retryOnce(async () => {
     const result = await db
-      .prepare(`UPDATE assistant_agenda_items SET ${fields.join(", ")} WHERE id = ?`)
+      .prepare(`UPDATE reminders_items SET ${fields.join(", ")} WHERE id = ?`)
       .bind(...binds)
       .run();
     return Boolean(result.meta.changes && result.meta.changes > 0);
   }, 150);
 }
 
-export async function claimAssistantAgendaItem(
+export async function claimDueReminder(
   db: D1Database,
   input: { id: string; nowIso: string; claimToken: string; staleBeforeIso: string },
 ): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
       .prepare(
-        "UPDATE assistant_agenda_items SET claimed_at = ?, claim_token = ?, updated_at = ? WHERE id = ? AND status = 'open' AND next_wake_at IS NOT NULL AND next_wake_at <= ? AND (claimed_at IS NULL OR claimed_at < ?) AND workflow_id IS NULL",
+        "UPDATE reminders_items SET claimed_at = ?, claim_token = ?, updated_at = ? WHERE id = ? AND status = 'open' AND next_wake_at IS NOT NULL AND next_wake_at <= ? AND (claimed_at IS NULL OR claimed_at < ?) AND workflow_id IS NULL",
       )
       .bind(
         input.nowIso,
@@ -205,29 +202,29 @@ export async function claimAssistantAgendaItem(
   }, 150);
 }
 
-export async function listDueAssistantAgendaItems(
+export async function listDueReminders(
   db: D1Database,
   input: { nowIso: string; limit: number },
-): Promise<AssistantAgendaItem[]> {
+): Promise<Reminder[]> {
   return retryOnce(async () => {
     const rows = await db
       .prepare(
-        "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM assistant_agenda_items WHERE status = 'open' AND next_wake_at IS NOT NULL AND next_wake_at <= ? AND workflow_id IS NULL ORDER BY priority ASC, next_wake_at ASC LIMIT ?",
+        "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items WHERE status = 'open' AND next_wake_at IS NOT NULL AND next_wake_at <= ? AND workflow_id IS NULL ORDER BY priority ASC, next_wake_at ASC LIMIT ?",
       )
       .bind(input.nowIso, input.limit)
       .all<Record<string, unknown>>();
-    return (rows.results ?? []).map(mapAssistantAgendaItem);
+    return (rows.results ?? []).map(mapReminder);
   }, 150);
 }
 
-export async function attachAssistantAgendaWorkflow(
+export async function attachReminderWorkflow(
   db: D1Database,
   input: { id: string; claimToken: string; workflowId: string; updatedAt: string },
 ): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
       .prepare(
-        "UPDATE assistant_agenda_items SET workflow_id = ?, updated_at = ? WHERE id = ? AND claim_token = ?",
+        "UPDATE reminders_items SET workflow_id = ?, updated_at = ? WHERE id = ? AND claim_token = ?",
       )
       .bind(input.workflowId, input.updatedAt, input.id, input.claimToken)
       .run();
@@ -235,14 +232,14 @@ export async function attachAssistantAgendaWorkflow(
   }, 150);
 }
 
-export async function clearAssistantAgendaClaim(
+export async function clearReminderClaim(
   db: D1Database,
   input: { id: string; claimToken: string; updatedAt: string },
 ): Promise<boolean> {
   return retryOnce(async () => {
     const result = await db
       .prepare(
-        "UPDATE assistant_agenda_items SET claimed_at = NULL, claim_token = NULL, workflow_id = NULL, updated_at = ? WHERE id = ? AND claim_token = ?",
+        "UPDATE reminders_items SET claimed_at = NULL, claim_token = NULL, workflow_id = NULL, updated_at = ? WHERE id = ? AND claim_token = ?",
       )
       .bind(input.updatedAt, input.id, input.claimToken)
       .run();
@@ -250,11 +247,11 @@ export async function clearAssistantAgendaClaim(
   }, 150);
 }
 
-export async function insertAssistantWakeRun(
+export async function insertReminderRun(
   db: D1Database,
   input: {
     id: string;
-    agendaItemId: string;
+    reminderId: string;
     scheduledFor: string;
     startedAt: string;
   },
@@ -262,19 +259,19 @@ export async function insertAssistantWakeRun(
   await retryOnce(async () => {
     await db
       .prepare(
-        "INSERT INTO assistant_wake_runs (id, agenda_item_id, scheduled_for, started_at, finished_at, outcome, summary, error, next_wake_at) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)",
+        "INSERT INTO reminders_wake_runs (id, reminder_id, scheduled_for, started_at, finished_at, outcome, summary, error, next_wake_at) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)",
       )
-      .bind(input.id, input.agendaItemId, input.scheduledFor, input.startedAt)
+      .bind(input.id, input.reminderId, input.scheduledFor, input.startedAt)
       .run();
   }, 150);
 }
 
-export async function finishAssistantWakeRun(
+export async function finishReminderRun(
   db: D1Database,
   input: {
     id: string;
     finishedAt: string;
-    outcome: AssistantAgendaOutcome;
+    outcome: ReminderOutcome;
     summary: string | null;
     error: string | null;
     nextWakeAt: string | null;
@@ -283,7 +280,7 @@ export async function finishAssistantWakeRun(
   return retryOnce(async () => {
     const result = await db
       .prepare(
-        "UPDATE assistant_wake_runs SET finished_at = ?, outcome = ?, summary = ?, error = ?, next_wake_at = ? WHERE id = ?",
+        "UPDATE reminders_wake_runs SET finished_at = ?, outcome = ?, summary = ?, error = ?, next_wake_at = ? WHERE id = ?",
       )
       .bind(input.finishedAt, input.outcome, input.summary, input.error, input.nextWakeAt, input.id)
       .run();
@@ -291,22 +288,22 @@ export async function finishAssistantWakeRun(
   }, 150);
 }
 
-export async function listRecentAssistantWakeRuns(
+export async function listRecentReminderRuns(
   db: D1Database,
-  input: { agendaItemId: string; limit: number },
-): Promise<AssistantWakeRun[]> {
+  input: { reminderId: string; limit: number },
+): Promise<ReminderRun[]> {
   return retryOnce(async () => {
     const rows = await db
       .prepare(
-        "SELECT id, agenda_item_id, scheduled_for, started_at, finished_at, outcome, summary, error, next_wake_at FROM assistant_wake_runs WHERE agenda_item_id = ? ORDER BY started_at DESC LIMIT ?",
+        "SELECT id, reminder_id, scheduled_for, started_at, finished_at, outcome, summary, error, next_wake_at FROM reminders_wake_runs WHERE reminder_id = ? ORDER BY started_at DESC LIMIT ?",
       )
-      .bind(input.agendaItemId, input.limit)
+      .bind(input.reminderId, input.limit)
       .all<Record<string, unknown>>();
-    return (rows.results ?? []).map(mapAssistantWakeRun);
+    return (rows.results ?? []).map(mapReminderRun);
   }, 150);
 }
 
-function mapAssistantProfile(row: Record<string, unknown>): AssistantProfile {
+function mapReminderProfile(row: Record<string, unknown>): ReminderProfile {
   return {
     timezone: stringValue(row.timezone, "UTC"),
     primaryChatId: row.primary_chat_id == null ? null : Number(row.primary_chat_id),
@@ -314,7 +311,7 @@ function mapAssistantProfile(row: Record<string, unknown>): AssistantProfile {
   };
 }
 
-function mapAssistantAgendaItem(row: Record<string, unknown>): AssistantAgendaItem {
+function mapReminder(row: Record<string, unknown>): Reminder {
   return {
     id: stringValue(row.id),
     kind: stringValue(row.kind, "follow_up"),
@@ -335,10 +332,10 @@ function mapAssistantAgendaItem(row: Record<string, unknown>): AssistantAgendaIt
   };
 }
 
-function mapAssistantWakeRun(row: Record<string, unknown>): AssistantWakeRun {
+function mapReminderRun(row: Record<string, unknown>): ReminderRun {
   return {
     id: stringValue(row.id),
-    agendaItemId: stringValue(row.agenda_item_id),
+    reminderId: stringValue(row.reminder_id),
     scheduledFor: stringValue(row.scheduled_for),
     startedAt: stringValue(row.started_at),
     finishedAt: nullableString(row.finished_at),
@@ -358,11 +355,11 @@ function parseSchedule(value: unknown) {
   }
 }
 
-function normalizeStatus(value: unknown): AssistantAgendaItem["status"] {
+function normalizeStatus(value: unknown): Reminder["status"] {
   return value === "done" || value === "cancelled" ? value : "open";
 }
 
-function normalizeOutcome(value: unknown): AssistantWakeRun["outcome"] {
+function normalizeOutcome(value: unknown): ReminderRun["outcome"] {
   return value === "sent_message" ||
     value === "silent" ||
     value === "completed" ||

@@ -1,28 +1,28 @@
 import {
-  attachAssistantAgendaWorkflow,
-  claimAssistantAgendaItem,
-  clearAssistantAgendaClaim,
-  finishAssistantWakeRun,
-  getAssistantAgendaItem,
-  getAssistantProfile,
-  insertAssistantAgendaItem,
-  insertAssistantWakeRun,
-  listAssistantAgendaItems,
-  listDueAssistantAgendaItems,
-  listRecentAssistantWakeRuns,
-  updateAssistantAgendaItem,
-  upsertAssistantProfile,
+  attachReminderWorkflow,
+  claimDueReminder,
+  clearReminderClaim,
+  finishReminderRun,
+  getReminder,
+  getReminderProfile,
+  insertReminder,
+  insertReminderRun,
+  listReminders,
+  listDueReminders,
+  listRecentReminderRuns,
+  updateReminder,
+  upsertReminderProfile,
 } from "./repo";
 import { computeNextWakeAt, isValidTimezone } from "./schedule";
 import type {
-  AgendaQueryFilter,
-  AgendaUpdateInput,
-  AssistantAgendaItem,
-  AssistantAgendaOutcome,
-  AssistantProfile,
+  ReminderQueryFilter,
+  ReminderUpdateInput,
+  Reminder,
+  ReminderOutcome,
+  ReminderProfile,
 } from "./types";
 
-export class AgendaService {
+export class RemindersService {
   constructor(
     private readonly db: D1Database,
     private readonly defaults: { timezone: string; primaryChatId?: number | null } = {
@@ -33,8 +33,8 @@ export class AgendaService {
   async ensureProfile(input?: {
     timezone?: string | null;
     primaryChatId?: number | null;
-  }): Promise<AssistantProfile> {
-    const current = await getAssistantProfile(this.db);
+  }): Promise<ReminderProfile> {
+    const current = await getReminderProfile(this.db);
     const timezone = normalizeTimezone(
       input?.timezone,
       current?.timezone ?? this.defaults.timezone,
@@ -42,19 +42,19 @@ export class AgendaService {
     const primaryChatId =
       input?.primaryChatId ?? current?.primaryChatId ?? this.defaults.primaryChatId ?? null;
     const updatedAt = new Date().toISOString();
-    await upsertAssistantProfile(this.db, { timezone, primaryChatId, updatedAt });
+    await upsertReminderProfile(this.db, { timezone, primaryChatId, updatedAt });
     return { timezone, primaryChatId, updatedAt };
   }
 
-  async query(filter?: AgendaQueryFilter, limit = 20): Promise<AssistantAgendaItem[]> {
-    return listAssistantAgendaItems(this.db, { filter, limit });
+  async query(filter?: ReminderQueryFilter, limit = 20): Promise<Reminder[]> {
+    return listReminders(this.db, { filter, limit });
   }
 
-  async getItem(id: string): Promise<AssistantAgendaItem | null> {
-    return getAssistantAgendaItem(this.db, id);
+  async getItem(id: string): Promise<Reminder | null> {
+    return getReminder(this.db, id);
   }
 
-  async update(input: AgendaUpdateInput, context?: { sourceChatId?: number | null }) {
+  async update(input: ReminderUpdateInput, context?: { sourceChatId?: number | null }) {
     const profile = await this.ensureProfile({ primaryChatId: context?.sourceChatId ?? null });
     const nowIso = new Date().toISOString();
 
@@ -67,7 +67,7 @@ export class AgendaService {
           timezone: profile.timezone,
           nowIso,
         });
-        await insertAssistantAgendaItem(this.db, {
+        await insertReminder(this.db, {
           id: itemId,
           kind: (input.item.kind ?? "follow_up").trim() || "follow_up",
           title: input.item.title.trim(),
@@ -95,7 +95,7 @@ export class AgendaService {
                 nowIso,
               })
             : undefined;
-        await updateAssistantAgendaItem(this.db, {
+        await updateReminder(this.db, {
           id: current.id,
           kind: normalizeOptionalString(input.patch.kind),
           title: normalizeOptionalString(input.patch.title),
@@ -118,7 +118,7 @@ export class AgendaService {
       }
       case "complete":
       case "cancel": {
-        await updateAssistantAgendaItem(this.db, {
+        await updateReminder(this.db, {
           id: input.itemId,
           status: input.action === "complete" ? "done" : "cancelled",
           nextWakeAt: null,
@@ -129,7 +129,7 @@ export class AgendaService {
       }
       case "snooze":
       case "reschedule": {
-        await updateAssistantAgendaItem(this.db, {
+        await updateReminder(this.db, {
           id: input.itemId,
           nextWakeAt: normalizeIso(input.nextWakeAt),
           snoozeUntil: input.action === "snooze" ? normalizeIso(input.nextWakeAt) : null,
@@ -140,7 +140,7 @@ export class AgendaService {
       case "append_note": {
         const current = await this.requireItem(input.itemId);
         const nextNotes = [current.notes, input.note.trim()].filter(Boolean).join("\n\n");
-        await updateAssistantAgendaItem(this.db, {
+        await updateReminder(this.db, {
           id: current.id,
           notes: nextNotes,
           updatedAt: nowIso,
@@ -153,21 +153,21 @@ export class AgendaService {
   async claimDue(params?: { nowIso?: string; limit?: number }) {
     const nowIso = params?.nowIso ?? new Date().toISOString();
     const staleBeforeIso = new Date(Date.parse(nowIso) - 10 * 60_000).toISOString();
-    const candidates = await listDueAssistantAgendaItems(this.db, {
+    const candidates = await listDueReminders(this.db, {
       nowIso,
       limit: Math.max(1, Math.min(50, Math.trunc(params?.limit ?? 10))),
     });
-    const claimed: AssistantAgendaItem[] = [];
+    const claimed: Reminder[] = [];
     for (const item of candidates) {
       const claimToken = crypto.randomUUID();
-      const ok = await claimAssistantAgendaItem(this.db, {
+      const ok = await claimDueReminder(this.db, {
         id: item.id,
         nowIso,
         claimToken,
         staleBeforeIso,
       });
       if (!ok) continue;
-      const refreshed = await getAssistantAgendaItem(this.db, item.id);
+      const refreshed = await getReminder(this.db, item.id);
       if (refreshed) claimed.push(refreshed);
     }
     return claimed;
@@ -175,29 +175,29 @@ export class AgendaService {
 
   async markWorkflowStarted(params: { id: string; claimToken: string; workflowId: string }) {
     const updatedAt = new Date().toISOString();
-    return attachAssistantAgendaWorkflow(this.db, { ...params, updatedAt });
+    return attachReminderWorkflow(this.db, { ...params, updatedAt });
   }
 
   async releaseClaim(params: { id: string; claimToken: string }) {
-    return clearAssistantAgendaClaim(this.db, {
+    return clearReminderClaim(this.db, {
       ...params,
       updatedAt: new Date().toISOString(),
     });
   }
 
-  async openWakeRun(params: { agendaItemId: string; scheduledFor: string }) {
+  async openWakeRun(params: { reminderId: string; scheduledFor: string }) {
     const id = crypto.randomUUID();
-    await insertAssistantWakeRun(this.db, {
+    await insertReminderRun(this.db, {
       id,
-      agendaItemId: params.agendaItemId,
+      reminderId: params.reminderId,
       scheduledFor: params.scheduledFor,
       startedAt: new Date().toISOString(),
     });
     return id;
   }
 
-  async listRecentWakeRuns(agendaItemId: string, limit = 5) {
-    return listRecentAssistantWakeRuns(this.db, { agendaItemId, limit });
+  async listRecentWakeRuns(reminderId: string, limit = 5) {
+    return listRecentReminderRuns(this.db, { reminderId, limit });
   }
 
   async finalizeWake(params: {
@@ -205,7 +205,7 @@ export class AgendaService {
     claimToken: string;
     runId: string;
     scheduledFor: string;
-    outcome: AssistantAgendaOutcome;
+    outcome: ReminderOutcome;
     summary: string | null;
     error?: string | null;
   }) {
@@ -227,7 +227,7 @@ export class AgendaService {
         nextWakeAt = null;
         status = "done";
       }
-      await updateAssistantAgendaItem(this.db, {
+      await updateReminder(this.db, {
         id: item.id,
         status,
         nextWakeAt,
@@ -239,7 +239,7 @@ export class AgendaService {
         updatedAt: nowIso,
       });
     } else {
-      await updateAssistantAgendaItem(this.db, {
+      await updateReminder(this.db, {
         id: item.id,
         lastWakeAt: params.scheduledFor,
         claimedAt: null,
@@ -250,7 +250,7 @@ export class AgendaService {
     }
 
     const refreshed = await this.requireItem(item.id);
-    await finishAssistantWakeRun(this.db, {
+    await finishReminderRun(this.db, {
       id: params.runId,
       finishedAt: nowIso,
       outcome:
@@ -267,23 +267,23 @@ export class AgendaService {
   }
 
   private async requireItem(id: string) {
-    const item = await getAssistantAgendaItem(this.db, id);
-    if (!item) throw new Error(`Agenda item not found: ${id}`);
+    const item = await getReminder(this.db, id);
+    if (!item) throw new Error(`Reminder not found: ${id}`);
     return item;
   }
 }
 
-export function createAgendaService(
+export function createRemindersService(
   db: D1Database,
   defaults?: { timezone?: string; primaryChatId?: number | null },
 ) {
-  return new AgendaService(db, {
+  return new RemindersService(db, {
     timezone: normalizeTimezone(defaults?.timezone, "UTC"),
     primaryChatId: defaults?.primaryChatId ?? null,
   });
 }
 
-function stringifySchedule(value: AssistantAgendaItem["schedule"] | null | undefined) {
+function stringifySchedule(value: Reminder["schedule"] | null | undefined) {
   return value == null ? null : JSON.stringify(value);
 }
 
@@ -302,7 +302,7 @@ function normalizeTimezone(input: string | null | undefined, fallback: string): 
 
 function resolveRequestedNextWakeAt(params: {
   nextWakeAt: string | null;
-  schedule: AssistantAgendaItem["schedule"] | null;
+  schedule: Reminder["schedule"] | null;
   timezone: string;
   nowIso: string;
 }) {

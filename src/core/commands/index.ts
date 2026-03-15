@@ -1,5 +1,5 @@
 import type { CommandContext, CommandResult, RuntimeDeps } from "../app/types";
-import { createAgendaService } from "../agenda";
+import { getRemindersPlugin } from "../../plugins/reminders";
 import type { PluginRegistry } from "../plugins/types";
 import { BotRuntime } from "../loop/runtime";
 import {
@@ -35,10 +35,9 @@ export async function handleAsyncCommand(params: {
   const { deps, input } = params;
   const { runtimeDeps, runtime, pluginRegistry } = deps;
   const { threadId, channelId, text } = input;
-  await createAgendaService(runtimeDeps.DRECLAW_DB, {
-    timezone: runtimeDeps.USER_TIMEZONE,
+  await getRemindersPlugin(pluginRegistry.getByName("reminders")).ensureReminderProfile({
     primaryChatId: channelId,
-  }).ensureProfile({ primaryChatId: channelId });
+  });
   const [command, value] = text.split(/\s+/, 2);
   const lowered = command.toLowerCase();
   const runs = createRunCoordinator({

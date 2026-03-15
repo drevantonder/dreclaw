@@ -8,8 +8,8 @@ export interface ConversationWorkflowPayload {
   imageBlocks?: string[];
 }
 
-export interface ProactiveWakeWorkflowPayload {
-  agendaItemId: string;
+export interface ReminderWakeWorkflowPayload {
+  reminderId: string;
   claimToken: string;
 }
 

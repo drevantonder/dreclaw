@@ -18,9 +18,9 @@ export class FakeD1 {
   readonly subscriptions = new Map<string, Record<string, unknown>>();
   readonly kv = new Map<string, Record<string, unknown>>();
   readonly locks = new Map<string, Record<string, unknown>>();
-  readonly assistantProfile = new Map<number, Record<string, unknown>>();
-  readonly agendaItems = new Map<string, Record<string, unknown>>();
-  readonly wakeRuns = new Map<string, Record<string, unknown>>();
+  readonly remindersProfile = new Map<number, Record<string, unknown>>();
+  readonly remindersItems = new Map<string, Record<string, unknown>>();
+  readonly reminderRuns = new Map<string, Record<string, unknown>>();
   vfsRevision = 0;
 
   prepare(sql: string) {
@@ -47,9 +47,9 @@ export class FakeD1 {
       });
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("INSERT INTO assistant_profile")) {
-      const existing = this.assistantProfile.get(1);
-      this.assistantProfile.set(1, {
+    if (sql.includes("INSERT INTO reminders_profile")) {
+      const existing = this.remindersProfile.get(1);
+      this.remindersProfile.set(1, {
         id: 1,
         timezone: String(args[0]),
         primary_chat_id: args[1] == null ? (existing?.primary_chat_id ?? null) : Number(args[1]),
@@ -57,8 +57,8 @@ export class FakeD1 {
       });
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("INSERT INTO assistant_agenda_items")) {
-      this.agendaItems.set(String(args[0]), {
+    if (sql.includes("INSERT INTO reminders_items")) {
+      this.remindersItems.set(String(args[0]), {
         id: String(args[0]),
         kind: String(args[1]),
         title: String(args[2]),
@@ -78,8 +78,8 @@ export class FakeD1 {
       });
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("UPDATE assistant_agenda_items SET claimed_at = ?")) {
-      const row = this.agendaItems.get(String(args[3]));
+    if (sql.includes("UPDATE reminders_items SET claimed_at = ?")) {
+      const row = this.remindersItems.get(String(args[3]));
       if (!row) return { meta: { changes: 0 } };
       if (
         row.status !== "open" ||
@@ -95,8 +95,8 @@ export class FakeD1 {
       row.updated_at = String(args[2]);
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("UPDATE assistant_agenda_items SET workflow_id = ?")) {
-      const row = this.agendaItems.get(String(args[2]));
+    if (sql.includes("UPDATE reminders_items SET workflow_id = ?")) {
+      const row = this.remindersItems.get(String(args[2]));
       if (!row || String(row.claim_token) !== String(args[3])) return { meta: { changes: 0 } };
       row.workflow_id = String(args[0]);
       row.updated_at = String(args[1]);
@@ -104,10 +104,10 @@ export class FakeD1 {
     }
     if (
       sql.includes(
-        "UPDATE assistant_agenda_items SET claimed_at = NULL, claim_token = NULL, workflow_id = NULL",
+        "UPDATE reminders_items SET claimed_at = NULL, claim_token = NULL, workflow_id = NULL",
       )
     ) {
-      const row = this.agendaItems.get(String(args[1]));
+      const row = this.remindersItems.get(String(args[1]));
       if (!row || String(row.claim_token) !== String(args[2])) return { meta: { changes: 0 } };
       row.claimed_at = null;
       row.claim_token = null;
@@ -115,8 +115,8 @@ export class FakeD1 {
       row.updated_at = String(args[0]);
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("UPDATE assistant_agenda_items SET")) {
-      const row = this.agendaItems.get(String(args[args.length - 1]));
+    if (sql.includes("UPDATE reminders_items SET")) {
+      const row = this.remindersItems.get(String(args[args.length - 1]));
       if (!row) return { meta: { changes: 0 } };
       const assignments = sql
         .slice(sql.indexOf("SET") + 3, sql.lastIndexOf("WHERE"))
@@ -131,10 +131,10 @@ export class FakeD1 {
       }
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("INSERT INTO assistant_wake_runs")) {
-      this.wakeRuns.set(String(args[0]), {
+    if (sql.includes("INSERT INTO reminders_wake_runs")) {
+      this.reminderRuns.set(String(args[0]), {
         id: String(args[0]),
-        agenda_item_id: String(args[1]),
+        reminder_id: String(args[1]),
         scheduled_for: String(args[2]),
         started_at: String(args[3]),
         finished_at: null,
@@ -145,8 +145,8 @@ export class FakeD1 {
       });
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("UPDATE assistant_wake_runs SET finished_at = ?")) {
-      const row = this.wakeRuns.get(String(args[5]));
+    if (sql.includes("UPDATE reminders_wake_runs SET finished_at = ?")) {
+      const row = this.reminderRuns.get(String(args[5]));
       if (!row) return { meta: { changes: 0 } };
       row.finished_at = String(args[0]);
       row.outcome = String(args[1]);
@@ -307,11 +307,11 @@ export class FakeD1 {
       return this.oauthStates.get(String(args[0])) ?? null;
     if (sql.includes("FROM google_oauth_tokens"))
       return this.oauthTokens.get(String(args[0])) ?? null;
-    if (sql.includes("FROM assistant_profile")) return this.assistantProfile.get(1) ?? null;
-    if (sql.includes("FROM assistant_agenda_items WHERE id = ?"))
-      return this.agendaItems.get(String(args[0])) ?? null;
-    if (sql.includes("FROM assistant_wake_runs WHERE id = ?"))
-      return this.wakeRuns.get(String(args[0])) ?? null;
+    if (sql.includes("FROM reminders_profile")) return this.remindersProfile.get(1) ?? null;
+    if (sql.includes("FROM reminders_items WHERE id = ?"))
+      return this.remindersItems.get(String(args[0])) ?? null;
+    if (sql.includes("FROM reminders_wake_runs WHERE id = ?"))
+      return this.reminderRuns.get(String(args[0])) ?? null;
     if (sql.includes("FROM chat_state_subscriptions"))
       return this.subscriptions.get(String(args[0])) ?? null;
     if (sql.includes("SELECT value_json FROM chat_state_kv"))
@@ -337,8 +337,8 @@ export class FakeD1 {
     sql: string,
     args: unknown[],
   ): Promise<{ results: Array<Record<string, unknown>> }> {
-    if (sql.includes("FROM assistant_agenda_items")) {
-      let rows = [...this.agendaItems.values()];
+    if (sql.includes("FROM reminders_items")) {
+      let rows = [...this.remindersItems.values()];
       if (sql.includes("status = 'open'")) rows = rows.filter((row) => row.status === "open");
       if (sql.includes("next_wake_at <= ?"))
         rows = rows.filter(
@@ -369,10 +369,10 @@ export class FakeD1 {
         results: rows.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))),
       };
     }
-    if (sql.includes("FROM assistant_wake_runs WHERE agenda_item_id = ?")) {
+    if (sql.includes("FROM reminders_wake_runs WHERE reminder_id = ?")) {
       return {
-        results: [...this.wakeRuns.values()]
-          .filter((row) => row.agenda_item_id === args[0])
+        results: [...this.reminderRuns.values()]
+          .filter((row) => row.reminder_id === args[0])
           .sort((a, b) => String(b.started_at).localeCompare(String(a.started_at))),
       };
     }

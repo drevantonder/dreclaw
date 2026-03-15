@@ -4,4 +4,3 @@ export { normalizeBotThreadState, type BotThreadState } from "./loop/state";
 export { createD1StateAdapter } from "./loop/chat-state";
 export { handleAsyncCommand, maybeHandleAsyncCoreCommand } from "./commands";
 export { createPluginRegistry } from "./plugins/registry";
-export { createAgendaService } from "./agenda";

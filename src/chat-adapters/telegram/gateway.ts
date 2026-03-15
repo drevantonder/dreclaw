@@ -8,6 +8,7 @@ import {
   normalizeBotThreadState,
   type BotThreadState,
 } from "../../core";
+import { getRemindersPlugin } from "../../plugins/reminders";
 import type { Env } from "../../cloudflare/env";
 import { isAllowedTelegramMessage } from "./auth";
 import { handleAsyncCommand } from "./commands";
@@ -49,6 +50,11 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
     if (!isAllowedTelegramMessage(env, message)) return;
     const text = message.text.trim();
     const chatId = getTelegramUserChatId(message.raw, thread.id);
+    await getRemindersPlugin(
+      runtimeDeps.pluginRegistry.getByName("reminders"),
+    ).ensureReminderProfile({
+      primaryChatId: chatId,
+    });
 
     if (text.startsWith("/")) {
       await handleAsyncCommand({

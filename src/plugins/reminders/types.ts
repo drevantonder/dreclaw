@@ -1,13 +1,8 @@
-export type AssistantAgendaStatus = "open" | "done" | "cancelled";
+export type ReminderStatus = "open" | "done" | "cancelled";
 
-export type AssistantAgendaOutcome =
-  | "sent_message"
-  | "silent"
-  | "completed"
-  | "cancelled"
-  | "failed";
+export type ReminderOutcome = "sent_message" | "silent" | "completed" | "cancelled" | "failed";
 
-export type AssistantAgendaSchedule =
+export type ReminderSchedule =
   | {
       type: "once";
       atLocal: string;
@@ -21,20 +16,20 @@ export type AssistantAgendaSchedule =
       interval?: number;
     };
 
-export interface AssistantProfile {
+export interface ReminderProfile {
   timezone: string;
   primaryChatId: number | null;
   updatedAt: string;
 }
 
-export interface AssistantAgendaItem {
+export interface Reminder {
   id: string;
   kind: string;
   title: string;
   notes: string;
-  status: AssistantAgendaStatus;
+  status: ReminderStatus;
   priority: number;
-  schedule: AssistantAgendaSchedule | null;
+  schedule: ReminderSchedule | null;
   nextWakeAt: string | null;
   lastWakeAt: string | null;
   snoozeUntil: string | null;
@@ -46,27 +41,27 @@ export interface AssistantAgendaItem {
   updatedAt: string;
 }
 
-export interface AssistantWakeRun {
+export interface ReminderRun {
   id: string;
-  agendaItemId: string;
+  reminderId: string;
   scheduledFor: string;
   startedAt: string;
   finishedAt: string | null;
-  outcome: AssistantAgendaOutcome | null;
+  outcome: ReminderOutcome | null;
   summary: string | null;
   error: string | null;
   nextWakeAt: string | null;
 }
 
-export interface AgendaQueryFilter {
-  status?: AssistantAgendaStatus;
+export interface ReminderQueryFilter {
+  status?: ReminderStatus;
   kind?: string;
   text?: string;
   dueBefore?: string;
   sourceChatId?: number;
 }
 
-export type AgendaUpdateInput =
+export type ReminderUpdateInput =
   | {
       action: "create";
       item: {
@@ -74,7 +69,7 @@ export type AgendaUpdateInput =
         title: string;
         notes?: string;
         priority?: number;
-        schedule?: AssistantAgendaSchedule | null;
+        schedule?: ReminderSchedule | null;
         nextWakeAt?: string | null;
         sourceChatId?: number | null;
       };
@@ -87,10 +82,10 @@ export type AgendaUpdateInput =
         title?: string;
         notes?: string;
         priority?: number;
-        schedule?: AssistantAgendaSchedule | null;
+        schedule?: ReminderSchedule | null;
         nextWakeAt?: string | null;
         sourceChatId?: number | null;
-        status?: AssistantAgendaStatus;
+        status?: ReminderStatus;
       };
     }
   | {

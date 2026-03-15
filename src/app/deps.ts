@@ -4,6 +4,8 @@ import { BotRuntime } from "../core/loop/runtime";
 import { createPluginRegistry } from "../core/plugins/registry";
 import { createGooglePlugin } from "../plugins/google";
 import type { GooglePluginDeps } from "../plugins/google/types";
+import { createRemindersPlugin } from "../plugins/reminders";
+import type { RemindersPluginDeps } from "../plugins/reminders";
 import type { CommandDeps } from "../core/commands";
 
 const runtimeDepsCache = new WeakMap<Env, RuntimeDeps>();
@@ -21,10 +23,21 @@ export function buildGooglePluginDeps(env: Env): GooglePluginDeps {
   };
 }
 
+export function buildRemindersPluginDeps(env: Env): RemindersPluginDeps {
+  return {
+    db: env.DRECLAW_DB,
+    timezone: env.USER_TIMEZONE,
+    wakeWorkflow: env.REMINDERS_WAKE_WORKFLOW,
+  };
+}
+
 export function buildRuntimeDeps(env: Env): RuntimeDeps {
   const cached = runtimeDepsCache.get(env);
   if (cached) return cached;
-  const pluginRegistry = createPluginRegistry([createGooglePlugin(buildGooglePluginDeps(env))]);
+  const pluginRegistry = createPluginRegistry([
+    createGooglePlugin(buildGooglePluginDeps(env)),
+    createRemindersPlugin(buildRemindersPluginDeps(env)),
+  ]);
   const deps: RuntimeDeps = {
     DRECLAW_DB: env.DRECLAW_DB,
     TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,

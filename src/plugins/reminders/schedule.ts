@@ -1,4 +1,4 @@
-import type { AssistantAgendaSchedule } from "./types";
+import type { ReminderSchedule } from "./types";
 
 type LocalDateTime = {
   year: number;
@@ -17,7 +17,7 @@ type LocalDate = {
 const MINUTE_MS = 60_000;
 
 export function computeNextWakeAt(params: {
-  schedule: AssistantAgendaSchedule;
+  schedule: ReminderSchedule;
   timezone: string;
   afterIso: string;
 }): string | null {
@@ -49,7 +49,7 @@ export function isValidTimezone(timezone: string): boolean {
 
 function buildRecurringCandidates(
   afterLocal: LocalDateTime,
-  schedule: Extract<AssistantAgendaSchedule, { type: "recurring" }>,
+  schedule: Extract<ReminderSchedule, { type: "recurring" }>,
   interval: number,
 ): LocalDateTime[] {
   const [hour, minute] = parseLocalTime(schedule.atLocalTime);
@@ -73,7 +73,7 @@ function buildRecurringCandidates(
 function matchesCadence(
   candidate: LocalDate,
   anchor: LocalDateTime,
-  schedule: Extract<AssistantAgendaSchedule, { type: "recurring" }>,
+  schedule: Extract<ReminderSchedule, { type: "recurring" }>,
   interval: number,
 ): boolean {
   switch (schedule.cadence) {

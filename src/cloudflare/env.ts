@@ -1,9 +1,9 @@
 import type {
   ConversationWorkflowPayload,
-  ProactiveWakeWorkflowPayload,
+  ReminderWakeWorkflowPayload,
 } from "../core/loop/workflow";
 
-export type { ConversationWorkflowPayload, ProactiveWakeWorkflowPayload };
+export type { ConversationWorkflowPayload, ReminderWakeWorkflowPayload };
 
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
@@ -58,7 +58,7 @@ export interface Env {
   REASONING_EFFORT?: string;
   DRECLAW_DB: D1Database;
   CONVERSATION_WORKFLOW?: Workflow<ConversationWorkflowPayload>;
-  PROACTIVE_WAKE_WORKFLOW?: Workflow<ProactiveWakeWorkflowPayload>;
+  REMINDERS_WAKE_WORKFLOW?: Workflow<ReminderWakeWorkflowPayload>;
   LOADER?: {
     get(
       id: string,
