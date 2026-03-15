@@ -1,3 +1,5 @@
+import type { Profiler } from "../../core/profiling";
+
 const TELEGRAM_API = "https://api.telegram.org";
 
 const TELEGRAM_DEFAULT_STREAM_UPDATE_INTERVAL_MS = 350;
@@ -16,20 +18,35 @@ export async function sendTelegramTextMessage(
   token: string,
   chatId: number,
   text: string,
+  profiler?: Profiler,
 ): Promise<{ messageId: number | null }> {
-  const payload = await telegramMethod<TelegramSendMessageResult>(token, "sendMessage", {
-    chat_id: chatId,
-    text: String(text ?? "").trim() || "Done.",
-    disable_web_page_preview: true,
-  });
+  const payload = await telegramMethod<TelegramSendMessageResult>(
+    token,
+    "sendMessage",
+    {
+      chat_id: chatId,
+      text: String(text ?? "").trim() || "Done.",
+      disable_web_page_preview: true,
+    },
+    profiler,
+  );
   return { messageId: payload.result?.message_id ?? null };
 }
 
-export async function sendTelegramTypingAction(token: string, chatId: number): Promise<void> {
-  await telegramMethod(token, "sendChatAction", {
-    chat_id: chatId,
-    action: "typing",
-  });
+export async function sendTelegramTypingAction(
+  token: string,
+  chatId: number,
+  profiler?: Profiler,
+): Promise<void> {
+  await telegramMethod(
+    token,
+    "sendChatAction",
+    {
+      chat_id: chatId,
+      action: "typing",
+    },
+    profiler,
+  );
 }
 
 export async function streamTelegramReply(params: {
@@ -37,6 +54,7 @@ export async function streamTelegramReply(params: {
   chatId: number;
   textStream: AsyncIterable<string>;
   updateIntervalMs?: number;
+  profiler?: Profiler;
 }): Promise<{ text: string }> {
   const updateIntervalMs = Math.max(
     0,
@@ -54,6 +72,7 @@ export async function streamTelegramReply(params: {
   while (true) {
     const next = await iterator.next();
     if (next.done) break;
+    if (!accumulated) params.profiler?.event("first_token_received");
     accumulated += next.value;
     const trimmed = accumulated.trim();
     if (!trimmed) continue;
@@ -65,11 +84,18 @@ export async function streamTelegramReply(params: {
 
     if (usingDrafts) {
       try {
-        await telegramMethod(params.token, "sendMessageDraft", {
-          chat_id: params.chatId,
-          draft_id: draftId,
-          text: trimmed,
-        });
+        await telegramMethod(
+          params.token,
+          "sendMessageDraft",
+          {
+            chat_id: params.chatId,
+            draft_id: draftId,
+            text: trimmed,
+          },
+          params.profiler,
+        );
+        if (draftUpdatesSent === 0)
+          params.profiler?.event("first_telegram_update_sent", { mode: "draft" });
         lastSentText = trimmed;
         lastSentAt = now;
         draftUpdatesSent += 1;
@@ -81,15 +107,27 @@ export async function streamTelegramReply(params: {
     }
 
     if (fallbackMessageId === null) {
-      const sent = await sendTelegramTextMessage(params.token, params.chatId, trimmed);
+      const sent = await sendTelegramTextMessage(
+        params.token,
+        params.chatId,
+        trimmed,
+        params.profiler,
+      );
+      if (draftUpdatesSent === 0)
+        params.profiler?.event("first_telegram_update_sent", { mode: "send" });
       fallbackMessageId = sent.messageId;
     } else {
-      await telegramMethod(params.token, "editMessageText", {
-        chat_id: params.chatId,
-        message_id: fallbackMessageId,
-        text: trimmed,
-        disable_web_page_preview: true,
-      });
+      await telegramMethod(
+        params.token,
+        "editMessageText",
+        {
+          chat_id: params.chatId,
+          message_id: fallbackMessageId,
+          text: trimmed,
+          disable_web_page_preview: true,
+        },
+        params.profiler,
+      );
     }
     lastSentText = trimmed;
     lastSentAt = now;
@@ -100,14 +138,19 @@ export async function streamTelegramReply(params: {
   if (!finalText) throw new Error("Telegram stream reply was empty");
 
   if (usingDrafts) {
-    await sendTelegramTextMessage(params.token, params.chatId, finalText);
+    await sendTelegramTextMessage(params.token, params.chatId, finalText, params.profiler);
   } else if (fallbackMessageId !== null && finalText !== lastSentText) {
-    await telegramMethod(params.token, "editMessageText", {
-      chat_id: params.chatId,
-      message_id: fallbackMessageId,
-      text: finalText,
-      disable_web_page_preview: true,
-    });
+    await telegramMethod(
+      params.token,
+      "editMessageText",
+      {
+        chat_id: params.chatId,
+        message_id: fallbackMessageId,
+        text: finalText,
+        disable_web_page_preview: true,
+      },
+      params.profiler,
+    );
   }
 
   return { text: finalText };
@@ -147,12 +190,20 @@ async function telegramMethod<T = unknown>(
   token: string,
   method: string,
   body: Record<string, unknown>,
+  profiler?: Profiler,
 ): Promise<T> {
-  const response = await fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const response = await (profiler?.span(`telegram_${method}`, async () =>
+    fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  ) ??
+    fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }));
   const payloadText = await response.text();
   if (!response.ok) {
     throw new Error(`Telegram ${method} failed (${response.status}): ${payloadText}`);

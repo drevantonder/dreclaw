@@ -3,6 +3,7 @@ import type { Thread, Message } from "chat";
 import { z } from "zod";
 import { streamTelegramReply } from "../../chat-adapters/telegram/api";
 import { getPersistedThreadControls } from "./repo";
+import type { Profiler } from "../profiling";
 import {
   executeCode,
   getCodeExecutionConfig,
@@ -148,6 +149,8 @@ export class BotRuntime {
     baseMessages?: ModelMessage[];
     isFirstStep?: boolean;
     imageBlocks?: string[];
+    profiler?: Profiler;
+    stepIndex?: number;
   }): Promise<{ state: BotThreadState; nextMessages: ModelMessage[]; shouldContinue: boolean }> {
     const { thread, message } = params;
     let state = normalizeBotThreadState(params.state);
@@ -160,7 +163,15 @@ export class BotRuntime {
     const model = this.createModel(runtime);
     const inputMessages = isModelMessageArray(params.baseMessages)
       ? params.baseMessages
-      : await this.buildConversationMessages({ chatId, state, userText, imageBlocks });
+      : await (params.profiler?.span("build_conversation_messages", async () =>
+          this.buildConversationMessages({
+            chatId,
+            state,
+            userText,
+            imageBlocks,
+            profiler: params.profiler,
+          }),
+        ) ?? this.buildConversationMessages({ chatId, state, userText, imageBlocks }));
     const runTimeoutMs = params.runTimeoutMs ?? getRunTimeoutMs(userText);
     let stepHadToolCalls = false;
     let stepText = "";
@@ -201,19 +212,39 @@ export class BotRuntime {
 
     try {
       await this.runs.throwIfCancelled(thread.id);
-      const stream = await withTimeout(
-        agent.stream({
-          messages: inputMessages,
-          onStepFinish(step) {
-            stepHadToolCalls = (step.toolCalls?.length ?? 0) > 0;
-            stepText = typeof step.text === "string" ? step.text : "";
-          },
-        }),
-        runTimeoutMs,
-        "Agent step timed out",
-      );
+      const stream = await (params.profiler?.span(
+        `agent_stream_step_${params.stepIndex ?? 0}`,
+        async () =>
+          withTimeout(
+            agent.stream({
+              messages: inputMessages,
+              onStepFinish(step) {
+                stepHadToolCalls = (step.toolCalls?.length ?? 0) > 0;
+                stepText = typeof step.text === "string" ? step.text : "";
+              },
+            }),
+            runTimeoutMs,
+            "Agent step timed out",
+          ),
+      ) ??
+        withTimeout(
+          agent.stream({
+            messages: inputMessages,
+            onStepFinish(step) {
+              stepHadToolCalls = (step.toolCalls?.length ?? 0) > 0;
+              stepText = typeof step.text === "string" ? step.text : "";
+            },
+          }),
+          runTimeoutMs,
+          "Agent step timed out",
+        ));
       const streamedText = await withTimeout(
-        this.streamAssistantReply({ thread, chatId, textStream: stream.textStream }),
+        this.streamAssistantReply({
+          thread,
+          chatId,
+          textStream: stream.textStream,
+          profiler: params.profiler,
+        }),
         runTimeoutMs,
         "Assistant stream timed out",
       );
@@ -368,11 +399,16 @@ export class BotRuntime {
     state: BotThreadState;
     userText: string;
     imageBlocks: string[];
+    profiler?: Profiler;
   }) {
     const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
-    const skillCatalog = await this.listSkills();
+    const skillCatalog = await (params.profiler?.span("list_skills", async () =>
+      this.listSkills(),
+    ) ?? this.listSkills());
     promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
-    const loadedSkills = await this.getLoadedSkills(inferImplicitSkillNames(params.userText));
+    const loadedSkills = await (params.profiler?.span("load_skills", async () =>
+      this.getLoadedSkills(inferImplicitSkillNames(params.userText)),
+    ) ?? this.getLoadedSkills(inferImplicitSkillNames(params.userText)));
     if (loadedSkills.length) {
       promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
     }
@@ -380,12 +416,20 @@ export class BotRuntime {
     if (taskGuidance) promptSections.push(`Task guidance:\n${taskGuidance}`);
     const historyContext = renderHistoryContext(params.state.history);
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
-    const memoryContext = await this.getMemoryRuntime().renderContext({
-      chatId: params.chatId,
-      query: params.userText || "[image message]",
-      factTopK: MEMORY_FACT_TOP_K,
-      episodeTopK: MEMORY_EPISODE_TOP_K,
-    });
+    const memoryContext = await (params.profiler?.span("memory_context", async () =>
+      this.getMemoryRuntime().renderContext({
+        chatId: params.chatId,
+        query: params.userText || "[image message]",
+        factTopK: MEMORY_FACT_TOP_K,
+        episodeTopK: MEMORY_EPISODE_TOP_K,
+      }),
+    ) ??
+      this.getMemoryRuntime().renderContext({
+        chatId: params.chatId,
+        query: params.userText || "[image message]",
+        factTopK: MEMORY_FACT_TOP_K,
+        episodeTopK: MEMORY_EPISODE_TOP_K,
+      }));
     if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
     return buildAgentMessages(promptSections.join("\n\n"), params.userText, params.imageBlocks);
   }
@@ -876,12 +920,14 @@ export class BotRuntime {
     thread: Thread<BotThreadState>;
     chatId: number;
     textStream: AsyncIterable<string>;
+    profiler?: Profiler;
   }): Promise<string> {
     if (params.thread.id.startsWith("telegram:")) {
       const result = await streamTelegramReply({
         token: this.deps.TELEGRAM_BOT_TOKEN,
         chatId: params.chatId,
         textStream: params.textStream,
+        profiler: params.profiler,
       });
       return result.text;
     }

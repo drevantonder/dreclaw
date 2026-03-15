@@ -74,6 +74,8 @@ export interface RuntimeDeps {
   INLINE_BURST_MS?: string;
   QUEUE_BURST_MS?: string;
   TYPING_PULSE_MS?: string;
+  PROFILING_ENABLED?: string;
+  PROFILING_SAMPLE_RATE?: string;
 }
 
 export interface RunCoordinatorDeps {

@@ -194,6 +194,7 @@ export class RunCoordinator {
     thread: WorkflowThread;
     message: Message;
     state: BotThreadState;
+    traceId?: string;
     channelId?: number;
     imageBlocks?: string[];
   }): Promise<string> {
@@ -206,6 +207,7 @@ export class RunCoordinator {
         thread: params.thread.toJSON(),
         message: params.message.toJSON(),
         state: workflowState,
+        traceId: params.traceId,
         channelId: params.channelId,
         imageBlocks: params.imageBlocks,
       },

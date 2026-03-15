@@ -4,6 +4,7 @@ export interface ConversationWorkflowPayload {
   thread: SerializedThread;
   message: SerializedMessage;
   state: unknown;
+  traceId?: string;
   channelId?: number;
   imageBlocks?: string[];
 }

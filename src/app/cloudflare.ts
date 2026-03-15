@@ -18,6 +18,7 @@ import { htmlResponse } from "../cloudflare/http/response";
 import { buildRuntimeDeps } from "./deps";
 import { flushTelegramEffects } from "./telegram";
 import { createRunCoordinator } from "../core/loop/run";
+import { createProfiler, parseProfilingEnabled, parseProfilingSampleRate } from "../core/profiling";
 
 export async function handleHttpRequest(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
@@ -43,6 +44,12 @@ export async function runConversationWorkflow(
   event: WorkflowEvent<ConversationWorkflowPayload>,
   step: WorkflowStep,
 ): Promise<void> {
+  const profiler = createProfiler({
+    enabled: parseProfilingEnabled(env.PROFILING_ENABLED),
+    sampleRate: parseProfilingSampleRate(env.PROFILING_SAMPLE_RATE),
+    traceId: event.payload.traceId,
+    context: { channel: "conversation-workflow" },
+  });
   const runs = createRunCoordinator({ db: env.DRECLAW_DB, workflow: env.CONVERSATION_WORKFLOW });
   const runtimeDeps = buildRuntimeDeps(env);
   const chat = createChat(env).registerSingleton();
@@ -50,11 +57,14 @@ export async function runConversationWorkflow(
   const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
   const message = ChatMessage.fromJSON(event.payload.message);
   const runtime = new BotRuntime(runtimeDeps, ctx as never);
-  let state = await runs.restoreWorkflowState({
-    threadId: thread.id,
-    state: event.payload.state as BotThreadState,
-    payloadState: event.payload.state,
-  });
+  profiler.event("workflow_started", { threadId: thread.id });
+  let state = await profiler.span("restore_workflow_state", async () =>
+    runs.restoreWorkflowState({
+      threadId: thread.id,
+      state: event.payload.state as BotThreadState,
+      payloadState: event.payload.state,
+    }),
+  );
   const chatId = event.payload.channelId ?? getTelegramUserChatId(message.raw, thread.id);
   const stopTypingPulse = startWorkflowTypingPulse({
     token: env.TELEGRAM_BOT_TOKEN,
@@ -63,9 +73,12 @@ export async function runConversationWorkflow(
   });
   const imageBlocks =
     event.payload.imageBlocks ??
-    (await loadTelegramImageBlocks(env.TELEGRAM_BOT_TOKEN, message.raw).catch(() => []));
+    (await profiler.span("load_telegram_images", async () =>
+      loadTelegramImageBlocks(env.TELEGRAM_BOT_TOKEN, message.raw).catch(() => []),
+    ));
   let messages: unknown[] | undefined;
   let shouldContinue = true;
+  let outcome = "completed";
   try {
     for (let stepIndex = 0; stepIndex < 64 && shouldContinue; stepIndex += 1) {
       await sendTelegramTypingAction(env.TELEGRAM_BOT_TOKEN, chatId).catch(() => null);
@@ -79,6 +92,8 @@ export async function runConversationWorkflow(
           baseMessages: Array.isArray(messages) ? (messages as any) : undefined,
           isFirstStep: stepIndex === 0,
           runTimeoutMs: getWorkflowBurstMs(runtimeDeps, stepIndex === 0),
+          profiler,
+          stepIndex,
         });
         await thread.setState(stepResult.state as any, { replace: true });
         return {
@@ -102,8 +117,12 @@ export async function runConversationWorkflow(
     }
     await thread.setState(state as any, { replace: true });
     await runs.clearWorkflowInstance(thread.id);
+  } catch (error) {
+    outcome = error instanceof Error ? error.message : "failed";
+    throw error;
   } finally {
     stopTypingPulse();
+    profiler.flush("conversation_workflow", { outcome, threadId: thread.id, chatId });
   }
 }
 

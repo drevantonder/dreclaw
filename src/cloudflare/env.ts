@@ -55,6 +55,8 @@ export interface Env {
   INLINE_BURST_MS?: string;
   QUEUE_BURST_MS?: string;
   TYPING_PULSE_MS?: string;
+  PROFILING_ENABLED?: string;
+  PROFILING_SAMPLE_RATE?: string;
   REASONING_EFFORT?: string;
   DRECLAW_DB: D1Database;
   CONVERSATION_WORKFLOW?: Workflow<ConversationWorkflowPayload>;

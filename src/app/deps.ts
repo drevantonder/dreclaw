@@ -84,6 +84,8 @@ export function buildRuntimeDeps(env: Env): RuntimeDeps {
     INLINE_BURST_MS: env.INLINE_BURST_MS,
     QUEUE_BURST_MS: env.QUEUE_BURST_MS,
     TYPING_PULSE_MS: env.TYPING_PULSE_MS,
+    PROFILING_ENABLED: env.PROFILING_ENABLED,
+    PROFILING_SAMPLE_RATE: env.PROFILING_SAMPLE_RATE,
     pluginRegistry,
   };
   runtimeDepsCache.set(env, deps);

@@ -2,6 +2,11 @@ import { createTelegramAdapter } from "@chat-adapter/telegram";
 import { Chat, type Message, type SerializedThread, type Thread } from "chat";
 import { buildRuntimeDeps } from "../../app/deps";
 import {
+  createProfiler,
+  parseProfilingEnabled,
+  parseProfilingSampleRate,
+} from "../../core/profiling";
+import {
   BotRuntime,
   createD1StateAdapter,
   createRunCoordinator,
@@ -15,7 +20,7 @@ import { handleAsyncCommand } from "./commands";
 import { getTelegramUserChatId, isTelegramPrivateMessage } from "./message";
 
 const chatCache = new WeakMap<Env, Chat<any, BotThreadState>>();
-const contextCache = new Map<string, ExecutionContext>();
+const contextCache = new Map<string, { ctx: ExecutionContext; traceId?: string }>();
 
 function getTelegramContextKey(raw: unknown): string | null {
   const chatId = (raw as { chat?: { id?: number } })?.chat?.id;
@@ -25,7 +30,9 @@ function getTelegramContextKey(raw: unknown): string | null {
     : null;
 }
 
-function takeTelegramExecutionContext(raw: unknown): ExecutionContext | undefined {
+function takeTelegramExecutionContext(
+  raw: unknown,
+): { ctx: ExecutionContext; traceId?: string } | undefined {
   const key = getTelegramContextKey(raw);
   if (!key) return undefined;
   const context = contextCache.get(key);
@@ -33,10 +40,14 @@ function takeTelegramExecutionContext(raw: unknown): ExecutionContext | undefine
   return context;
 }
 
-export function rememberTelegramExecutionContext(raw: unknown, ctx: ExecutionContext): void {
+export function rememberTelegramExecutionContext(
+  raw: unknown,
+  ctx: ExecutionContext,
+  traceId?: string,
+): void {
   const key = getTelegramContextKey(raw);
   if (!key) return;
-  contextCache.set(key, ctx);
+  contextCache.set(key, { ctx, traceId });
 }
 
 export function createChat(env: Env) {
@@ -75,8 +86,15 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
     message: Message,
     subscribe: boolean,
   ) => {
-    const requestExecutionContext = takeTelegramExecutionContext(message.raw) ?? executionContext;
+    const requestContext = takeTelegramExecutionContext(message.raw);
+    const requestExecutionContext = requestContext?.ctx ?? executionContext;
     const runtime = new BotRuntime(runtimeDeps, requestExecutionContext as never);
+    const profiler = createProfiler({
+      enabled: parseProfilingEnabled(runtimeDeps.PROFILING_ENABLED),
+      sampleRate: parseProfilingSampleRate(runtimeDeps.PROFILING_SAMPLE_RATE),
+      traceId: requestContext?.traceId,
+      context: { channel: "telegram-gateway", threadId: thread.id },
+    });
     if (!isTelegramPrivateMessage(message.raw)) return;
     if (!isAllowedTelegramMessage(env, message)) return;
     const text = message.text.trim();
@@ -99,18 +117,30 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
       return;
     }
 
-    if (subscribe) await thread.subscribe();
+    if (subscribe) await profiler.span("thread_subscribe", async () => thread.subscribe());
 
-    const currentState = await runs.recoverState(
-      thread.id,
-      normalizeBotThreadState(await thread.state),
+    const currentState = await profiler.span("recover_state", async () =>
+      runs.recoverState(thread.id, normalizeBotThreadState(await thread.state)),
     );
-    const run = await runs.inspect(thread.id, currentState);
+    const run = await profiler.span("inspect_run", async () =>
+      runs.inspect(thread.id, currentState),
+    );
     if (run.busy) {
       await thread.post("Currently busy. Not executed. Use /status or /stop.");
+      profiler.flush("telegram_gateway", { outcome: "busy", chatId });
       return;
     }
-    await startConversationWorkflow(env, thread, message, currentState, chatId);
+    await profiler.span("start_workflow", async () =>
+      startConversationWorkflow(
+        env,
+        thread,
+        message,
+        currentState,
+        chatId,
+        requestContext?.traceId,
+      ),
+    );
+    profiler.flush("telegram_gateway", { outcome: "workflow_started", chatId });
   };
 
   if (
@@ -132,6 +162,7 @@ export async function startConversationWorkflow(
   message: Message,
   state: BotThreadState,
   chatId: number,
+  traceId?: string,
 ): Promise<string> {
   const runtimeDeps = buildRuntimeDeps(env);
   if (!runtimeDeps.CONVERSATION_WORKFLOW) {
@@ -144,6 +175,7 @@ export async function startConversationWorkflow(
     thread: thread as Thread<BotThreadState> & { toJSON(): SerializedThread },
     message,
     state,
+    traceId,
     channelId: chatId,
   });
 }
