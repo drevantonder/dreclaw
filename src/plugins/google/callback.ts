@@ -1,16 +1,9 @@
 import type { Env } from "../../cloudflare/env";
-import { decodeEncryptionKey, encryptSecret } from "../../integrations/google/crypto";
-import {
-  GOOGLE_OAUTH_DEFAULT_PRINCIPAL,
-  getGoogleOAuthConfig,
-} from "../../integrations/google/config";
-import { exchangeGoogleOAuthCode } from "../../integrations/google/oauth";
-import {
-  getGoogleOAuthState,
-  markGoogleOAuthStateUsed,
-  upsertGoogleOAuthToken,
-} from "../../integrations/google/repo";
 import type { OAuthCallbackResult } from "../../core/plugins/types";
+import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig } from "./config";
+import { decodeEncryptionKey, encryptSecret } from "./crypto";
+import { exchangeGoogleOAuthCode } from "./oauth";
+import { getGoogleOAuthState, markGoogleOAuthStateUsed, upsertGoogleOAuthToken } from "./repo";
 
 export async function handleGoogleOAuthCallback(
   request: Request,

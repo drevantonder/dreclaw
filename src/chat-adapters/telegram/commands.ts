@@ -1,9 +1,6 @@
-import {
-  handleAsyncCommand as handleCoreCommand,
-  maybeHandleAsyncCoreCommand,
-  publishCommandResult,
-} from "../../core";
+import { handleAsyncCommand as handleCoreCommand, maybeHandleAsyncCoreCommand } from "../../core";
 import type { Env } from "../../cloudflare/env";
+import { sendTelegramTextMessage } from "./api";
 import type { TelegramUpdate } from "./types";
 import { isAllowedTelegramUpdate } from "./auth";
 import { isPrivateTelegramUpdate } from "./message";
@@ -20,13 +17,16 @@ export async function maybeHandleAsyncTelegramCommand(
   if (!isPrivateTelegramUpdate(update)) return false;
   if (!isAllowedTelegramUpdate(env, update)) return false;
 
-  return maybeHandleAsyncCoreCommand(env, {
+  const result = await maybeHandleAsyncCoreCommand(env, {
     threadId: `telegram:${message.chat.id}`,
     chatId: message.chat.id,
     telegramUserId: Number(message.from?.id ?? 0),
     text,
     executionContext,
   });
+  if (!result) return false;
+  await publishTelegramMessages(env, message.chat.id, result.messages);
+  return true;
 }
 
 export async function handleAsyncCommand(params: {
@@ -45,5 +45,15 @@ export async function handleAsyncCommand(params: {
     telegramUserId: params.telegramUserId,
     text: params.text,
   });
-  await publishCommandResult(params.env, params.chatId, result.messages);
+  await publishTelegramMessages(params.env, params.chatId, result.messages);
+}
+
+async function publishTelegramMessages(
+  env: Pick<Env, "TELEGRAM_BOT_TOKEN">,
+  chatId: number,
+  messages: string[],
+): Promise<void> {
+  for (const message of messages) {
+    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, message);
+  }
 }

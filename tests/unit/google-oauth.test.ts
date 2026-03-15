@@ -6,7 +6,7 @@ import {
   getGoogleOAuthConfig,
   parseGoogleScopes,
   refreshGoogleAccessToken,
-} from "../../src/integrations/google";
+} from "../../src/plugins/google/testing";
 import type { Env } from "../../src/cloudflare/env";
 
 afterEach(() => {

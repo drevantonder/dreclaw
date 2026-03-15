@@ -1,12 +1,8 @@
 import type { Env } from "../../cloudflare/env";
-import {
-  handleGoogleCommand,
-  isBusySensitiveGoogleCommand,
-  isGoogleCommandText,
-} from "../../integrations/google/commands";
-import { getGoogleAccessToken, isGoogleLinked } from "../../integrations/google/client";
-import { executeGoogleRequest } from "../../integrations/google/execute";
 import { handleGoogleOAuthCallback } from "./callback";
+import { getGoogleAccessToken, isGoogleLinked } from "./client";
+import { handleGoogleCommand, isBusySensitiveGoogleCommand, isGoogleCommandText } from "./commands";
+import { executeGoogleRequest } from "./execute";
 
 export function createGooglePlugin(env: Env) {
   return {
@@ -34,3 +30,5 @@ export function createGooglePlugin(env: Env) {
     ) => executeGoogleRequest(env, payload, options),
   };
 }
+
+export type { GoogleOAuthConfig } from "./config";

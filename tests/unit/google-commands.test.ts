@@ -9,21 +9,21 @@ const mocks = vi.hoisted(() => ({
   deleteGoogleOAuthToken: vi.fn(),
 }));
 
-vi.mock("../../src/integrations/google/config", () => ({
+vi.mock("../../src/plugins/google/config", () => ({
   GOOGLE_OAUTH_DEFAULT_PRINCIPAL: "default",
   getGoogleOAuthConfig: mocks.getGoogleOAuthConfig,
 }));
-vi.mock("../../src/integrations/google/oauth", () => ({
+vi.mock("../../src/plugins/google/oauth", () => ({
   buildGoogleOAuthUrl: vi.fn((_config: unknown, state: string) => `https://auth.test/${state}`),
   createOAuthStateToken: mocks.createOAuthStateToken,
 }));
-vi.mock("../../src/integrations/google/repo", () => ({
+vi.mock("../../src/plugins/google/repo", () => ({
   createGoogleOAuthState: mocks.createGoogleOAuthState,
   getGoogleOAuthToken: mocks.getGoogleOAuthToken,
   deleteGoogleOAuthToken: mocks.deleteGoogleOAuthToken,
 }));
 
-import { handleGoogleCommand } from "../../src/integrations/google/commands";
+import { handleGoogleCommand } from "../../src/plugins/google/testing";
 
 describe("google commands", () => {
   beforeEach(() => {

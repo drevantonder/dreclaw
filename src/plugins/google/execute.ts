@@ -1,4 +1,5 @@
 import type { Env } from "../../cloudflare/env";
+import { getGoogleAccessToken } from "./client";
 import {
   expandGooglePathTemplate,
   findGoogleDiscoveryMethod,
@@ -6,7 +7,6 @@ import {
   hasGoogleRequestBody,
   safeJsonParse,
 } from "./discovery";
-import { getGoogleAccessToken } from "./client";
 
 export async function executeGoogleRequest(
   env: Env,

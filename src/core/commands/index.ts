@@ -1,5 +1,4 @@
 import type { Env } from "../../cloudflare/env";
-import { sendTelegramTextMessage } from "../../chat-adapters/telegram/api";
 import { createPluginRegistry } from "../plugins/registry";
 import { BotRuntime } from "../loop/runtime";
 import {
@@ -19,10 +18,10 @@ export async function maybeHandleAsyncCoreCommand(
     text: string;
     executionContext?: ExecutionContext;
   },
-): Promise<boolean> {
+): Promise<{ messages: string[] } | null> {
   const text = input.text.trim();
-  if (!text.startsWith("/")) return false;
-  const result = await handleAsyncCommand({
+  if (!text.startsWith("/")) return null;
+  return handleAsyncCommand({
     env,
     runtime: new BotRuntime(env, input.executionContext),
     threadId: input.threadId,
@@ -30,8 +29,6 @@ export async function maybeHandleAsyncCoreCommand(
     telegramUserId: input.telegramUserId,
     text,
   });
-  await publishCommandResult(env, input.chatId, result.messages);
-  return true;
 }
 
 export async function handleAsyncCommand(params: {
@@ -118,16 +115,6 @@ export async function handleAsyncCommand(params: {
   }
 
   return { messages: [runtime.help()] };
-}
-
-export async function publishCommandResult(
-  env: Pick<Env, "TELEGRAM_BOT_TOKEN">,
-  chatId: number,
-  messages: string[],
-): Promise<void> {
-  for (const message of messages) {
-    await sendTelegramTextMessage(env.TELEGRAM_BOT_TOKEN, chatId, message);
-  }
 }
 
 function busyMessage(command: string): string {

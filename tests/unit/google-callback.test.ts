@@ -9,34 +9,29 @@ const mocks = vi.hoisted(() => ({
   upsertGoogleOAuthToken: vi.fn(),
   exchangeGoogleOAuthCode: vi.fn(),
   getGoogleOAuthConfig: vi.fn(),
-  sendTelegramTextMessage: vi.fn(),
 }));
 
-vi.mock("../../src/integrations/google/crypto", () => ({
+vi.mock("../../src/plugins/google/crypto", () => ({
   decodeEncryptionKey: mocks.decodeEncryptionKey,
   encryptSecret: mocks.encryptSecret,
 }));
 
-vi.mock("../../src/integrations/google/repo", () => ({
+vi.mock("../../src/plugins/google/repo", () => ({
   getGoogleOAuthState: mocks.getGoogleOAuthState,
   markGoogleOAuthStateUsed: mocks.markGoogleOAuthStateUsed,
   upsertGoogleOAuthToken: mocks.upsertGoogleOAuthToken,
 }));
 
-vi.mock("../../src/integrations/google/oauth", () => ({
+vi.mock("../../src/plugins/google/oauth", () => ({
   exchangeGoogleOAuthCode: mocks.exchangeGoogleOAuthCode,
 }));
 
-vi.mock("../../src/integrations/google/config", () => ({
+vi.mock("../../src/plugins/google/config", () => ({
   GOOGLE_OAUTH_DEFAULT_PRINCIPAL: "default",
   getGoogleOAuthConfig: mocks.getGoogleOAuthConfig,
 }));
 
-vi.mock("../../src/chat-adapters/telegram/api", () => ({
-  sendTelegramTextMessage: mocks.sendTelegramTextMessage,
-}));
-
-import { handleGoogleOAuthCallback } from "../../src/integrations/google/callback";
+import { handleGoogleOAuthCallback } from "../../src/plugins/google/testing";
 
 describe("google callback", () => {
   beforeEach(() => {
@@ -47,22 +42,23 @@ describe("google callback", () => {
     mocks.upsertGoogleOAuthToken.mockReset();
     mocks.exchangeGoogleOAuthCode.mockReset();
     mocks.getGoogleOAuthConfig.mockReset();
-    mocks.sendTelegramTextMessage.mockReset();
   });
 
-  it("returns an html error when state or code is missing", async () => {
+  it("returns a failure result when state or code is missing", async () => {
     const { env } = createEnv();
-    const response = await handleGoogleOAuthCallback(
+    const result = await handleGoogleOAuthCallback(
       new Request("https://test.local/google/oauth/callback?state="),
       env,
     );
 
-    expect(response.status).toBe(400);
-    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(await response.text()).toContain("Missing state or code.");
+    expect(result).toEqual({
+      status: 400,
+      title: "Google OAuth failed",
+      body: "Missing state or code.",
+    });
   });
 
-  it("stores the refresh token and notifies Telegram on success", async () => {
+  it("stores the refresh token and returns a notification payload on success", async () => {
     const { env } = createEnv();
     mocks.getGoogleOAuthState.mockResolvedValue({
       chatId: 777,
@@ -85,15 +81,21 @@ describe("google callback", () => {
     });
     mocks.decodeEncryptionKey.mockReturnValue(new Uint8Array(32));
     mocks.encryptSecret.mockResolvedValue({ ciphertext: "ciphertext", nonce: "nonce" });
-    mocks.sendTelegramTextMessage.mockResolvedValue(undefined);
 
-    const response = await handleGoogleOAuthCallback(
+    const result = await handleGoogleOAuthCallback(
       new Request("https://test.local/google/oauth/callback?state=test-state&code=test-code"),
       env,
     );
 
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain("Google OAuth complete");
+    expect(result).toEqual({
+      status: 200,
+      title: "Google OAuth complete",
+      body: "You can close this tab and return to Telegram.",
+      notifyTelegram: {
+        chatId: 777,
+        text: "Google account linked successfully. You can now use Google features.",
+      },
+    });
     expect(mocks.markGoogleOAuthStateUsed).toHaveBeenCalledWith(
       env.DRECLAW_DB,
       "test-state",
@@ -107,14 +109,9 @@ describe("google callback", () => {
       scopes: "scope-a scope-b",
       updatedAt: expect.any(String),
     });
-    expect(mocks.sendTelegramTextMessage).toHaveBeenCalledWith(
-      env.TELEGRAM_BOT_TOKEN,
-      777,
-      "Google account linked successfully. You can now use Google features.",
-    );
   });
 
-  it("returns an expired-link response before exchanging the code", async () => {
+  it("returns an expired-link result before exchanging the code", async () => {
     const { env } = createEnv();
     mocks.getGoogleOAuthState.mockResolvedValue({
       chatId: 777,
@@ -123,15 +120,16 @@ describe("google callback", () => {
       usedAt: null,
     });
 
-    const response = await handleGoogleOAuthCallback(
+    const result = await handleGoogleOAuthCallback(
       new Request("https://test.local/google/oauth/callback?state=test-state&code=test-code"),
       env,
     );
 
-    expect(response.status).toBe(400);
-    expect(await response.text()).toContain(
-      "Authorization link expired. Run /google connect again.",
-    );
+    expect(result).toEqual({
+      status: 400,
+      title: "Google OAuth failed",
+      body: "Authorization link expired. Run /google connect again.",
+    });
     expect(mocks.markGoogleOAuthStateUsed).not.toHaveBeenCalled();
     expect(mocks.exchangeGoogleOAuthCode).not.toHaveBeenCalled();
   });

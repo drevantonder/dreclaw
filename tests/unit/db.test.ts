@@ -6,7 +6,7 @@ import {
   getGoogleOAuthToken,
   markGoogleOAuthStateUsed,
   upsertGoogleOAuthToken,
-} from "../../src/integrations/google/repo";
+} from "../../src/plugins/google/testing";
 import { markUpdateSeen } from "../../src/chat-adapters/telegram/repo";
 import {
   countVfsEntries,

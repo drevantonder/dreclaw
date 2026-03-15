@@ -53,8 +53,9 @@ export function expandGooglePathTemplate(
 ): string {
   return String(template).replace(/\{(\+?)([^}]+)\}/g, (_match, plus: string, name: string) => {
     const value = params[name];
-    if (value === undefined || value === null)
+    if (value === undefined || value === null) {
       throw new Error(`GOOGLE_PATH_PARAM_MISSING: ${name}`);
+    }
     delete params[name];
     const source = formatQueryValue(value);
     if (plus === "+") {
