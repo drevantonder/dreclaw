@@ -1,11 +1,11 @@
 import type { Env } from "./env";
 import { ConversationWorkflow } from "./conversation-workflow";
 import { ExecuteHost } from "./execute-host";
-import { handleWorkerFetch } from "../core/http";
+import { handleHttpRequest } from "./http/router";
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
-    return handleWorkerFetch(request, env, ctx);
+    return handleHttpRequest(request, env, ctx);
   },
   async queue(): Promise<void> {
     return;
