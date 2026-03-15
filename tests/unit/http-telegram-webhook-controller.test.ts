@@ -3,12 +3,14 @@ import { createEnv } from "../helpers/fakes";
 
 const mocks = vi.hoisted(() => ({
   createBot: vi.fn(),
+  rememberTelegramExecutionContext: vi.fn(),
   maybeHandleAsyncTelegramCommand: vi.fn(),
   markUpdateSeen: vi.fn(),
 }));
 
 vi.mock("../../src/chat-adapters/telegram/gateway", () => ({
   createBot: mocks.createBot,
+  rememberTelegramExecutionContext: mocks.rememberTelegramExecutionContext,
 }));
 
 vi.mock("../../src/chat-adapters/telegram/commands", () => ({
@@ -58,6 +60,7 @@ describe("handleTelegramWebhookRequest", () => {
       vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), { status: 200 })),
     );
     mocks.createBot.mockReset();
+    mocks.rememberTelegramExecutionContext.mockReset();
     mocks.maybeHandleAsyncTelegramCommand.mockReset();
     mocks.markUpdateSeen.mockReset();
   });
