@@ -1,13 +1,14 @@
-import type { Env } from "../../cloudflare/env";
+import type { ReplyTarget } from "../../core/effects";
 import type { OAuthCallbackResult } from "../../core/plugins/types";
 import { GOOGLE_OAUTH_DEFAULT_PRINCIPAL, getGoogleOAuthConfig } from "./config";
 import { decodeEncryptionKey, encryptSecret } from "./crypto";
 import { exchangeGoogleOAuthCode } from "./oauth";
 import { getGoogleOAuthState, markGoogleOAuthStateUsed, upsertGoogleOAuthToken } from "./repo";
+import type { GooglePluginDeps } from "./types";
 
 export async function handleGoogleOAuthCallback(
   request: Request,
-  env: Env,
+  deps: GooglePluginDeps,
 ): Promise<OAuthCallbackResult> {
   const url = new URL(request.url);
   const state = String(url.searchParams.get("state") ?? "").trim();
@@ -16,7 +17,7 @@ export async function handleGoogleOAuthCallback(
     return failure(400, "Google OAuth failed", "Missing state or code.");
   }
 
-  const oauthState = await getGoogleOAuthState(env.DRECLAW_DB, state);
+  const oauthState = await getGoogleOAuthState(deps.db, state);
   if (!oauthState) return failure(400, "Google OAuth failed", "Invalid or expired state.");
   if (oauthState.usedAt) {
     return failure(400, "Google OAuth failed", "This authorization link was already used.");
@@ -29,13 +30,13 @@ export async function handleGoogleOAuthCallback(
     );
   }
 
-  const marked = await markGoogleOAuthStateUsed(env.DRECLAW_DB, state, new Date().toISOString());
+  const marked = await markGoogleOAuthStateUsed(deps.db, state, new Date().toISOString());
   if (!marked) {
     return failure(400, "Google OAuth failed", "Authorization link is no longer valid.");
   }
 
   try {
-    const exchange = await exchangeGoogleOAuthCode(getGoogleOAuthConfig(env), code);
+    const exchange = await exchangeGoogleOAuthCode(getGoogleOAuthConfig(deps.settings), code);
     if (!exchange.refreshToken) {
       throw new Error(
         "Google did not return a refresh token. Revoke app access and retry /google connect.",
@@ -44,9 +45,9 @@ export async function handleGoogleOAuthCallback(
 
     const encrypted = await encryptSecret(
       exchange.refreshToken,
-      decodeEncryptionKey(String(env.GOOGLE_OAUTH_ENCRYPTION_KEY ?? "")),
+      decodeEncryptionKey(String(deps.settings.encryptionKey ?? "")),
     );
-    await upsertGoogleOAuthToken(env.DRECLAW_DB, {
+    await upsertGoogleOAuthToken(deps.db, {
       principal: GOOGLE_OAUTH_DEFAULT_PRINCIPAL,
       telegramUserId: oauthState.telegramUserId,
       refreshTokenCiphertext: encrypted.ciphertext,
@@ -59,10 +60,12 @@ export async function handleGoogleOAuthCallback(
       status: 200,
       title: "Google OAuth complete",
       body: "You can close this tab and return to Telegram.",
-      notifyTelegram: {
-        chatId: oauthState.chatId,
-        text: "Google account linked successfully. You can now use Google features.",
-      },
+      effects: [
+        sendTextEffect(
+          oauthState.chatId,
+          "Google account linked successfully. You can now use Google features.",
+        ),
+      ],
     };
   } catch (error) {
     return failure(
@@ -75,4 +78,12 @@ export async function handleGoogleOAuthCallback(
 
 function failure(status: number, title: string, body: string): OAuthCallbackResult {
   return { status, title, body };
+}
+
+function sendTextEffect(chatId: number, text: string) {
+  return {
+    type: "send-text" as const,
+    target: { channel: "telegram", id: String(chatId) } satisfies ReplyTarget,
+    text,
+  };
 }

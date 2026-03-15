@@ -1,23 +1,23 @@
-import type { Env } from "../../cloudflare/env";
 import { handleGoogleOAuthCallback } from "./callback";
 import { getGoogleAccessToken, isGoogleLinked } from "./client";
 import { handleGoogleCommand, isBusySensitiveGoogleCommand, isGoogleCommandText } from "./commands";
 import { executeGoogleRequest } from "./execute";
+import type { GooglePluginDeps } from "./types";
 
-export function createGooglePlugin(env: Env) {
+export function createGooglePlugin(deps: GooglePluginDeps) {
   return {
     name: "google",
     commands: [
       {
         match: (text: string) => isGoogleCommandText(text),
         isBusySensitive: (text: string) => isBusySensitiveGoogleCommand(text),
-        execute: (input: { text: string; chatId: number; telegramUserId: number }) =>
-          handleGoogleCommand(env, input),
+        execute: (input: Parameters<typeof handleGoogleCommand>[1]) =>
+          handleGoogleCommand(deps, input),
       },
     ],
-    handleOAuthCallback: (request: Request) => handleGoogleOAuthCallback(request, env),
-    isLinked: () => isGoogleLinked(env),
-    getAccessToken: (timeoutMs: number) => getGoogleAccessToken(env, timeoutMs),
+    handleOAuthCallback: (request: Request) => handleGoogleOAuthCallback(request, deps),
+    isLinked: () => isGoogleLinked(deps),
+    getAccessToken: (timeoutMs: number) => getGoogleAccessToken(deps, timeoutMs),
     execute: (
       payload: {
         service?: string;
@@ -27,7 +27,7 @@ export function createGooglePlugin(env: Env) {
         body?: unknown;
       },
       options: { allowedServices: string[]; timeoutMs: number },
-    ) => executeGoogleRequest(env, payload, options),
+    ) => executeGoogleRequest(deps, payload, options),
   };
 }
 

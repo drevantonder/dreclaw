@@ -1,4 +1,4 @@
-import type { Env } from "../../cloudflare/env";
+import type { MemoryDeps } from "./types";
 
 export interface MemoryConfig {
   enabled: boolean;
@@ -13,35 +13,54 @@ const DEFAULT_MAX_INJECT_TOKENS = 1500;
 const DEFAULT_REFLECTION_EVERY_TURNS = 8;
 const DEFAULT_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5";
 
-export function getMemoryConfig(env: Env): MemoryConfig {
-  const enabled = parseBooleanFlag(env.MEMORY_ENABLED, true);
+export function getMemoryConfig(deps: MemoryDeps | object): MemoryConfig {
+  const normalized = normalizeMemoryDeps(deps);
+  const enabled = parseBooleanFlag(normalized.settings.enabled, true);
   const config: MemoryConfig = {
     enabled,
     retentionDays: parsePositiveInt(
-      env.MEMORY_RETENTION_DAYS,
+      normalized.settings.retentionDays,
       DEFAULT_RETENTION_DAYS,
       "MEMORY_RETENTION_DAYS",
     ),
     maxInjectTokens: parsePositiveInt(
-      env.MEMORY_MAX_INJECT_TOKENS,
+      normalized.settings.maxInjectTokens,
       DEFAULT_MAX_INJECT_TOKENS,
       "MEMORY_MAX_INJECT_TOKENS",
     ),
     reflectionEveryTurns: parsePositiveInt(
-      env.MEMORY_REFLECTION_EVERY_TURNS,
+      normalized.settings.reflectionEveryTurns,
       DEFAULT_REFLECTION_EVERY_TURNS,
       "MEMORY_REFLECTION_EVERY_TURNS",
     ),
-    embeddingModel: String(env.MEMORY_EMBEDDING_MODEL ?? "").trim() || DEFAULT_EMBEDDING_MODEL,
+    embeddingModel:
+      String(normalized.settings.embeddingModel ?? "").trim() || DEFAULT_EMBEDDING_MODEL,
   };
   if (!enabled) return config;
-  if (!env.AI) {
+  if (!normalized.aiBinding) {
     throw new Error("MEMORY_ENABLED=true requires AI binding for embeddings");
   }
-  if (!env.VECTORIZE_MEMORY) {
+  if (!normalized.vectorIndex) {
     throw new Error("MEMORY_ENABLED=true requires VECTORIZE_MEMORY binding");
   }
   return config;
+}
+
+function normalizeMemoryDeps(input: MemoryDeps | object): MemoryDeps {
+  if (input && typeof input === "object" && "settings" in input) return input as MemoryDeps;
+  const env = (input ?? {}) as Record<string, unknown>;
+  return {
+    db: (env.DRECLAW_DB ?? {}) as D1Database,
+    aiBinding: env.AI as Ai | undefined,
+    vectorIndex: env.VECTORIZE_MEMORY as VectorizeIndex | undefined,
+    settings: {
+      enabled: env.MEMORY_ENABLED as string | undefined,
+      retentionDays: env.MEMORY_RETENTION_DAYS as string | undefined,
+      maxInjectTokens: env.MEMORY_MAX_INJECT_TOKENS as string | undefined,
+      reflectionEveryTurns: env.MEMORY_REFLECTION_EVERY_TURNS as string | undefined,
+      embeddingModel: env.MEMORY_EMBEDDING_MODEL as string | undefined,
+    },
+  };
 }
 
 function parseBooleanFlag(raw: string | undefined, defaultValue: boolean): boolean {

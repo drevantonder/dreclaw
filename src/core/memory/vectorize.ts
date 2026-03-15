@@ -1,4 +1,4 @@
-import type { Env } from "../../cloudflare/env";
+import type { MemoryDeps } from "./types";
 
 export interface VectorMatch {
   id: string;
@@ -6,13 +6,13 @@ export interface VectorMatch {
 }
 
 export async function upsertFactVector(
-  env: Env,
+  vectorIndex: MemoryDeps["vectorIndex"],
   factId: string,
   chatId: number,
   values: number[],
 ): Promise<void> {
-  if (!env.VECTORIZE_MEMORY) throw new Error("VECTORIZE_MEMORY binding missing");
-  const index = env.VECTORIZE_MEMORY as unknown as {
+  if (!vectorIndex) throw new Error("VECTORIZE_MEMORY binding missing");
+  const index = vectorIndex as unknown as {
     upsert: (
       items: Array<{ id: string; values: number[]; metadata?: Record<string, unknown> }>,
     ) => Promise<unknown>;
@@ -27,13 +27,13 @@ export async function upsertFactVector(
 }
 
 export async function queryFactVectors(
-  env: Env,
+  vectorIndex: MemoryDeps["vectorIndex"],
   chatId: number,
   values: number[],
   topK: number,
 ): Promise<VectorMatch[]> {
-  if (!env.VECTORIZE_MEMORY) throw new Error("VECTORIZE_MEMORY binding missing");
-  const index = env.VECTORIZE_MEMORY as unknown as {
+  if (!vectorIndex) throw new Error("VECTORIZE_MEMORY binding missing");
+  const index = vectorIndex as unknown as {
     query: (
       vector: number[],
       options: {
@@ -52,10 +52,13 @@ export async function queryFactVectors(
     .filter((item) => item.id && Number.isFinite(item.score));
 }
 
-export async function deleteFactVectors(env: Env, ids: string[]): Promise<void> {
+export async function deleteFactVectors(
+  vectorIndex: MemoryDeps["vectorIndex"],
+  ids: string[],
+): Promise<void> {
   if (!ids.length) return;
-  if (!env.VECTORIZE_MEMORY) throw new Error("VECTORIZE_MEMORY binding missing");
-  const index = env.VECTORIZE_MEMORY as unknown as {
+  if (!vectorIndex) throw new Error("VECTORIZE_MEMORY binding missing");
+  const index = vectorIndex as unknown as {
     deleteByIds?: (ids: string[]) => Promise<unknown>;
   };
   if (typeof index.deleteByIds === "function") {

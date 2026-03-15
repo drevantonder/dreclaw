@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { createGooglePlugin } from "../plugins/google";
+import { buildRuntimeDeps } from "../app/deps";
 import { createMemoryRuntime } from "../core/memory";
 import { createAgendaService, type AgendaUpdateInput } from "../core/agenda";
 import type { Env } from "./env";
@@ -119,7 +119,19 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
   }
 
   private memory() {
-    return createMemoryRuntime(this.env);
+    const runtimeDeps = buildRuntimeDeps(this.env);
+    return createMemoryRuntime({
+      db: runtimeDeps.DRECLAW_DB,
+      aiBinding: runtimeDeps.AI,
+      vectorIndex: runtimeDeps.VECTORIZE_MEMORY,
+      settings: {
+        enabled: runtimeDeps.MEMORY_ENABLED,
+        retentionDays: runtimeDeps.MEMORY_RETENTION_DAYS,
+        maxInjectTokens: runtimeDeps.MEMORY_MAX_INJECT_TOKENS,
+        reflectionEveryTurns: runtimeDeps.MEMORY_REFLECTION_EVERY_TURNS,
+        embeddingModel: runtimeDeps.MEMORY_EMBEDDING_MODEL,
+      },
+    });
   }
 
   private agenda() {
@@ -175,14 +187,16 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
     params?: Record<string, unknown>;
     body?: unknown;
   }): Promise<unknown> {
-    return this.google().execute(payload, {
+    const google = this.google();
+    if (!google?.execute) throw new Error("GOOGLE_PLUGIN_UNAVAILABLE");
+    return google.execute(payload, {
       allowedServices: this.props().allowedGoogleServices,
       timeoutMs: this.props().limits.netRequestTimeoutMs,
     });
   }
 
   private google() {
-    return createGooglePlugin(this.env);
+    return buildRuntimeDeps(this.env).pluginRegistry.getByName("google");
   }
 }
 

@@ -1,9 +1,9 @@
 import { createAgendaService } from "../core/agenda";
+import { handleHttpRequest } from "../app/cloudflare";
 import type { Env } from "./env";
 import { ConversationWorkflow } from "./conversation-workflow";
 import { ExecuteHost } from "./execute-host";
 import { ProactiveWakeWorkflow } from "./proactive-wake-workflow";
-import { handleHttpRequest } from "./http/router";
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {

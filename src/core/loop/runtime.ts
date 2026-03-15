@@ -14,8 +14,7 @@ import { createMemoryRuntime } from "../memory";
 import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../skills";
 import { clearAllVfsEntries } from "../vfs/repo";
 import { createWorkspace } from "../vfs";
-import type { Env } from "../../cloudflare/env";
-import { createGooglePlugin } from "../../plugins/google";
+import type { RuntimeDeps } from "../app/types";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "./llm/constants";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
@@ -65,19 +64,19 @@ export class BotRuntime {
   private readonly runs: ReturnType<typeof createRunCoordinator>;
 
   constructor(
-    private readonly env: Env,
+    private readonly deps: RuntimeDeps,
     private readonly executionContext?: ExecutionContext & {
       exports?: Record<string, (options?: { props?: unknown }) => ExecuteHostBinding>;
     },
   ) {
-    this.runs = createRunCoordinator(env);
+    this.runs = createRunCoordinator({ db: deps.DRECLAW_DB, workflow: deps.CONVERSATION_WORKFLOW });
   }
 
   async status(threadId: string, state: BotThreadState): Promise<string> {
     const runtime = this.getRuntimeConfig();
     const memory = this.getMemoryConfigSafe();
-    const googleLinked = await this.google().isLinked();
-    const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
+    const googleLinked = Boolean(await this.google()?.isLinked?.());
+    const controls = await getPersistedThreadControls(this.deps.DRECLAW_DB, threadId);
     const run = await this.runs.getStatus(threadId, state);
     return [
       `model: ${runtime.model}`,
@@ -121,7 +120,7 @@ export class BotRuntime {
 
   async factoryReset(chatId: number): Promise<BotThreadState> {
     await this.getMemoryRuntime().factoryReset({ chatId });
-    await clearAllVfsEntries(this.env.DRECLAW_DB, new Date().toISOString());
+    await clearAllVfsEntries(this.deps.DRECLAW_DB, new Date().toISOString());
     return normalizeBotThreadState(undefined);
   }
 
@@ -144,7 +143,7 @@ export class BotRuntime {
     const imageBlocks = params.imageBlocks ?? [];
     const runtime = this.getRuntimeConfig();
     const toolTraces: ToolTrace[] = [];
-    const tracer = new VerboseTracer(this.env.DRECLAW_DB, thread);
+    const tracer = new VerboseTracer(this.deps.DRECLAW_DB, thread);
     const model = this.createModel(runtime);
     const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
     const skillCatalog = await this.listSkills();
@@ -321,7 +320,7 @@ export class BotRuntime {
     const imageBlocks = params.imageBlocks ?? [];
     const runtime = this.getRuntimeConfig();
     const toolTraces: ToolTrace[] = [];
-    const tracer = new VerboseTracer(this.env.DRECLAW_DB, thread);
+    const tracer = new VerboseTracer(this.deps.DRECLAW_DB, thread);
     const model = this.createModel(runtime);
     const inputMessages = isModelMessageArray(params.baseMessages)
       ? params.baseMessages
@@ -819,7 +818,7 @@ export class BotRuntime {
                 { code: input.code, input: input.input },
                 {
                   config: this.getCodeExecutionConfig(),
-                  loader: this.env.LOADER ?? null,
+                  loader: this.deps.LOADER ?? null,
                   host: this.createExecuteHostBinding(params.threadId, params.chatId),
                 },
               ),
@@ -912,20 +911,20 @@ export class BotRuntime {
 
   private getWorkspace() {
     return createWorkspace({
-      db: this.env.DRECLAW_DB,
+      db: this.deps.DRECLAW_DB,
       maxFileBytes: this.getCodeExecutionConfig().limits.vfsMaxFileBytes,
     });
   }
 
   private getAgendaService(primaryChatId?: number | null) {
-    return createAgendaService(this.env.DRECLAW_DB, {
-      timezone: this.env.USER_TIMEZONE,
+    return createAgendaService(this.deps.DRECLAW_DB, {
+      timezone: this.deps.USER_TIMEZONE,
       primaryChatId: primaryChatId ?? null,
     });
   }
 
   private getCodeExecutionConfig() {
-    return getCodeExecutionConfig(this.env as unknown as Record<string, string | undefined>);
+    return getCodeExecutionConfig(this.deps as unknown as Record<string, string | undefined>);
   }
 
   private createExecuteHostBinding(threadId: string, chatId: number): ExecuteHostBinding | null {
@@ -950,25 +949,25 @@ export class BotRuntime {
   }
 
   private getRuntimeConfig(): RuntimeConfig {
-    const provider = (this.env.AI_PROVIDER?.trim().toLowerCase() || "opencode") as
+    const provider = (this.deps.AI_PROVIDER?.trim().toLowerCase() || "opencode") as
       | "opencode"
       | "opencode-go"
       | "workers";
     const model =
-      this.env.MODEL?.trim() || (provider === "workers" ? "@cf/zai-org/glm-4.7-flash" : "");
+      this.deps.MODEL?.trim() || (provider === "workers" ? "@cf/zai-org/glm-4.7-flash" : "");
     if (!model) throw new Error("Missing MODEL");
     if (provider === "workers") {
-      if (!this.env.AI) throw new Error("Missing AI binding");
-      return { provider, model, aiBinding: this.env.AI };
+      if (!this.deps.AI) throw new Error("Missing AI binding");
+      return { provider, model, aiBinding: this.deps.AI };
     }
-    const apiKey = this.env.OPENCODE_API_KEY?.trim();
+    const apiKey = this.deps.OPENCODE_API_KEY?.trim();
     if (!apiKey) throw new Error("Missing OPENCODE_API_KEY");
     return {
       provider,
       model,
       apiKey,
       baseUrl:
-        this.env.BASE_URL?.trim() ||
+        this.deps.BASE_URL?.trim() ||
         (provider === "opencode-go" ? OPENCODE_GO_BASE_URL : OPENCODE_ZEN_BASE_URL),
     };
   }
@@ -984,7 +983,7 @@ export class BotRuntime {
   ): Record<string, Record<string, string>> | undefined {
     if (runtime.provider === "workers") return undefined;
     return {
-      [runtime.provider]: { reasoningEffort: this.env.REASONING_EFFORT?.trim() || "medium" },
+      [runtime.provider]: { reasoningEffort: this.deps.REASONING_EFFORT?.trim() || "medium" },
     };
   }
 
@@ -1019,12 +1018,27 @@ export class BotRuntime {
   }
 
   private getMemoryRuntime() {
-    return createMemoryRuntime(this.env);
+    return createMemoryRuntime(memoryDepsFromRuntime(this.deps));
   }
 
   private google() {
-    return createGooglePlugin(this.env);
+    return this.deps.pluginRegistry.getByName("google");
   }
+}
+
+function memoryDepsFromRuntime(deps: RuntimeDeps) {
+  return {
+    db: deps.DRECLAW_DB,
+    aiBinding: deps.AI,
+    vectorIndex: deps.VECTORIZE_MEMORY,
+    settings: {
+      enabled: deps.MEMORY_ENABLED,
+      retentionDays: deps.MEMORY_RETENTION_DAYS,
+      maxInjectTokens: deps.MEMORY_MAX_INJECT_TOKENS,
+      reflectionEveryTurns: deps.MEMORY_REFLECTION_EVERY_TURNS,
+      embeddingModel: deps.MEMORY_EMBEDDING_MODEL,
+    },
+  };
 }
 
 class VerboseTracer {

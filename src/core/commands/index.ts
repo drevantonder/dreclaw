@@ -1,6 +1,6 @@
-import type { Env } from "../../cloudflare/env";
+import type { CommandContext, CommandResult, RuntimeDeps } from "../app/types";
 import { createAgendaService } from "../agenda";
-import { createPluginRegistry } from "../plugins/registry";
+import type { PluginRegistry } from "../plugins/types";
 import { BotRuntime } from "../loop/runtime";
 import {
   getThreadStateSnapshot,
@@ -10,46 +10,43 @@ import {
 import { normalizeBotThreadState, type BotThreadState } from "../loop/state";
 import { createRunCoordinator } from "../loop/run";
 
+export interface CommandDeps {
+  runtimeDeps: RuntimeDeps;
+  runtime: BotRuntime;
+  pluginRegistry: PluginRegistry;
+}
+
 export async function maybeHandleAsyncCoreCommand(
-  env: Env,
-  input: {
-    threadId: string;
-    chatId: number;
-    telegramUserId: number;
-    text: string;
-    executionContext?: ExecutionContext;
-  },
-): Promise<{ messages: string[] } | null> {
+  deps: CommandDeps,
+  input: CommandContext,
+): Promise<CommandResult | null> {
   const text = input.text.trim();
   if (!text.startsWith("/")) return null;
   return handleAsyncCommand({
-    env,
-    runtime: new BotRuntime(env, input.executionContext),
-    threadId: input.threadId,
-    chatId: input.chatId,
-    telegramUserId: input.telegramUserId,
-    text,
+    deps,
+    input: { ...input, text },
   });
 }
 
 export async function handleAsyncCommand(params: {
-  env: Env;
-  runtime: BotRuntime;
-  threadId: string;
-  chatId: number;
-  telegramUserId: number;
-  text: string;
-}): Promise<{ messages: string[] }> {
-  const { env, runtime, threadId, chatId, telegramUserId, text } = params;
-  await createAgendaService(env.DRECLAW_DB, {
-    timezone: env.USER_TIMEZONE,
-    primaryChatId: chatId,
-  }).ensureProfile({ primaryChatId: chatId });
+  deps: CommandDeps;
+  input: CommandContext;
+}): Promise<CommandResult> {
+  const { deps, input } = params;
+  const { runtimeDeps, runtime, pluginRegistry } = deps;
+  const { threadId, channelId, text } = input;
+  await createAgendaService(runtimeDeps.DRECLAW_DB, {
+    timezone: runtimeDeps.USER_TIMEZONE,
+    primaryChatId: channelId,
+  }).ensureProfile({ primaryChatId: channelId });
   const [command, value] = text.split(/\s+/, 2);
   const lowered = command.toLowerCase();
-  const runs = createRunCoordinator(env);
+  const runs = createRunCoordinator({
+    db: runtimeDeps.DRECLAW_DB,
+    workflow: runtimeDeps.CONVERSATION_WORKFLOW,
+  });
   const snapshot = normalizeBotThreadState(
-    await getThreadStateSnapshot<BotThreadState>(env.DRECLAW_DB, threadId),
+    await getThreadStateSnapshot<BotThreadState>(runtimeDeps.DRECLAW_DB, threadId),
   );
   const controlledState = await runs.recoverState(threadId, snapshot);
   const status = await runs.getStatus(threadId, controlledState);
@@ -83,16 +80,16 @@ export async function handleAsyncCommand(params: {
   if (lowered === "/reset") {
     if (busy) return { messages: [busyMessage(lowered)] };
     const next = runtime.reset(controlledState);
-    await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: false });
-    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
+    await setPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId, { verbose: false });
+    await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
     return { messages: ["Session reset. Conversation context cleared."] };
   }
 
   if (lowered === "/factory-reset") {
     if (busy) return { messages: [busyMessage(lowered)] };
-    const next = await runtime.factoryReset(chatId);
-    await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: false });
-    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
+    const next = await runtime.factoryReset(channelId);
+    await setPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId, { verbose: false });
+    await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
     return { messages: ["Factory reset complete. Conversation, memory, and VFS cleared."] };
   }
 
@@ -103,20 +100,18 @@ export async function handleAsyncCommand(params: {
       };
     }
     const next = runtime.setVerbose(controlledState, value === "on");
-    await setPersistedThreadControls(env.DRECLAW_DB, threadId, { verbose: value === "on" });
-    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, next);
+    await setPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId, { verbose: value === "on" });
+    await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
     return { messages: [`verbose ${value === "on" ? "enabled" : "disabled"}.`] };
   }
 
-  const registry = createPluginRegistry(env);
-  const pluginCommand = registry.listCommands().find((item) => item.match(text));
+  const pluginCommand = pluginRegistry.listCommands().find((item) => item.match(text));
   if (pluginCommand) {
     if (busy && pluginCommand.isBusySensitive?.(text)) {
       return { messages: [busyMessage(text.trim())] };
     }
-    return {
-      messages: [await pluginCommand.execute({ text, chatId, telegramUserId })],
-    };
+    const result = await pluginCommand.execute(input);
+    return typeof result === "string" ? { messages: [result] } : result;
   }
 
   return { messages: [runtime.help()] };

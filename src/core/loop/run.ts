@@ -1,7 +1,8 @@
 import type { Message, SerializedThread, Thread } from "chat";
+import type { RunCoordinatorDeps } from "../app/types";
+import type { ConversationWorkflowPayload } from "./workflow";
 import type { BotThreadState, RunStatus } from "./state";
 import { normalizeBotThreadState } from "./state";
-import type { ConversationWorkflowPayload, Env } from "../../cloudflare/env";
 import {
   clearPersistedWorkflowInstanceId,
   finalizePersistedRunStop,
@@ -25,19 +26,30 @@ export class RunCancelledError extends Error {
   }
 }
 
-export function createRunCoordinator(env: Pick<Env, "DRECLAW_DB" | "CONVERSATION_WORKFLOW">) {
-  return new RunCoordinator(env);
+export function createRunCoordinator(
+  deps:
+    | RunCoordinatorDeps
+    | { DRECLAW_DB: D1Database; CONVERSATION_WORKFLOW?: RunCoordinatorDeps["workflow"] },
+) {
+  return new RunCoordinator(
+    "db" in deps
+      ? deps
+      : {
+          db: deps.DRECLAW_DB,
+          workflow: deps.CONVERSATION_WORKFLOW,
+        },
+  );
 }
 
 export class RunCoordinator {
-  constructor(private readonly env: Pick<Env, "DRECLAW_DB" | "CONVERSATION_WORKFLOW">) {}
+  constructor(private readonly deps: RunCoordinatorDeps) {}
 
   async inspect(threadId: string, fallbackState: BotThreadState) {
     const state = normalizeBotThreadState(fallbackState);
-    const controls = await getPersistedThreadControls(this.env.DRECLAW_DB, threadId);
-    const workflowInstanceId = await getPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
+    const controls = await getPersistedThreadControls(this.deps.db, threadId);
+    const workflowInstanceId = await getPersistedWorkflowInstanceId(this.deps.db, threadId);
     const runStatus = withWorkflowInstanceId(
-      (await getPersistedRunStatus(this.env.DRECLAW_DB, threadId)) ?? state.runStatus,
+      (await getPersistedRunStatus(this.deps.db, threadId)) ?? state.runStatus,
       workflowInstanceId,
     );
     return {
@@ -107,11 +119,11 @@ export class RunCoordinator {
   }
 
   async persistRunState(threadId: string, state: BotThreadState): Promise<void> {
-    await setPersistedRunStatus(this.env.DRECLAW_DB, threadId, state.runStatus);
+    await setPersistedRunStatus(this.deps.db, threadId, state.runStatus);
   }
 
   async throwIfCancelled(threadId: string): Promise<void> {
-    const status = await getPersistedRunStatus(this.env.DRECLAW_DB, threadId);
+    const status = await getPersistedRunStatus(this.deps.db, threadId);
     if (status?.cancelRequested || status?.stoppedAt) throw new RunCancelledError();
   }
 
@@ -181,10 +193,10 @@ export class RunCoordinator {
     message: Message;
     state: BotThreadState;
   }): Promise<string> {
-    if (!this.env.CONVERSATION_WORKFLOW) return "";
+    if (!this.deps.workflow) return "";
     const workflowInstanceId = crypto.randomUUID();
     const workflowState = this.startRun(params.state, workflowInstanceId);
-    const instance = await this.env.CONVERSATION_WORKFLOW.create({
+    const instance = await this.deps.workflow.create({
       id: workflowInstanceId,
       params: {
         thread: params.thread.toJSON(),
@@ -201,7 +213,7 @@ export class RunCoordinator {
     };
     await params.thread.setState(nextState, { replace: true });
     await this.persistRunState(params.thread.id, nextState);
-    await setPersistedWorkflowInstanceId(this.env.DRECLAW_DB, params.thread.id, instance.id);
+    await setPersistedWorkflowInstanceId(this.deps.db, params.thread.id, instance.id);
     return instance.id;
   }
 
@@ -219,16 +231,12 @@ export class RunCoordinator {
       };
     }
 
-    await requestPersistedRunStop(this.env.DRECLAW_DB, threadId);
-    if (workflowInstanceId && this.env.CONVERSATION_WORKFLOW) {
-      await (
-        await this.env.CONVERSATION_WORKFLOW.get(workflowInstanceId)
-      )
-        .terminate()
-        .catch(() => null);
+    await requestPersistedRunStop(this.deps.db, threadId);
+    if (workflowInstanceId && this.deps.workflow) {
+      await (await this.deps.workflow.get(workflowInstanceId)).terminate().catch(() => null);
     }
-    await clearPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
-    const finalized = await finalizePersistedRunStop(this.env.DRECLAW_DB, threadId);
+    await clearPersistedWorkflowInstanceId(this.deps.db, threadId);
+    const finalized = await finalizePersistedRunStop(this.deps.db, threadId);
     const nextState: BotThreadState = {
       ...recoveredState,
       runStatus: {
@@ -241,7 +249,7 @@ export class RunCoordinator {
         workflowInstanceId: null,
       },
     };
-    await setThreadStateSnapshot(this.env.DRECLAW_DB, threadId, nextState);
+    await setThreadStateSnapshot(this.deps.db, threadId, nextState);
     return {
       nextState,
       runStatus: nextState.runStatus,
@@ -250,13 +258,13 @@ export class RunCoordinator {
   }
 
   async clearWorkflowInstance(threadId: string): Promise<void> {
-    await clearPersistedWorkflowInstanceId(this.env.DRECLAW_DB, threadId);
+    await clearPersistedWorkflowInstanceId(this.deps.db, threadId);
   }
 
   async getWorkflowStatus(threadId: string, fallbackState: BotThreadState): Promise<string | null> {
     const { workflowInstanceId } = await this.inspect(threadId, fallbackState);
-    if (!workflowInstanceId || !this.env.CONVERSATION_WORKFLOW) return null;
-    return (await this.env.CONVERSATION_WORKFLOW.get(workflowInstanceId))
+    if (!workflowInstanceId || !this.deps.workflow) return null;
+    return (await this.deps.workflow.get(workflowInstanceId))
       .status()
       .then((value: { status: string }) => value.status)
       .catch(() => null);

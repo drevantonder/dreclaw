@@ -1,15 +1,9 @@
-import type { SerializedMessage, SerializedThread } from "chat";
+import type {
+  ConversationWorkflowPayload,
+  ProactiveWakeWorkflowPayload,
+} from "../core/loop/workflow";
 
-export interface ConversationWorkflowPayload {
-  thread: SerializedThread;
-  message: SerializedMessage;
-  state: unknown;
-}
-
-export interface ProactiveWakeWorkflowPayload {
-  agendaItemId: string;
-  claimToken: string;
-}
+export type { ConversationWorkflowPayload, ProactiveWakeWorkflowPayload };
 
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;

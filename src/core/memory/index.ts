@@ -1,4 +1,4 @@
-import type { Env } from "../../cloudflare/env";
+import type { MemoryDeps } from "./types";
 import { getMemoryConfig, type MemoryConfig } from "./config";
 import { executeMemoryFind, executeMemoryRemove, executeMemorySave } from "./execute-api";
 import { buildMemoryId } from "./ids";
@@ -31,22 +31,22 @@ type RenderContextParams = {
   episodeTopK: number;
 };
 
-export function createMemoryRuntime(env: Env): MemoryRuntime {
-  return new MemoryRuntime(env);
+export function createMemoryRuntime(deps: MemoryDeps): MemoryRuntime {
+  return new MemoryRuntime(normalizeMemoryDeps(deps));
 }
 
 export class MemoryRuntime {
-  constructor(private readonly env: Env) {}
+  constructor(private readonly deps: MemoryDeps) {}
 
   getConfig(): MemoryConfig {
-    return getMemoryConfig(this.env);
+    return getMemoryConfig(this.deps);
   }
 
   async find(params: { chatId: number; payload: unknown }): Promise<unknown> {
     const config = this.requireEnabled();
     return executeMemoryFind({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
+      deps: this.deps,
+      db: this.deps.db,
       chatId: params.chatId,
       embeddingModel: config.embeddingModel,
       payload: params.payload,
@@ -56,8 +56,8 @@ export class MemoryRuntime {
   async save(params: { chatId: number; payload: unknown }): Promise<unknown> {
     const config = this.requireEnabled();
     return executeMemorySave({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
+      deps: this.deps,
+      db: this.deps.db,
       chatId: params.chatId,
       embeddingModel: config.embeddingModel,
       payload: params.payload,
@@ -67,8 +67,8 @@ export class MemoryRuntime {
   async remove(params: { chatId: number; payload: unknown }): Promise<unknown> {
     this.requireEnabled();
     return executeMemoryRemove({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
+      deps: this.deps,
+      db: this.deps.db,
       chatId: params.chatId,
       payload: params.payload,
     });
@@ -78,8 +78,8 @@ export class MemoryRuntime {
     const config = this.getConfig();
     if (!config.enabled) return "";
     const retrieved = await retrieveMemoryContext({
-      env: this.env,
-      db: this.env.DRECLAW_DB,
+      deps: this.deps,
+      db: this.deps.db,
       chatId: params.chatId,
       query: params.query,
       embeddingModel: config.embeddingModel,
@@ -118,7 +118,7 @@ export class MemoryRuntime {
       const salience = scoreSalience(entry.content);
       if (!salience.shouldStoreEpisode) continue;
       const episodeId = buildMemoryId("episode");
-      await insertMemoryEpisode(this.env.DRECLAW_DB, {
+      await insertMemoryEpisode(this.deps.db, {
         id: episodeId,
         chatId: params.chatId,
         role: entry.role,
@@ -129,7 +129,7 @@ export class MemoryRuntime {
       if (!salience.shouldStoreFact) continue;
       const facts = extractFacts(entry.content);
       for (const extracted of facts) {
-        const saved = await upsertSimilarMemoryFact(this.env.DRECLAW_DB, {
+        const saved = await upsertSimilarMemoryFact(this.deps.db, {
           id: buildMemoryId("fact"),
           chatId: params.chatId,
           kind: extracted.kind,
@@ -137,32 +137,50 @@ export class MemoryRuntime {
           confidence: extracted.confidence,
           nowIso,
         });
-        await attachMemoryFactSource(this.env.DRECLAW_DB, saved.fact.id, episodeId, nowIso);
+        await attachMemoryFactSource(this.deps.db, saved.fact.id, episodeId, nowIso);
         if (saved.created) {
-          const vector = await embedText(this.env, config.embeddingModel, saved.fact.text);
-          await upsertFactVector(this.env, saved.fact.id, params.chatId, vector);
+          const vector = await embedText(
+            this.deps.aiBinding ?? (this.deps as unknown as Ai),
+            config.embeddingModel,
+            saved.fact.text,
+          );
+          await upsertFactVector(
+            this.deps.vectorIndex ?? (this.deps as unknown as VectorizeIndex),
+            saved.fact.id,
+            params.chatId,
+            vector,
+          );
         }
       }
     }
 
     if ((params.memoryTurns + 1) % config.reflectionEveryTurns === 0) {
       const reflection = await runMemoryReflection({
-        db: this.env.DRECLAW_DB,
+        db: this.deps.db,
         chatId: params.chatId,
         limit: 24,
         nowIso,
       });
       if (reflection.writtenFacts > 0) {
-        const facts = await listActiveMemoryFacts(this.env.DRECLAW_DB, params.chatId, 200);
+        const facts = await listActiveMemoryFacts(this.deps.db, params.chatId, 200);
         for (const fact of facts) {
-          const vector = await embedText(this.env, config.embeddingModel, fact.text);
-          await upsertFactVector(this.env, fact.id, params.chatId, vector);
+          const vector = await embedText(
+            this.deps.aiBinding ?? (this.deps as unknown as Ai),
+            config.embeddingModel,
+            fact.text,
+          );
+          await upsertFactVector(
+            this.deps.vectorIndex ?? (this.deps as unknown as VectorizeIndex),
+            fact.id,
+            params.chatId,
+            vector,
+          );
         }
       }
     }
 
     await deleteOldMemoryEpisodes(
-      this.env.DRECLAW_DB,
+      this.deps.db,
       params.chatId,
       new Date(Date.now() - config.retentionDays * 24 * 60 * 60 * 1000).toISOString(),
     );
@@ -171,10 +189,10 @@ export class MemoryRuntime {
   async factoryReset(params: { chatId: number }): Promise<void> {
     const config = this.getConfig();
     if (!config.enabled) return;
-    const existingFacts = await listActiveMemoryFacts(this.env.DRECLAW_DB, params.chatId, 500);
-    await deleteMemoryForChat(this.env.DRECLAW_DB, params.chatId);
+    const existingFacts = await listActiveMemoryFacts(this.deps.db, params.chatId, 500);
+    await deleteMemoryForChat(this.deps.db, params.chatId);
     await deleteFactVectors(
-      this.env,
+      this.deps.vectorIndex ?? (this.deps as unknown as VectorizeIndex),
       existingFacts.map((item) => item.id),
     );
   }
@@ -184,6 +202,23 @@ export class MemoryRuntime {
     if (!config.enabled) throw new Error("Memory is disabled");
     return config;
   }
+}
+
+function normalizeMemoryDeps(input: MemoryDeps | Record<string, unknown>): MemoryDeps {
+  if ((input as MemoryDeps).settings) return input as MemoryDeps;
+  const env = input as Record<string, unknown>;
+  return {
+    db: env.DRECLAW_DB as D1Database,
+    aiBinding: env.AI as Ai | undefined,
+    vectorIndex: env.VECTORIZE_MEMORY as VectorizeIndex | undefined,
+    settings: {
+      enabled: env.MEMORY_ENABLED as string | undefined,
+      retentionDays: env.MEMORY_RETENTION_DAYS as string | undefined,
+      maxInjectTokens: env.MEMORY_MAX_INJECT_TOKENS as string | undefined,
+      reflectionEveryTurns: env.MEMORY_REFLECTION_EVERY_TURNS as string | undefined,
+      embeddingModel: env.MEMORY_EMBEDDING_MODEL as string | undefined,
+    },
+  };
 }
 
 function truncateForLog(value: string, max: number): string {

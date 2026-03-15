@@ -5,16 +5,17 @@ import {
   upsertSimilarMemoryFact,
   type MemoryFactRecord,
 } from "./repo";
-import type { Env } from "../../cloudflare/env";
 import { embedText } from "./embeddings";
 import { buildMemoryId } from "./ids";
 import { retrieveMemoryContext } from "./retrieve";
 import { upsertFactVector, deleteFactVectors } from "./vectorize";
+import type { MemoryDeps } from "./types";
 
 type MemoryKind = "preference" | "fact" | "goal" | "identity";
 
 export async function executeMemoryFind(params: {
-  env: Env;
+  deps?: Pick<MemoryDeps, "aiBinding" | "vectorIndex">;
+  env?: { AI?: Ai; VECTORIZE_MEMORY?: VectorizeIndex };
   db: D1Database;
   chatId: number;
   embeddingModel: string;
@@ -25,6 +26,12 @@ export async function executeMemoryFind(params: {
   truncated: boolean;
   facts: Array<{ id: string; kind: MemoryKind; text: string; confidence: number }>;
 }> {
+  const deps = params.deps ?? {
+    aiBinding: (params as { env?: { AI?: Ai } }).env?.AI ?? (params as unknown as Ai),
+    vectorIndex:
+      (params as { env?: { VECTORIZE_MEMORY?: VectorizeIndex } }).env?.VECTORIZE_MEMORY ??
+      (params as unknown as VectorizeIndex),
+  };
   const parsed = parseFindPayload(params.payload);
 
   if (!parsed.query) {
@@ -38,7 +45,7 @@ export async function executeMemoryFind(params: {
   }
 
   const result = await retrieveMemoryContext({
-    env: params.env,
+    deps,
     db: params.db,
     chatId: params.chatId,
     query: parsed.query,
@@ -65,12 +72,19 @@ export async function executeMemoryFind(params: {
 }
 
 export async function executeMemorySave(params: {
-  env: Env;
+  deps?: Pick<MemoryDeps, "aiBinding" | "vectorIndex">;
+  env?: { AI?: Ai; VECTORIZE_MEMORY?: VectorizeIndex };
   db: D1Database;
   chatId: number;
   embeddingModel: string;
   payload: unknown;
 }): Promise<{ id: string; created: boolean; kind: MemoryKind; text: string; confidence: number }> {
+  const deps = params.deps ?? {
+    aiBinding: (params as { env?: { AI?: Ai } }).env?.AI ?? (params as unknown as Ai),
+    vectorIndex:
+      (params as { env?: { VECTORIZE_MEMORY?: VectorizeIndex } }).env?.VECTORIZE_MEMORY ??
+      (params as unknown as VectorizeIndex),
+  };
   const parsed = parseSavePayload(params.payload);
   const nowIso = new Date().toISOString();
   const saved = await upsertSimilarMemoryFact(params.db, {
@@ -81,8 +95,8 @@ export async function executeMemorySave(params: {
     confidence: parsed.confidence,
     nowIso,
   });
-  const vector = await embedText(params.env, params.embeddingModel, saved.fact.text);
-  await upsertFactVector(params.env, saved.fact.id, params.chatId, vector);
+  const vector = await embedText(deps.aiBinding, params.embeddingModel, saved.fact.text);
+  await upsertFactVector(deps.vectorIndex, saved.fact.id, params.chatId, vector);
   return {
     id: saved.fact.id,
     created: saved.created,
@@ -93,11 +107,17 @@ export async function executeMemorySave(params: {
 }
 
 export async function executeMemoryRemove(params: {
-  env: Env;
+  deps?: Pick<MemoryDeps, "vectorIndex">;
+  env?: { VECTORIZE_MEMORY?: VectorizeIndex };
   db: D1Database;
   chatId: number;
   payload: unknown;
 }): Promise<{ ok: boolean; removedId?: string; message: string }> {
+  const deps = params.deps ?? {
+    vectorIndex:
+      (params as { env?: { VECTORIZE_MEMORY?: VectorizeIndex } }).env?.VECTORIZE_MEMORY ??
+      (params as unknown as VectorizeIndex),
+  };
   const target = parseRemovePayload(params.payload);
   const fact = await getActiveMemoryFactByTarget(params.db, params.chatId, target);
   if (!fact) {
@@ -107,7 +127,7 @@ export async function executeMemoryRemove(params: {
   if (!removed) {
     return { ok: false, message: "Memory target could not be removed" };
   }
-  await deleteFactVectors(params.env, [fact.id]);
+  await deleteFactVectors(deps.vectorIndex, [fact.id]);
   return { ok: true, removedId: fact.id, message: "Memory removed" };
 }
 

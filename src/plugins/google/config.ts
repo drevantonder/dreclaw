@@ -1,4 +1,4 @@
-import type { Env } from "../../cloudflare/env";
+import type { GoogleOAuthSettings } from "./types";
 
 const DEFAULT_SCOPES = [
   "https://mail.google.com/",
@@ -17,10 +17,10 @@ export interface GoogleOAuthConfig {
   scopes: string[];
 }
 
-export function getGoogleOAuthConfig(env: Env): GoogleOAuthConfig {
-  const clientId = String(env.GOOGLE_OAUTH_CLIENT_ID ?? "").trim();
-  const clientSecret = String(env.GOOGLE_OAUTH_CLIENT_SECRET ?? "").trim();
-  const redirectUri = String(env.GOOGLE_OAUTH_REDIRECT_URI ?? "").trim();
+export function getGoogleOAuthConfig(settings: GoogleOAuthSettings): GoogleOAuthConfig {
+  const clientId = String(settings.clientId ?? "").trim();
+  const clientSecret = String(settings.clientSecret ?? "").trim();
+  const redirectUri = String(settings.redirectUri ?? "").trim();
   if (!clientId || !clientSecret || !redirectUri) {
     throw new Error("Google OAuth is not configured");
   }
@@ -29,7 +29,7 @@ export function getGoogleOAuthConfig(env: Env): GoogleOAuthConfig {
     clientId,
     clientSecret,
     redirectUri,
-    scopes: parseGoogleScopes(env.GOOGLE_OAUTH_SCOPES),
+    scopes: parseGoogleScopes(settings.scopes),
   };
 }
 

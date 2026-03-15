@@ -43,7 +43,11 @@ describe("handleHttpRequest", () => {
     const response = await handleHttpRequest(request, env, {} as ExecutionContext);
 
     expect(response.status).toBe(200);
-    expect(mocks.handlePluginOAuthCallback).toHaveBeenCalledWith(env, "google", request);
+    expect(mocks.handlePluginOAuthCallback).toHaveBeenCalledWith(
+      expect.anything(),
+      "google",
+      request,
+    );
   });
 
   it("returns health payload through the edge router", async () => {

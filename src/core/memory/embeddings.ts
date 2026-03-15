@@ -1,11 +1,15 @@
-import type { Env } from "../../cloudflare/env";
+import type { MemoryDeps } from "./types";
 
-export async function embedText(env: Env, model: string, text: string): Promise<number[]> {
+export async function embedText(
+  aiBinding: MemoryDeps["aiBinding"],
+  model: string,
+  text: string,
+): Promise<number[]> {
   const input = String(text ?? "").trim();
   if (!input) return [];
-  if (!env.AI) throw new Error("AI binding missing for embeddings");
+  if (!aiBinding) throw new Error("AI binding missing for embeddings");
 
-  const ai = env.AI as unknown as { run: (name: string, payload: unknown) => Promise<unknown> };
+  const ai = aiBinding as unknown as { run: (name: string, payload: unknown) => Promise<unknown> };
   const response = await ai.run(model, { text: [input] });
   const vector = extractEmbeddingVector(response);
   if (!vector.length) {

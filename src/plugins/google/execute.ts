@@ -1,4 +1,3 @@
-import type { Env } from "../../cloudflare/env";
 import { getGoogleAccessToken } from "./client";
 import {
   expandGooglePathTemplate,
@@ -7,9 +6,10 @@ import {
   hasGoogleRequestBody,
   safeJsonParse,
 } from "./discovery";
+import type { GooglePluginDeps } from "./types";
 
 export async function executeGoogleRequest(
-  env: Env,
+  deps: GooglePluginDeps,
   payload: {
     service?: string;
     version?: string;
@@ -29,7 +29,7 @@ export async function executeGoogleRequest(
   const version = String(payload.version ?? "").trim();
   const method = String(payload.method ?? "").trim();
   if (!version || !method) throw new Error("GOOGLE_METHOD_REQUIRED");
-  const token = await getGoogleAccessToken(env, options.timeoutMs);
+  const token = await getGoogleAccessToken(deps, options.timeoutMs);
   const discovery = await getGoogleDiscoveryDocument(service, version, options.timeoutMs);
   const methodInfo = findGoogleDiscoveryMethod(discovery, method);
   const params = { ...payload.params };

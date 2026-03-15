@@ -1,16 +1,17 @@
-import type { Env } from "../../cloudflare/env";
+import type { CommandContext, CommandResult } from "../app/types";
+import type { AppEffect } from "../effects";
 
 export interface CorePluginCommand {
   match(text: string): boolean;
   isBusySensitive?(text: string): boolean;
-  execute(input: { text: string; chatId: number; telegramUserId: number }): Promise<string>;
+  execute(input: CommandContext): Promise<string | CommandResult>;
 }
 
 export interface OAuthCallbackResult {
   status: number;
   title: string;
   body: string;
-  notifyTelegram?: { chatId: number; text: string };
+  effects?: AppEffect[];
 }
 
 export interface CorePlugin {
@@ -31,5 +32,14 @@ export interface CorePlugin {
 }
 
 export interface PluginFactory {
-  (env: Env): CorePlugin;
+  (): CorePlugin;
+}
+
+export interface PluginRegistry {
+  list(): CorePlugin[];
+  listCommands(): CorePluginCommand[];
+  getOAuthCallbackHandler(
+    name: string,
+  ): ((request: Request) => Promise<OAuthCallbackResult>) | undefined;
+  getByName(name: string): CorePlugin | null;
 }

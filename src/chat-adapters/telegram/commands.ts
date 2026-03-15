@@ -1,4 +1,6 @@
 import { handleAsyncCommand as handleCoreCommand, maybeHandleAsyncCoreCommand } from "../../core";
+import { buildCommandDeps } from "../../app/deps";
+import { flushTelegramEffects, telegramReplyTarget } from "../../app/telegram";
 import type { Env } from "../../cloudflare/env";
 import { sendTelegramTextMessage } from "./api";
 import type { TelegramUpdate } from "./types";
@@ -17,15 +19,16 @@ export async function maybeHandleAsyncTelegramCommand(
   if (!isPrivateTelegramUpdate(update)) return false;
   if (!isAllowedTelegramUpdate(env, update)) return false;
 
-  const result = await maybeHandleAsyncCoreCommand(env, {
+  const result = await maybeHandleAsyncCoreCommand(buildCommandDeps(env, executionContext), {
     threadId: `telegram:${message.chat.id}`,
-    chatId: message.chat.id,
-    telegramUserId: Number(message.from?.id ?? 0),
+    channelId: message.chat.id,
+    actorId: String(message.from?.id ?? ""),
+    replyTarget: telegramReplyTarget(message.chat.id),
     text,
-    executionContext,
   });
   if (!result) return false;
   await publishTelegramMessages(env, message.chat.id, result.messages);
+  await flushTelegramEffects(env, result.effects);
   return true;
 }
 
@@ -38,14 +41,20 @@ export async function handleAsyncCommand(params: {
   text: string;
 }): Promise<void> {
   const result = await handleCoreCommand({
-    env: params.env,
-    runtime: params.runtime,
-    threadId: params.threadId,
-    chatId: params.chatId,
-    telegramUserId: params.telegramUserId,
-    text: params.text,
+    deps: {
+      ...buildCommandDeps(params.env),
+      runtime: params.runtime,
+    },
+    input: {
+      threadId: params.threadId,
+      channelId: params.chatId,
+      actorId: String(params.telegramUserId),
+      replyTarget: telegramReplyTarget(params.chatId),
+      text: params.text,
+    },
   });
   await publishTelegramMessages(params.env, params.chatId, result.messages);
+  await flushTelegramEffects(params.env, result.effects);
 }
 
 async function publishTelegramMessages(

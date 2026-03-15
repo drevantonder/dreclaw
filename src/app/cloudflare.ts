@@ -1,0 +1,179 @@
+import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
+import { Message as ChatMessage, ThreadImpl } from "chat";
+import { createChat } from "../chat-adapters/telegram/gateway";
+import { handleTelegramWebhookRequest as handleTelegramWebhookAdapter } from "../chat-adapters/telegram/webhook";
+import { getTelegramUserChatId } from "../chat-adapters/telegram/message";
+import type { Env } from "../cloudflare/env";
+import { createAgendaService } from "../core/agenda";
+import { handlePluginOAuthCallback, getHealthPayload } from "../core/http";
+import { getThreadStateSnapshot, setThreadStateSnapshot } from "../core/loop/repo";
+import { BotRuntime } from "../core/loop/runtime";
+import { normalizeBotThreadState, type BotThreadState } from "../core/loop/state";
+import type {
+  ConversationWorkflowPayload,
+  ProactiveWakeWorkflowPayload,
+} from "../core/loop/workflow";
+import { htmlResponse } from "../cloudflare/http/response";
+import { buildRuntimeDeps } from "./deps";
+import { flushTelegramEffects } from "./telegram";
+import { createRunCoordinator } from "../core/loop/run";
+
+export async function handleHttpRequest(request: Request, env: Env, ctx: ExecutionContext) {
+  const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname === "/health") {
+    return Response.json(getHealthPayload());
+  }
+  if (request.method === "POST" && url.pathname === "/telegram/webhook") {
+    return handleTelegramWebhookAdapter(request, env, ctx);
+  }
+  if (request.method === "GET" && url.pathname === "/google/oauth/callback") {
+    const runtimeDeps = buildRuntimeDeps(env);
+    const result = await handlePluginOAuthCallback(runtimeDeps.pluginRegistry, "google", request);
+    if (!result) return new Response("Not found", { status: 404 });
+    await flushTelegramEffects(env, result.effects);
+    return htmlResponse(result.status, result.title, result.body);
+  }
+  return new Response("Not found", { status: 404 });
+}
+
+export async function runConversationWorkflow(
+  env: Env,
+  ctx: ExecutionContext,
+  event: WorkflowEvent<ConversationWorkflowPayload>,
+  step: WorkflowStep,
+): Promise<void> {
+  const runs = createRunCoordinator({ db: env.DRECLAW_DB, workflow: env.CONVERSATION_WORKFLOW });
+  let state = await runs.restoreWorkflowState({
+    threadId: event.payload.thread.id,
+    state: event.payload.state as BotThreadState,
+    payloadState: event.payload.state,
+  });
+  let messages: unknown[] | undefined;
+  let shouldContinue = true;
+  for (let stepIndex = 0; stepIndex < 64 && shouldContinue; stepIndex += 1) {
+    const rawResult = await step.do(`conversation-step-${stepIndex}`, async () => {
+      const chat = createChat(env).registerSingleton();
+      void chat;
+      const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
+      const message = ChatMessage.fromJSON(event.payload.message);
+      const runtime = new BotRuntime(buildRuntimeDeps(env), ctx as never);
+      const stepResult = await runtime.runConversationAgentStep({
+        thread,
+        message,
+        chatId: event.payload.channelId ?? getTelegramUserChatId(message.raw, thread.id),
+        state,
+        imageBlocks: event.payload.imageBlocks ?? [],
+        baseMessages: Array.isArray(messages) ? (messages as any) : undefined,
+        isFirstStep: stepIndex === 0,
+        runTimeoutMs: 300_000,
+      });
+      await thread.setState(stepResult.state as any, { replace: true });
+      return {
+        stateJson: JSON.stringify(stepResult.state),
+        nextMessagesJson: JSON.stringify(stepResult.nextMessages),
+        shouldContinue: stepResult.shouldContinue,
+      };
+    });
+    const result = rawResult as {
+      stateJson: string;
+      nextMessagesJson: string;
+      shouldContinue: boolean;
+    };
+    state = await runs.restoreWorkflowState({
+      threadId: event.payload.thread.id,
+      state,
+      payloadState: JSON.parse(String(result.stateJson ?? "{}")),
+    });
+    messages = JSON.parse(String(result.nextMessagesJson ?? "[]")) as unknown[];
+    shouldContinue = Boolean(result.shouldContinue);
+  }
+  const chat = createChat(env).registerSingleton();
+  void chat;
+  const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
+  await thread.setState(state as any, { replace: true });
+  await runs.clearWorkflowInstance(thread.id);
+}
+
+export async function runProactiveWakeWorkflow(
+  env: Env,
+  ctx: ExecutionContext,
+  event: WorkflowEvent<ProactiveWakeWorkflowPayload>,
+  step: WorkflowStep,
+): Promise<void> {
+  const agenda = createAgendaService(env.DRECLAW_DB, { timezone: env.USER_TIMEZONE });
+  const item = await agenda.getItem(event.payload.agendaItemId);
+  if (!item || item.claimToken !== event.payload.claimToken) return;
+  const profile = await agenda.ensureProfile({ primaryChatId: item.sourceChatId ?? null });
+  const chatId = item.sourceChatId ?? profile.primaryChatId;
+  if (!chatId) {
+    const runId = await agenda.openWakeRun({
+      agendaItemId: item.id,
+      scheduledFor: item.nextWakeAt ?? new Date().toISOString(),
+    });
+    await agenda.finalizeWake({
+      itemId: item.id,
+      claimToken: event.payload.claimToken,
+      runId,
+      scheduledFor: item.nextWakeAt ?? new Date().toISOString(),
+      outcome: "failed",
+      summary: "Missing primary chat id for proactive wake",
+      error: "Missing primary chat id for proactive wake",
+    });
+    return;
+  }
+  const threadId = `telegram:${chatId}`;
+  const runId = await agenda.openWakeRun({
+    agendaItemId: item.id,
+    scheduledFor: item.nextWakeAt ?? new Date().toISOString(),
+  });
+  const recentWakeRuns = await agenda.listRecentWakeRuns(item.id, 5);
+  try {
+    const result = await step.do("run-proactive-wake", async () => {
+      const runtime = new BotRuntime(buildRuntimeDeps(env), ctx as never);
+      const state = normalizeBotThreadState(await getThreadStateSnapshot(env.DRECLAW_DB, threadId));
+      return runtime.runProactiveWake({
+        threadId,
+        chatId,
+        state,
+        item,
+        recentWakeSummaries: recentWakeRuns
+          .filter((wakeRun) => wakeRun.summary)
+          .map((wakeRun) => String(wakeRun.summary)),
+      });
+    });
+    await setThreadStateSnapshot(env.DRECLAW_DB, threadId, result.state);
+    if (result.messageText) {
+      await flushTelegramEffects(env, [
+        {
+          type: "send-text",
+          target: { channel: "telegram", id: String(chatId) },
+          text: result.messageText,
+        },
+      ]);
+    }
+    await agenda.finalizeWake({
+      itemId: item.id,
+      claimToken: event.payload.claimToken,
+      runId,
+      scheduledFor: item.nextWakeAt ?? new Date().toISOString(),
+      outcome: result.messageText ? "sent_message" : "silent",
+      summary: result.summary,
+    });
+  } catch (error) {
+    await agenda.finalizeWake({
+      itemId: item.id,
+      claimToken: event.payload.claimToken,
+      runId,
+      scheduledFor: item.nextWakeAt ?? new Date().toISOString(),
+      outcome: "failed",
+      summary: error instanceof Error ? error.message : "Proactive wake failed",
+      error:
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : "Proactive wake failed",
+    });
+    throw error;
+  }
+}

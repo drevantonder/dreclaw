@@ -91,10 +91,13 @@ describe("google callback", () => {
       status: 200,
       title: "Google OAuth complete",
       body: "You can close this tab and return to Telegram.",
-      notifyTelegram: {
-        chatId: 777,
-        text: "Google account linked successfully. You can now use Google features.",
-      },
+      effects: [
+        {
+          type: "send-text",
+          target: { channel: "telegram", id: "777" },
+          text: "Google account linked successfully. You can now use Google features.",
+        },
+      ],
     });
     expect(mocks.markGoogleOAuthStateUsed).toHaveBeenCalledWith(
       env.DRECLAW_DB,

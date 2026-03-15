@@ -1,13 +1,10 @@
-import type { Env } from "../../cloudflare/env";
-import { createGooglePlugin } from "../../plugins/google";
-import type { CorePlugin } from "./types";
+import type { CorePlugin, PluginRegistry as PluginRegistryContract } from "./types";
 
-export function createPluginRegistry(env: Env) {
-  const plugins = [createGooglePlugin(env)];
+export function createPluginRegistry(plugins: CorePlugin[]): PluginRegistry {
   return new PluginRegistry(plugins);
 }
 
-export class PluginRegistry {
+export class PluginRegistry implements PluginRegistryContract {
   constructor(private readonly plugins: CorePlugin[]) {}
 
   list(): CorePlugin[] {

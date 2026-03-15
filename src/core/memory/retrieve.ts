@@ -4,10 +4,10 @@ import {
   searchMemoryFactsKeyword,
   type MemoryFactRecord,
 } from "./repo";
-import type { Env } from "../../cloudflare/env";
 import { embedText } from "./embeddings";
 import { applyTemporalDecay } from "./decay";
 import { queryFactVectors } from "./vectorize";
+import type { MemoryDeps } from "./types";
 
 export interface RetrievedMemory {
   facts: MemoryFactRecord[];
@@ -15,7 +15,8 @@ export interface RetrievedMemory {
 }
 
 export async function retrieveMemoryContext(params: {
-  env: Env;
+  deps?: Pick<MemoryDeps, "aiBinding" | "vectorIndex">;
+  env?: { AI?: Ai; VECTORIZE_MEMORY?: VectorizeIndex };
   db: D1Database;
   chatId: number;
   query: string;
@@ -23,8 +24,14 @@ export async function retrieveMemoryContext(params: {
   factTopK: number;
   episodeTopK: number;
 }): Promise<RetrievedMemory> {
+  const deps = params.deps ?? {
+    aiBinding: (params as { env?: { AI?: Ai } }).env?.AI ?? (params as unknown as Ai),
+    vectorIndex:
+      (params as { env?: { VECTORIZE_MEMORY?: VectorizeIndex } }).env?.VECTORIZE_MEMORY ??
+      (params as unknown as VectorizeIndex),
+  };
   const [queryEmbedding, keywordFacts, recentEpisodes] = await Promise.all([
-    embedText(params.env, params.embeddingModel, params.query),
+    embedText(deps.aiBinding, params.embeddingModel, params.query),
     searchMemoryFactsKeyword(
       params.db,
       params.chatId,
@@ -35,7 +42,7 @@ export async function retrieveMemoryContext(params: {
   ]);
 
   const vectorMatches = await queryFactVectors(
-    params.env,
+    deps.vectorIndex,
     params.chatId,
     queryEmbedding,
     params.factTopK * 3,

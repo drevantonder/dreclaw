@@ -1,5 +1,6 @@
 import { createTelegramAdapter } from "@chat-adapter/telegram";
 import { Chat, type Message, type SerializedThread, type Thread } from "chat";
+import { buildRuntimeDeps } from "../../app/deps";
 import {
   BotRuntime,
   createD1StateAdapter,
@@ -36,8 +37,12 @@ export function createChat(env: Env) {
 }
 
 export function createBot(env: Env, executionContext?: ExecutionContext) {
-  const runtime = new BotRuntime(env, executionContext);
-  const runs = createRunCoordinator(env);
+  const runtimeDeps = buildRuntimeDeps(env);
+  const runtime = new BotRuntime(runtimeDeps, executionContext as never);
+  const runs = createRunCoordinator({
+    db: runtimeDeps.DRECLAW_DB,
+    workflow: runtimeDeps.CONVERSATION_WORKFLOW,
+  });
   const bot = createChat(env);
 
   const handleIncoming = async (
@@ -103,7 +108,11 @@ export async function startConversationWorkflow(
   message: Message,
   state: BotThreadState,
 ): Promise<string> {
-  return createRunCoordinator(env).startWorkflowRun({
+  const runtimeDeps = buildRuntimeDeps(env);
+  return createRunCoordinator({
+    db: runtimeDeps.DRECLAW_DB,
+    workflow: runtimeDeps.CONVERSATION_WORKFLOW,
+  }).startWorkflowRun({
     thread: thread as Thread<BotThreadState> & { toJSON(): SerializedThread },
     message,
     state,
