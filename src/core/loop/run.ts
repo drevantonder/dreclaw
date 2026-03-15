@@ -132,9 +132,11 @@ export class RunCoordinator {
     getState: () => BotThreadState;
     setState: (state: BotThreadState) => void;
     serializeState?: (state: BotThreadState) => BotThreadState;
+    intervalMs?: number;
   }) {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const intervalMs = Math.max(500, params.intervalMs ?? RUN_HEARTBEAT_INTERVAL_MS);
 
     const tick = async () => {
       if (stopped) return;
@@ -174,12 +176,12 @@ export class RunCoordinator {
         // noop
       }
 
-      if (!stopped) timer = setTimeout(() => void tick(), RUN_HEARTBEAT_INTERVAL_MS);
+      if (!stopped) timer = setTimeout(() => void tick(), intervalMs);
     };
 
     return {
       start() {
-        if (!timer) timer = setTimeout(() => void tick(), RUN_HEARTBEAT_INTERVAL_MS);
+        if (!timer) timer = setTimeout(() => void tick(), intervalMs);
       },
       stop() {
         stopped = true;

@@ -1,6 +1,7 @@
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { Message as ChatMessage, ThreadImpl } from "chat";
 import { createChat } from "../chat-adapters/telegram/gateway";
+import { sendTelegramTypingAction } from "../chat-adapters/telegram/api";
 import { handleTelegramWebhookRequest as handleTelegramWebhookAdapter } from "../chat-adapters/telegram/webhook";
 import { getTelegramUserChatId, loadTelegramImageBlocks } from "../chat-adapters/telegram/message";
 import type { Env } from "../cloudflare/env";
@@ -55,45 +56,55 @@ export async function runConversationWorkflow(
     payloadState: event.payload.state,
   });
   const chatId = event.payload.channelId ?? getTelegramUserChatId(message.raw, thread.id);
+  const stopTypingPulse = startWorkflowTypingPulse({
+    token: env.TELEGRAM_BOT_TOKEN,
+    chatId,
+    pulseMs: getTypingPulseMs(env.TYPING_PULSE_MS),
+  });
   const imageBlocks =
     event.payload.imageBlocks ??
     (await loadTelegramImageBlocks(env.TELEGRAM_BOT_TOKEN, message.raw).catch(() => []));
   let messages: unknown[] | undefined;
   let shouldContinue = true;
-  for (let stepIndex = 0; stepIndex < 64 && shouldContinue; stepIndex += 1) {
-    const rawResult = await step.do(`conversation-step-${stepIndex}`, async () => {
-      const stepResult = await runtime.runConversationAgentStep({
-        thread,
-        message,
-        chatId,
-        state,
-        imageBlocks,
-        baseMessages: Array.isArray(messages) ? (messages as any) : undefined,
-        isFirstStep: stepIndex === 0,
-        runTimeoutMs: 300_000,
+  try {
+    for (let stepIndex = 0; stepIndex < 64 && shouldContinue; stepIndex += 1) {
+      await sendTelegramTypingAction(env.TELEGRAM_BOT_TOKEN, chatId).catch(() => null);
+      const rawResult = await step.do(`conversation-step-${stepIndex}`, async () => {
+        const stepResult = await runtime.runConversationAgentStep({
+          thread,
+          message,
+          chatId,
+          state,
+          imageBlocks,
+          baseMessages: Array.isArray(messages) ? (messages as any) : undefined,
+          isFirstStep: stepIndex === 0,
+          runTimeoutMs: getWorkflowBurstMs(runtimeDeps, stepIndex === 0),
+        });
+        await thread.setState(stepResult.state as any, { replace: true });
+        return {
+          stateJson: JSON.stringify(stepResult.state),
+          nextMessagesJson: JSON.stringify(stepResult.nextMessages),
+          shouldContinue: stepResult.shouldContinue,
+        };
       });
-      await thread.setState(stepResult.state as any, { replace: true });
-      return {
-        stateJson: JSON.stringify(stepResult.state),
-        nextMessagesJson: JSON.stringify(stepResult.nextMessages),
-        shouldContinue: stepResult.shouldContinue,
+      const result = rawResult as {
+        stateJson: string;
+        nextMessagesJson: string;
+        shouldContinue: boolean;
       };
-    });
-    const result = rawResult as {
-      stateJson: string;
-      nextMessagesJson: string;
-      shouldContinue: boolean;
-    };
-    state = await runs.restoreWorkflowState({
-      threadId: event.payload.thread.id,
-      state,
-      payloadState: JSON.parse(String(result.stateJson ?? "{}")),
-    });
-    messages = JSON.parse(String(result.nextMessagesJson ?? "[]")) as unknown[];
-    shouldContinue = Boolean(result.shouldContinue);
+      state = await runs.restoreWorkflowState({
+        threadId: event.payload.thread.id,
+        state,
+        payloadState: JSON.parse(String(result.stateJson ?? "{}")),
+      });
+      messages = JSON.parse(String(result.nextMessagesJson ?? "[]")) as unknown[];
+      shouldContinue = Boolean(result.shouldContinue);
+    }
+    await thread.setState(state as any, { replace: true });
+    await runs.clearWorkflowInstance(thread.id);
+  } finally {
+    stopTypingPulse();
   }
-  await thread.setState(state as any, { replace: true });
-  await runs.clearWorkflowInstance(thread.id);
 }
 
 export async function runProactiveWakeWorkflow(
@@ -178,4 +189,41 @@ export async function runProactiveWakeWorkflow(
     });
     throw error;
   }
+}
+
+function startWorkflowTypingPulse(params: { token: string; chatId: number; pulseMs: number }) {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const tick = async () => {
+    if (stopped) return;
+    await sendTelegramTypingAction(params.token, params.chatId).catch(() => null);
+    if (!stopped) timer = setTimeout(() => void tick(), params.pulseMs);
+  };
+
+  void tick();
+
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
+}
+
+function getTypingPulseMs(value: string | undefined): number {
+  return parsePositiveMs(value, 2500);
+}
+
+function getWorkflowBurstMs(
+  deps: { INLINE_BURST_MS?: string; QUEUE_BURST_MS?: string },
+  isFirstStep: boolean,
+) {
+  return parsePositiveMs(
+    isFirstStep ? deps.INLINE_BURST_MS : deps.QUEUE_BURST_MS,
+    isFirstStep ? 8000 : 20000,
+  );
+}
+
+function parsePositiveMs(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

@@ -167,7 +167,7 @@ export class BotRuntime {
 
     const agent = new ToolLoopAgent({
       model,
-      stopWhen: stepCountIs(1),
+      stopWhen: stepCountIs(getRunSliceSteps(this.deps.RUN_SLICE_STEPS)),
       providerOptions: this.getAgentProviderOptions(runtime),
       tools: this.createAgentTools({
         chatId,
@@ -189,6 +189,7 @@ export class BotRuntime {
         state = nextState;
       },
       serializeState: stripEphemeralState,
+      intervalMs: getTypingPulseMs(this.deps.TYPING_PULSE_MS),
     });
 
     try {
@@ -1091,6 +1092,18 @@ function getRunTimeoutMs(userText: string): number {
     return 22_000;
   }
   return DEFAULT_RUN_TIMEOUT_MS;
+}
+
+function getRunSliceSteps(value: string | undefined): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return 4;
+  return Math.min(12, Math.floor(parsed));
+}
+
+function getTypingPulseMs(value: string | undefined): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 500) return 2500;
+  return Math.floor(parsed);
 }
 
 function inferImplicitSkillNames(userText: string): string[] {
