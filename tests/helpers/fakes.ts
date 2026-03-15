@@ -1,6 +1,14 @@
 import type { Env } from "../../src/cloudflare/env";
+import { runConversationWorkflow } from "../../src/app/cloudflare";
+import type { ConversationWorkflowPayload } from "../../src/cloudflare/env";
 
 type SqlResult = { meta: { changes?: number } };
+
+const pendingWorkflowTasks: Promise<unknown>[] = [];
+
+export async function waitForWorkflowTasks(): Promise<void> {
+  await Promise.allSettled(pendingWorkflowTasks.splice(0));
+}
 
 export class FakeD1 {
   readonly telegramUpdates = new Set<number>();
@@ -405,5 +413,55 @@ export function createEnv(overrides?: Partial<Env>) {
     DRECLAW_DB: db as unknown as D1Database,
     ...overrides,
   };
+  env.CONVERSATION_WORKFLOW ??= createImmediateConversationWorkflow(
+    env,
+  ) as unknown as Env["CONVERSATION_WORKFLOW"];
   return { env, db };
+}
+
+function createImmediateConversationWorkflow(env: Env) {
+  const statuses = new Map<string, string>();
+  return {
+    async create(input: { id: string; params: ConversationWorkflowPayload }) {
+      statuses.set(input.id, "running");
+      const task = (async () => {
+        try {
+          await runConversationWorkflow(
+            env,
+            createWorkflowCtx(),
+            { payload: input.params } as never,
+            { do: async (_name: string, execute: () => Promise<unknown>) => execute() } as never,
+          );
+          statuses.set(input.id, "complete");
+        } catch (error) {
+          statuses.set(input.id, "failed");
+          throw error;
+        }
+      })();
+      pendingWorkflowTasks.push(task);
+      return { id: input.id };
+    },
+    async get(id: string) {
+      return {
+        async terminate() {
+          statuses.set(id, "terminated");
+        },
+        async status() {
+          return { status: statuses.get(id) ?? "unknown" };
+        },
+      };
+    },
+  };
+}
+
+function createWorkflowCtx(): ExecutionContext {
+  return {
+    waitUntil() {
+      return;
+    },
+    passThroughOnException() {
+      return;
+    },
+    props: {},
+  } as ExecutionContext;
 }

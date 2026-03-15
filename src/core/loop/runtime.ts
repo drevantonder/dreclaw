@@ -1,6 +1,7 @@
 import { ToolLoopAgent, generateText, stepCountIs, tool, type ModelMessage } from "ai";
 import type { Thread, Message } from "chat";
 import { z } from "zod";
+import { streamTelegramReply } from "../../chat-adapters/telegram/api";
 import { getPersistedThreadControls } from "./repo";
 import {
   executeCode,
@@ -62,6 +63,16 @@ const SYSTEM_PROMPT =
 
 export class BotRuntime {
   private readonly runs: ReturnType<typeof createRunCoordinator>;
+  private workspace?: ReturnType<typeof createWorkspace>;
+  private memoryRuntime?: ReturnType<typeof createMemoryRuntime>;
+  private skillCatalogCache?: {
+    revision: number;
+    skills: Array<Pick<SkillRecord, "name" | "description" | "scope">>;
+  };
+  private readonly loadedSkillCache = new Map<
+    string,
+    { revision: number; skill: SkillRecord | null }
+  >();
 
   constructor(
     private readonly deps: RuntimeDeps,
@@ -126,181 +137,6 @@ export class BotRuntime {
 
   setVerbose(state: BotThreadState, enabled: boolean): BotThreadState {
     return { ...state, verbose: enabled };
-  }
-
-  async runConversation(params: {
-    thread: Thread<BotThreadState>;
-    message: Message;
-    chatId: number;
-    state: BotThreadState;
-    runTimeoutMs?: number;
-    imageBlocks?: string[];
-  }): Promise<BotThreadState> {
-    const { thread, message } = params;
-    let state = normalizeBotThreadState(params.state);
-    const { chatId } = params;
-    const userText = message.text.trim();
-    const imageBlocks = params.imageBlocks ?? [];
-    const runtime = this.getRuntimeConfig();
-    const toolTraces: ToolTrace[] = [];
-    const tracer = new VerboseTracer(this.deps.DRECLAW_DB, thread);
-    const model = this.createModel(runtime);
-    const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
-    const skillCatalog = await this.listSkills();
-    promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
-    const loadedSkills = await this.getLoadedSkills(inferImplicitSkillNames(userText));
-    if (loadedSkills.length) {
-      promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
-    }
-    const taskGuidance = renderTaskGuidance(userText);
-    if (taskGuidance) promptSections.push(`Task guidance:\n${taskGuidance}`);
-    const historyContext = renderHistoryContext(state.history);
-    if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
-    const memoryContext = await this.getMemoryRuntime().renderContext({
-      chatId,
-      query: userText || "[image message]",
-      factTopK: MEMORY_FACT_TOP_K,
-      episodeTopK: MEMORY_EPISODE_TOP_K,
-    });
-    if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
-    const messages = buildAgentMessages(promptSections.join("\n\n"), userText, imageBlocks);
-    state = this.runs.startRun(state);
-    state = await this.runs.recoverState(thread.id, state);
-    await thread.setState(stripEphemeralState(state), { replace: true });
-    await this.runs.persistRunState(thread.id, state);
-
-    const agent = new ToolLoopAgent({
-      model,
-      stopWhen: stepCountIs(getStepLimit(userText)),
-      providerOptions: this.getAgentProviderOptions(runtime),
-      tools: this.createAgentTools({
-        chatId,
-        threadId: thread.id,
-        state,
-        saveState: async (next) => {
-          state = next;
-        },
-        tracer,
-        toolTraces,
-      }),
-    });
-
-    const heartbeat = this.runs.createHeartbeat({
-      thread,
-      getState: () => state,
-      setState: (nextState) => {
-        state = nextState;
-      },
-      serializeState: stripEphemeralState,
-    });
-
-    try {
-      await thread.startTyping();
-    } catch {
-      // noop
-    }
-    heartbeat.start();
-
-    let finalText = "";
-    const runTimeoutMs = params.runTimeoutMs ?? getRunTimeoutMs(userText);
-    try {
-      await this.runs.throwIfCancelled(thread.id);
-      finalText = await withTimeout(
-        (async () => {
-          await this.runs.throwIfCancelled(thread.id);
-          const stream = await withTimeout(
-            agent.stream({ messages }),
-            runTimeoutMs,
-            "Agent stream timed out",
-          );
-          await withTimeout(
-            thread.post(stream.textStream),
-            runTimeoutMs,
-            "Assistant response timed out",
-          );
-          await this.runs.throwIfCancelled(thread.id);
-          const response = await withTimeout(
-            Promise.resolve(stream.response),
-            runTimeoutMs,
-            "Assistant response timed out",
-          );
-          const generatedText = await withTimeout(
-            Promise.resolve(stream.text),
-            runTimeoutMs,
-            "Assistant text timed out",
-          );
-          await this.runs.throwIfCancelled(thread.id);
-          return (
-            (typeof generatedText === "string" ? generatedText : "").trim() ||
-            extractAssistantText(response.messages as ModelMessage[])
-          );
-        })(),
-        runTimeoutMs,
-        "Conversation timed out",
-      );
-    } catch (error) {
-      if (isRunCancelledError(error)) {
-        heartbeat.stop();
-        const persisted = (await this.runs.getStatus(thread.id, state)).runStatus;
-        state = this.runs.finishRun(state);
-        await this.runs.persistRunState(thread.id, {
-          ...state,
-          runStatus: {
-            ...state.runStatus,
-            stoppedAt: persisted.stoppedAt ?? new Date().toISOString(),
-          },
-        });
-        if (!persisted.stoppedAt) {
-          try {
-            await thread.post("Stopped.");
-          } catch {
-            // noop
-          }
-        }
-        state = await this.runs.recoverState(thread.id, state);
-        return stripEphemeralState(state);
-      }
-      finalText = await this.recoverTimedOutRun({
-        model,
-        userText: userText || "[image]",
-        toolTraces,
-      });
-      try {
-        await thread.post(finalText);
-      } catch {
-        // noop
-      }
-      state = pushHistory(state, "user", userText || "[image]");
-      for (const trace of toolTraces) {
-        state = pushHistory(state, "tool", renderToolTranscript(trace));
-      }
-      state = this.runs.finishRun(state);
-      state = pushHistory(state, "assistant", finalText);
-      heartbeat.stop();
-      await this.runs.persistRunState(thread.id, state);
-      state = await this.runs.recoverState(thread.id, state);
-      return stripEphemeralState(state);
-    }
-
-    state = pushHistory(state, "user", userText || "[image]");
-    for (const trace of toolTraces) {
-      state = pushHistory(state, "tool", renderToolTranscript(trace));
-    }
-    if (finalText) state = pushHistory(state, "assistant", finalText);
-    state = this.runs.finishRun(state);
-    heartbeat.stop();
-    await this.runs.persistRunState(thread.id, state);
-    state = await this.runs.recoverState(thread.id, state);
-
-    await this.persistMemoryTurn({
-      chatId,
-      userText: userText || "[image]",
-      assistantText: finalText,
-      toolTranscripts: toolTraces.map(renderToolTranscript),
-      memoryTurns: state.memoryTurns,
-    });
-    state.memoryTurns += 1;
-    return stripEphemeralState(state);
   }
 
   async runConversationAgentStep(params: {
@@ -375,6 +211,11 @@ export class BotRuntime {
         runTimeoutMs,
         "Agent step timed out",
       );
+      const streamedText = await withTimeout(
+        this.streamAssistantReply({ thread, chatId, textStream: stream.textStream }),
+        runTimeoutMs,
+        "Assistant stream timed out",
+      );
       const response = await withTimeout(
         Promise.resolve(stream.response),
         runTimeoutMs,
@@ -395,14 +236,18 @@ export class BotRuntime {
         state = pushHistory(state, "tool", renderToolTranscript(trace));
       }
 
-      const assistantText =
-        [text, stepText].find((value) => typeof value === "string" && value.trim())?.trim() ?? "";
-      if (assistantText && !stepHadToolCalls) {
+      const assistantCandidate = [text, streamedText, stepText].find(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      );
+      const assistantText = assistantCandidate?.trim() ?? "";
+      if (assistantText && !stepHadToolCalls && !streamedText) {
         try {
           await thread.post(assistantText);
         } catch {
           // noop
         }
+        state = pushHistory(state, "assistant", assistantText);
+      } else if (assistantText && !stepHadToolCalls) {
         state = pushHistory(state, "assistant", assistantText);
       }
       if (!stepHadToolCalls) {
@@ -866,13 +711,22 @@ export class BotRuntime {
   }
 
   private async listSkills(): Promise<Array<Pick<SkillRecord, "name" | "description" | "scope">>> {
-    return this.getWorkspace().listSkills();
+    const workspace = this.getWorkspace();
+    const revision = await workspace.getRevision();
+    if (this.skillCatalogCache?.revision === revision) return this.skillCatalogCache.skills;
+    const skills = await workspace.listSkills();
+    this.skillCatalogCache = { revision, skills };
+    return skills;
   }
 
   private async getLoadedSkills(names: string[]): Promise<SkillRecord[]> {
     const loaded: SkillRecord[] = [];
+    const workspace = this.getWorkspace();
+    const revision = await workspace.getRevision();
     for (const name of names) {
-      const skill = await this.getWorkspace().loadSkill(name);
+      const cached = this.loadedSkillCache.get(name);
+      const skill = cached?.revision === revision ? cached.skill : await workspace.loadSkill(name);
+      if (cached?.revision !== revision) this.loadedSkillCache.set(name, { revision, skill });
       if (skill) loaded.push(skill);
     }
     return loaded;
@@ -910,10 +764,13 @@ export class BotRuntime {
   }
 
   private getWorkspace() {
-    return createWorkspace({
-      db: this.deps.DRECLAW_DB,
-      maxFileBytes: this.getCodeExecutionConfig().limits.vfsMaxFileBytes,
-    });
+    if (!this.workspace) {
+      this.workspace = createWorkspace({
+        db: this.deps.DRECLAW_DB,
+        maxFileBytes: this.getCodeExecutionConfig().limits.vfsMaxFileBytes,
+      });
+    }
+    return this.workspace;
   }
 
   private getAgendaService(primaryChatId?: number | null) {
@@ -1017,8 +874,29 @@ export class BotRuntime {
     await this.getMemoryRuntime().persistTurn(params);
   }
 
+  private async streamAssistantReply(params: {
+    thread: Thread<BotThreadState>;
+    chatId: number;
+    textStream: AsyncIterable<string>;
+  }): Promise<string> {
+    if (params.thread.id.startsWith("telegram:")) {
+      const result = await streamTelegramReply({
+        token: this.deps.TELEGRAM_BOT_TOKEN,
+        chatId: params.chatId,
+        textStream: params.textStream,
+      });
+      return result.text;
+    }
+
+    await params.thread.post(params.textStream);
+    return "";
+  }
+
   private getMemoryRuntime() {
-    return createMemoryRuntime(memoryDepsFromRuntime(this.deps));
+    if (!this.memoryRuntime) {
+      this.memoryRuntime = createMemoryRuntime(memoryDepsFromRuntime(this.deps));
+    }
+    return this.memoryRuntime;
   }
 
   private google() {
@@ -1205,23 +1083,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-function getStepLimit(userText: string): number {
-  const text = String(userText ?? "").toLowerCase();
-  if (/gmail|email|inbox/.test(text)) {
-    return 10;
-  }
-  if (/bash|shell|curl|grep|sed|awk|jq|yq|find|xargs|pipe|regex/.test(text)) {
-    return 10;
-  }
-  if (/calendar|drive|docs|sheets|google|script|skill|workflow|library|merge|update/.test(text)) {
-    return 12;
-  }
-  if (/compare|research|investigate|debug/.test(text)) {
-    return 14;
-  }
-  return 8;
 }
 
 function getRunTimeoutMs(userText: string): number {

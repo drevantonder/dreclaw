@@ -18,6 +18,7 @@ export interface CommandResult {
 export interface RuntimeDeps {
   DRECLAW_DB: D1Database;
   pluginRegistry: PluginRegistry;
+  TELEGRAM_BOT_TOKEN: string;
   CONVERSATION_WORKFLOW?: WorkflowPort<ConversationWorkflowPayload>;
   USER_TIMEZONE?: string;
   AI_PROVIDER?: string;

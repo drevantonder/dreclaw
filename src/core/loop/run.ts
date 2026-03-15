@@ -192,6 +192,8 @@ export class RunCoordinator {
     thread: WorkflowThread;
     message: Message;
     state: BotThreadState;
+    channelId?: number;
+    imageBlocks?: string[];
   }): Promise<string> {
     if (!this.deps.workflow) return "";
     const workflowInstanceId = crypto.randomUUID();
@@ -202,6 +204,8 @@ export class RunCoordinator {
         thread: params.thread.toJSON(),
         message: params.message.toJSON(),
         state: workflowState,
+        channelId: params.channelId,
+        imageBlocks: params.imageBlocks,
       },
     });
     const nextState = {

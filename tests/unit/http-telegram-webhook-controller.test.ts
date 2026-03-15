@@ -53,6 +53,10 @@ function createRequest(secret: string, updateId = 1, text = "hello") {
 
 describe("handleTelegramWebhookRequest", () => {
   beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), { status: 200 })),
+    );
     mocks.createBot.mockReset();
     mocks.maybeHandleAsyncTelegramCommand.mockReset();
     mocks.markUpdateSeen.mockReset();
@@ -129,6 +133,6 @@ describe("handleTelegramWebhookRequest", () => {
     expect(response).toBe(botResponse);
     expect(mocks.createBot).toHaveBeenCalledWith(env, ctx);
     expect(telegramWebhook).toHaveBeenCalledWith(request, { waitUntil: expect.any(Function) });
-    expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
+    expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
   });
 });

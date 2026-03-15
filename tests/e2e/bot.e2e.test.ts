@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import worker from "../../src/cloudflare/index";
-import { createEnv } from "../helpers/fakes";
+import { createEnv, waitForWorkflowTasks } from "../helpers/fakes";
 
 const app = worker as unknown as {
   fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response>;
@@ -20,6 +20,7 @@ function createExecutionTracker() {
     } as unknown as ExecutionContext,
     async wait() {
       await Promise.allSettled(pending.splice(0));
+      await waitForWorkflowTasks();
     },
   };
 }
@@ -275,6 +276,8 @@ describe("chat sdk bot", () => {
     await tracker.wait();
     expect(first.status).toBe(200);
     expect([...sent, ...edited].join("\n")).toContain("Hello from Chat SDK.");
+    const firstDeliveryCount =
+      [...sent, ...edited].join("\n").match(/Hello from Chat SDK\./g)?.length ?? 0;
 
     const second = await app.fetch(
       makeWebhookRequest(env.TELEGRAM_WEBHOOK_SECRET, 1, "hello") as unknown as Request,
@@ -283,7 +286,9 @@ describe("chat sdk bot", () => {
     );
     await tracker.wait();
     expect(second.status).toBe(200);
-    expect([...sent, ...edited].join("\n").match(/Hello from Chat SDK\./g)?.length).toBe(1);
+    expect([...sent, ...edited].join("\n").match(/Hello from Chat SDK\./g)?.length ?? 0).toBe(
+      firstDeliveryCount,
+    );
   });
 
   it("supports /verbose and emits execute traces with code, writes, and result", async () => {

@@ -2,7 +2,7 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { Message as ChatMessage, ThreadImpl } from "chat";
 import { createChat } from "../chat-adapters/telegram/gateway";
 import { handleTelegramWebhookRequest as handleTelegramWebhookAdapter } from "../chat-adapters/telegram/webhook";
-import { getTelegramUserChatId } from "../chat-adapters/telegram/message";
+import { getTelegramUserChatId, loadTelegramImageBlocks } from "../chat-adapters/telegram/message";
 import type { Env } from "../cloudflare/env";
 import { createAgendaService } from "../core/agenda";
 import { handlePluginOAuthCallback, getHealthPayload } from "../core/http";
@@ -43,26 +43,31 @@ export async function runConversationWorkflow(
   step: WorkflowStep,
 ): Promise<void> {
   const runs = createRunCoordinator({ db: env.DRECLAW_DB, workflow: env.CONVERSATION_WORKFLOW });
+  const runtimeDeps = buildRuntimeDeps(env);
+  const chat = createChat(env).registerSingleton();
+  void chat;
+  const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
+  const message = ChatMessage.fromJSON(event.payload.message);
+  const runtime = new BotRuntime(runtimeDeps, ctx as never);
   let state = await runs.restoreWorkflowState({
-    threadId: event.payload.thread.id,
+    threadId: thread.id,
     state: event.payload.state as BotThreadState,
     payloadState: event.payload.state,
   });
+  const chatId = event.payload.channelId ?? getTelegramUserChatId(message.raw, thread.id);
+  const imageBlocks =
+    event.payload.imageBlocks ??
+    (await loadTelegramImageBlocks(env.TELEGRAM_BOT_TOKEN, message.raw).catch(() => []));
   let messages: unknown[] | undefined;
   let shouldContinue = true;
   for (let stepIndex = 0; stepIndex < 64 && shouldContinue; stepIndex += 1) {
     const rawResult = await step.do(`conversation-step-${stepIndex}`, async () => {
-      const chat = createChat(env).registerSingleton();
-      void chat;
-      const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
-      const message = ChatMessage.fromJSON(event.payload.message);
-      const runtime = new BotRuntime(buildRuntimeDeps(env), ctx as never);
       const stepResult = await runtime.runConversationAgentStep({
         thread,
         message,
-        chatId: event.payload.channelId ?? getTelegramUserChatId(message.raw, thread.id),
+        chatId,
         state,
-        imageBlocks: event.payload.imageBlocks ?? [],
+        imageBlocks,
         baseMessages: Array.isArray(messages) ? (messages as any) : undefined,
         isFirstStep: stepIndex === 0,
         runTimeoutMs: 300_000,
@@ -87,9 +92,6 @@ export async function runConversationWorkflow(
     messages = JSON.parse(String(result.nextMessagesJson ?? "[]")) as unknown[];
     shouldContinue = Boolean(result.shouldContinue);
   }
-  const chat = createChat(env).registerSingleton();
-  void chat;
-  const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
   await thread.setState(state as any, { replace: true });
   await runs.clearWorkflowInstance(thread.id);
 }

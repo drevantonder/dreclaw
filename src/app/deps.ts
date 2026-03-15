@@ -6,6 +6,8 @@ import { createGooglePlugin } from "../plugins/google";
 import type { GooglePluginDeps } from "../plugins/google/types";
 import type { CommandDeps } from "../core/commands";
 
+const runtimeDepsCache = new WeakMap<Env, RuntimeDeps>();
+
 export function buildGooglePluginDeps(env: Env): GooglePluginDeps {
   return {
     db: env.DRECLAW_DB,
@@ -20,9 +22,12 @@ export function buildGooglePluginDeps(env: Env): GooglePluginDeps {
 }
 
 export function buildRuntimeDeps(env: Env): RuntimeDeps {
+  const cached = runtimeDepsCache.get(env);
+  if (cached) return cached;
   const pluginRegistry = createPluginRegistry([createGooglePlugin(buildGooglePluginDeps(env))]);
-  return {
+  const deps: RuntimeDeps = {
     DRECLAW_DB: env.DRECLAW_DB,
+    TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,
     CONVERSATION_WORKFLOW: env.CONVERSATION_WORKFLOW,
     USER_TIMEZONE: env.USER_TIMEZONE,
     AI_PROVIDER: env.AI_PROVIDER,
@@ -68,6 +73,8 @@ export function buildRuntimeDeps(env: Env): RuntimeDeps {
     TYPING_PULSE_MS: env.TYPING_PULSE_MS,
     pluginRegistry,
   };
+  runtimeDepsCache.set(env, deps);
+  return deps;
 }
 
 export function buildCommandDeps(env: Env, executionContext?: ExecutionContext): CommandDeps {

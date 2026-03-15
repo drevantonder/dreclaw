@@ -1,6 +1,8 @@
 import type { Env } from "../../cloudflare/env";
+import { sendTelegramTypingAction } from "./api";
 import { hasValidTelegramWebhookSecret } from "./auth";
 import { maybeHandleAsyncTelegramCommand } from "./commands";
+import { isPrivateTelegramUpdate } from "./message";
 import { markUpdateSeen } from "./repo";
 import type { TelegramUpdate } from "./types";
 import { createBot } from "./gateway";
@@ -22,6 +24,12 @@ export async function handleTelegramWebhookRequest(
     ? await markUpdateSeen(env.DRECLAW_DB, update.update_id)
     : true;
   if (!firstSeen) return new Response("ok");
+
+  if (update?.message?.chat?.id && isPrivateTelegramUpdate(update)) {
+    ctx.waitUntil(
+      sendTelegramTypingAction(env.TELEGRAM_BOT_TOKEN, update.message.chat.id).catch(() => null),
+    );
+  }
 
   if (update && (await maybeHandleAsyncTelegramCommand(env, update, undefined, ctx))) {
     return new Response("ok");

@@ -8,15 +8,10 @@ import {
   normalizeBotThreadState,
   type BotThreadState,
 } from "../../core";
-import { createAgendaService } from "../../core/agenda";
 import type { Env } from "../../cloudflare/env";
 import { isAllowedTelegramMessage } from "./auth";
 import { handleAsyncCommand } from "./commands";
-import {
-  getTelegramUserChatId,
-  isTelegramPrivateMessage,
-  loadTelegramImageBlocks,
-} from "./message";
+import { getTelegramUserChatId, isTelegramPrivateMessage } from "./message";
 
 export function createChat(env: Env) {
   const adapters = {
@@ -54,11 +49,6 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
     if (!isAllowedTelegramMessage(env, message)) return;
     const text = message.text.trim();
     const chatId = getTelegramUserChatId(message.raw, thread.id);
-    await createAgendaService(env.DRECLAW_DB, {
-      timezone: env.USER_TIMEZONE,
-      primaryChatId: chatId,
-    }).ensureProfile({ primaryChatId: chatId });
-    const imageBlocks = await loadTelegramImageBlocks(env.TELEGRAM_BOT_TOKEN, message.raw);
 
     if (text.startsWith("/")) {
       await handleAsyncCommand({
@@ -83,18 +73,7 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
       await thread.post("Currently busy. Not executed. Use /status or /stop.");
       return;
     }
-    if (!env.CONVERSATION_WORKFLOW) {
-      const nextState = await runtime.runConversation({
-        thread,
-        message,
-        chatId,
-        state: currentState,
-        imageBlocks,
-      });
-      await thread.setState(nextState, { replace: true });
-      return;
-    }
-    await startConversationWorkflow(env, thread, message, currentState);
+    await startConversationWorkflow(env, thread, message, currentState, chatId);
   };
 
   bot.onNewMessage(/^.*$/s, async (thread, message) => handleIncoming(thread, message, true));
@@ -107,8 +86,12 @@ export async function startConversationWorkflow(
   thread: Thread<BotThreadState>,
   message: Message,
   state: BotThreadState,
+  chatId: number,
 ): Promise<string> {
   const runtimeDeps = buildRuntimeDeps(env);
+  if (!runtimeDeps.CONVERSATION_WORKFLOW) {
+    throw new Error("Missing CONVERSATION_WORKFLOW binding");
+  }
   return createRunCoordinator({
     db: runtimeDeps.DRECLAW_DB,
     workflow: runtimeDeps.CONVERSATION_WORKFLOW,
@@ -116,5 +99,6 @@ export async function startConversationWorkflow(
     thread: thread as Thread<BotThreadState> & { toJSON(): SerializedThread },
     message,
     state,
+    channelId: chatId,
   });
 }
