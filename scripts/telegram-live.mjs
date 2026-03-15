@@ -5,31 +5,11 @@ import { TelegramClient } from "telegram";
 import { Api } from "telegram";
 import { Logger, LogLevel } from "telegram/extensions/Logger.js";
 import { StringSession } from "telegram/sessions/index.js";
+import { loadDotEnvIntoProcess } from "./lib/env.mjs";
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_POLL_MS = 800;
 const AUTH_STATE_PATH = path.join(process.cwd(), ".telegram-test-auth.json");
-
-function loadDotEnv(filePath) {
-  if (!fs.existsSync(filePath)) return;
-  const raw = fs.readFileSync(filePath, "utf8");
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!match) continue;
-    const [, key, rest] = match;
-    if (process.env[key] != null && process.env[key] !== "") continue;
-    let value = rest;
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    process.env[key] = value;
-  }
-}
 
 function parseArgs(argv) {
   const args = {
@@ -314,7 +294,7 @@ function printResult(result, json) {
 }
 
 async function main() {
-  loadDotEnv(path.join(process.cwd(), ".env"));
+  loadDotEnvIntoProcess(path.join(process.cwd(), ".env"));
   const args = parseArgs(process.argv.slice(2));
   const client = await connectClient(args);
   try {

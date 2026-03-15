@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { getDefaultVpBin, loadDotEnvIntoProcess } from "./lib/env.mjs";
 
-const vpBin = process.env.VITE_PLUS_BIN || "/Users/drevan/.vite-plus/bin/vp";
+loadDotEnvIntoProcess();
+
+const vpBin = getDefaultVpBin();
 
 const child = spawn(vpBin, ["dlx", "wrangler", ...process.argv.slice(2)], {
   stdio: "inherit",

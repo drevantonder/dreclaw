@@ -2,6 +2,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText, stepCountIs, tool } from "ai";
 import { z } from "zod";
+import { loadDotEnvIntoProcess } from "./lib/env.mjs";
 
 const SYSTEM_PROMPT = "You are dréclaw. Be concise.";
 
@@ -46,6 +47,7 @@ function fail(message) {
 }
 
 async function main() {
+  loadDotEnvIntoProcess();
   const args = parseArgs(process.argv.slice(2));
   if (!args.apiKey.trim()) fail("Missing API key. Pass --api-key or set OPENCODE_API_KEY");
 

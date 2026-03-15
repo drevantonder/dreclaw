@@ -56,11 +56,10 @@ Also set `route` in `wrangler.toml`.
 Set Worker secret:
 
 ```bash
-set -a; source .env; set +a
 vp run cf:secrets:sync
 ```
 
-This syncs all `.env` vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPENCODE_API_KEY`, `GOOGLE_OAUTH_*`, `MODEL`, `BASE_URL`).
+This loads `.env` automatically and syncs the selected vars as Worker secrets (`TELEGRAM_*`, `AI_PROVIDER`, `OPENCODE_API_KEY`, `GOOGLE_OAUTH_*`, `MODEL`, `BASE_URL`).
 
 ### Deploy
 
@@ -88,7 +87,7 @@ Normal messages stream a single assistant reply.
 
 - Run full tests: `vp test`
 - Check format, lint, and types: `vp check`
-- Run live model smoke test (real OpenCode Go + tool loop): `set -a; source .env; set +a && vp run smoke:live -- --prompt "hey"`
+- Run live model smoke test (real OpenCode Go + tool loop): `vp run smoke:live -- --prompt "hey"`
 - Run Telegram live test via GramJS: `vp run live:telegram -- --prompt "hey"`
 - Run pre-deploy gate: `vp run cf:verify:predeploy`
 

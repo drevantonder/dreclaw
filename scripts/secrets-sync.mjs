@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { loadDotEnvIntoProcess } from "./lib/env.mjs";
+
+loadDotEnvIntoProcess();
 
 const secretKeys = [
   "TELEGRAM_BOT_TOKEN",
@@ -24,7 +27,7 @@ for (const key of secretKeys) {
 }
 
 if (Object.keys(payload).length === 0) {
-  process.stderr.write("No env vars loaded. Run: set -a; source .env; set +a\n");
+  process.stderr.write("No env vars loaded from process or .env\n");
   process.exit(1);
 }
 
