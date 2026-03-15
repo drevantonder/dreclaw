@@ -17,6 +17,7 @@ export interface ExecuteResult {
     fsCalls: number;
     memoryCalls: number;
     googleCalls: number;
+    agendaCalls: number;
   };
   error?: {
     code: string;
@@ -219,7 +220,7 @@ function buildMainModule(code: string): string {
     "    const startedAt = Date.now();",
     "    const payload = await request.json().catch(() => ({}));",
     "    const logs = [];",
-    "    const stats = { durationMs: 0, fetchRequests: 0, fsCalls: 0, memoryCalls: 0, googleCalls: 0 };",
+    "    const stats = { durationMs: 0, fetchRequests: 0, fsCalls: 0, memoryCalls: 0, googleCalls: 0, agendaCalls: 0 };",
     "    const pushLog = (level, values) => {",
     "      if (logs.length >= env.EXEC_LIMITS.execMaxLogLines) return;",
     "      const text = values.map((value) => formatValue(value)).join(' ');",
@@ -240,6 +241,10 @@ function buildMainModule(code: string): string {
     "    const google = {",
     "      execute: async (arg) => { stats.googleCalls += 1; return await env.HOST.call({ action: 'google.execute', payload: arg }); },",
     "    };",
+    "    const agenda = {",
+    "      query: async (arg = {}) => { stats.agendaCalls += 1; return await env.HOST.call({ action: 'agenda.query', payload: arg }); },",
+    "      update: async (arg) => { stats.agendaCalls += 1; return await env.HOST.call({ action: 'agenda.update', payload: arg }); },",
+    "    };",
     "    const fetchShim = async (input, init) => {",
     "      if (!env.EXEC_LIMITS.netFetchEnabled) throw new Error('FETCH_DISABLED');",
     "      stats.fetchRequests += 1;",
@@ -252,9 +257,9 @@ function buildMainModule(code: string): string {
     "      });",
     "    };",
     "    try {",
-    "      const result = await (async (input, fs, memory, google, fetch, console) => {",
+    "      const result = await (async (input, fs, memory, google, agenda, fetch, console) => {",
     indentCode(preparedCode, 8),
-    "      })(payload.input, fs, memory, google, fetchShim, consoleShim);",
+    "      })(payload.input, fs, memory, google, agenda, fetchShim, consoleShim);",
     "      stats.durationMs = Date.now() - startedAt;",
     "      return Response.json({ ok: true, result: sanitizeResult(result, env.EXEC_LIMITS.execMaxOutputBytes), logs, stats });",
     "    } catch (error) {",
@@ -331,7 +336,14 @@ function failResult(code: string, message: string): ExecuteResult {
     ok: false,
     result: null,
     logs: [],
-    stats: { durationMs: 0, fetchRequests: 0, fsCalls: 0, memoryCalls: 0, googleCalls: 0 },
+    stats: {
+      durationMs: 0,
+      fetchRequests: 0,
+      fsCalls: 0,
+      memoryCalls: 0,
+      googleCalls: 0,
+      agendaCalls: 0,
+    },
     error: { code, message },
   };
 }

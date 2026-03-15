@@ -7,6 +7,7 @@ import {
   normalizeBotThreadState,
   type BotThreadState,
 } from "../../core";
+import { createAgendaService } from "../../core/agenda";
 import type { Env } from "../../cloudflare/env";
 import { isAllowedTelegramMessage } from "./auth";
 import { handleAsyncCommand } from "./commands";
@@ -48,6 +49,10 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
     if (!isAllowedTelegramMessage(env, message)) return;
     const text = message.text.trim();
     const chatId = getTelegramUserChatId(message.raw, thread.id);
+    await createAgendaService(env.DRECLAW_DB, {
+      timezone: env.USER_TIMEZONE,
+      primaryChatId: chatId,
+    }).ensureProfile({ primaryChatId: chatId });
     const imageBlocks = await loadTelegramImageBlocks(env.TELEGRAM_BOT_TOKEN, message.raw);
 
     if (text.startsWith("/")) {

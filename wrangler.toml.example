@@ -15,6 +15,7 @@ index_name = "REPLACE_WITH_VECTORIZE_INDEX_NAME"
 binding = "LOADER"
 
 [vars]
+USER_TIMEZONE = "Australia/Brisbane"
 CODE_EXEC_ENABLED = "true"
 NET_FETCH_ENABLED = "true"
 EXEC_TIMEOUT_MS = "4000"
@@ -37,7 +38,20 @@ REASONING_EFFORT = "medium"
 [observability]
 enabled = true
 
+[triggers]
+crons = ["* * * * *"]
+
 [[d1_databases]]
 binding = "DRECLAW_DB"
 database_name = "dreclaw"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[workflows]]
+name = "dreclaw-conversation"
+binding = "CONVERSATION_WORKFLOW"
+class_name = "ConversationWorkflow"
+
+[[workflows]]
+name = "dreclaw-proactive-wake"
+binding = "PROACTIVE_WAKE_WORKFLOW"
+class_name = "ProactiveWakeWorkflow"

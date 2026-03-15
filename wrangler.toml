@@ -4,6 +4,9 @@ compatibility_date = "2026-02-22"
 compatibility_flags = ["nodejs_compat"]
 route = "dreclaw.thevantonders.com/*"
 
+[vars]
+USER_TIMEZONE = "Australia/Brisbane"
+
 [ai]
 binding = "AI"
 
@@ -17,6 +20,9 @@ binding = "LOADER"
 [observability]
 enabled = true
 
+[triggers]
+crons = ["* * * * *"]
+
 [[d1_databases]]
 binding = "DRECLAW_DB"
 database_name = "dreclaw"
@@ -26,6 +32,11 @@ database_id = "24da6057-43e2-4997-a96d-843b746ab001"
 name = "dreclaw-conversation"
 binding = "CONVERSATION_WORKFLOW"
 class_name = "ConversationWorkflow"
+
+[[workflows]]
+name = "dreclaw-proactive-wake"
+binding = "PROACTIVE_WAKE_WORKFLOW"
+class_name = "ProactiveWakeWorkflow"
 
 [limits]
 cpu_ms = 300_000

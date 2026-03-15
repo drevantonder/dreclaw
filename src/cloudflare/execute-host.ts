@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { createGooglePlugin } from "../plugins/google";
 import { createMemoryRuntime } from "../core/memory";
+import { createAgendaService, type AgendaUpdateInput } from "../core/agenda";
 import type { Env } from "./env";
 import { createWorkspace } from "../core/vfs";
 
@@ -26,6 +27,8 @@ type ExecuteHostCall =
   | { action: "memory.find"; payload: unknown }
   | { action: "memory.save"; payload: unknown }
   | { action: "memory.remove"; payload: unknown }
+  | { action: "agenda.query"; payload: { filter?: unknown; limit?: number } }
+  | { action: "agenda.update"; payload: AgendaUpdateInput }
   | {
       action: "fetch";
       request: {
@@ -63,6 +66,10 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
         return this.executeMemorySavePayload(input.payload);
       case "memory.remove":
         return this.executeMemoryRemovePayload(input.payload);
+      case "agenda.query":
+        return this.executeAgendaQuery(input.payload);
+      case "agenda.update":
+        return this.executeAgendaUpdate(input.payload);
       case "fetch":
         return this.executeFetch(input.request);
       case "google.execute":
@@ -113,6 +120,21 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
 
   private memory() {
     return createMemoryRuntime(this.env);
+  }
+
+  private agenda() {
+    return createAgendaService(this.env.DRECLAW_DB, {
+      timezone: this.env.USER_TIMEZONE,
+      primaryChatId: this.props().chatId,
+    });
+  }
+
+  private async executeAgendaQuery(payload: { filter?: unknown; limit?: number }) {
+    return { items: await this.agenda().query(payload.filter as never, payload.limit ?? 20) };
+  }
+
+  private async executeAgendaUpdate(payload: AgendaUpdateInput): Promise<unknown> {
+    return this.agenda().update(payload, { sourceChatId: this.props().chatId });
   }
 
   private async executeFetch(request: {

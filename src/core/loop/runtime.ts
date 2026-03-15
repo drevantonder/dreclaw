@@ -8,6 +8,7 @@ import {
   normalizeCodeRuntimeState,
   type ExecuteHostBinding,
 } from "../tools/code-exec";
+import { createAgendaService, type AssistantAgendaItem } from "../agenda";
 import { executeBash } from "../tools/bash";
 import { createMemoryRuntime } from "../memory";
 import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../skills";
@@ -34,11 +35,31 @@ type ToolTrace = {
   writes?: string[];
 };
 
+type ToolTracer = {
+  onToolStart(name: string, args: Record<string, unknown>): Promise<void>;
+  onToolResult(trace: ToolTrace): Promise<void>;
+};
+
 const MEMORY_FACT_TOP_K = 6;
 const MEMORY_EPISODE_TOP_K = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 25_000;
+const PROACTIVE_NO_MESSAGE = "NO_MESSAGE";
+const scheduleSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("once"),
+    atLocal: z.string(),
+  }),
+  z.object({
+    type: z.literal("recurring"),
+    cadence: z.enum(["daily", "weekdays", "weekly", "monthly"]),
+    atLocalTime: z.string(),
+    daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
+    dayOfMonth: z.number().int().min(1).max(31).optional(),
+    interval: z.number().int().min(1).max(365).optional(),
+  }),
+]);
 const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and sandboxed execute scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape.";
+  "Be concise. Solve tasks with runtime-native tools and sandboxed execute scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape. Use agenda tools to track follow-ups, recurring responsibilities, and commitments you should wake for later.";
 
 export class BotRuntime {
   private readonly runs: ReturnType<typeof createRunCoordinator>;
@@ -405,6 +426,98 @@ export class BotRuntime {
     }
   }
 
+  async runProactiveWake(params: {
+    threadId: string;
+    chatId: number;
+    state: BotThreadState;
+    item: AssistantAgendaItem;
+    recentWakeSummaries: string[];
+  }): Promise<{ state: BotThreadState; messageText: string | null; summary: string }> {
+    let state = normalizeBotThreadState(params.state);
+    const runtime = this.getRuntimeConfig();
+    const toolTraces: ToolTrace[] = [];
+    const model = this.createModel(runtime);
+    const wakePacket = renderWakePacket(params.item, params.recentWakeSummaries);
+    const promptSections = [
+      SYSTEM_PROMPT,
+      [
+        "You are waking proactively on your own agenda.",
+        "You woke because an internal agenda item became due.",
+        `If no user-facing message is needed after any background work, reply exactly with ${PROACTIVE_NO_MESSAGE}.`,
+        "If a message is useful, make it concise and action-oriented.",
+        "Keep your agenda tidy by updating, rescheduling, snoozing, or completing items.",
+      ].join(" "),
+      `Current date/time (UTC): ${new Date().toISOString()}`,
+    ];
+    const skillCatalog = await this.listSkills();
+    promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
+    const loadedSkills = await this.getLoadedSkills(inferImplicitSkillNames(wakePacket));
+    if (loadedSkills.length) {
+      promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
+    }
+    const historyContext = renderHistoryContext(state.history);
+    if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
+    const memoryContext = await this.getMemoryRuntime().renderContext({
+      chatId: params.chatId,
+      query: `${params.item.title}\n${params.item.notes}`.trim() || "[agenda wake]",
+      factTopK: MEMORY_FACT_TOP_K,
+      episodeTopK: MEMORY_EPISODE_TOP_K,
+    });
+    if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
+
+    const agent = new ToolLoopAgent({
+      model,
+      stopWhen: stepCountIs(8),
+      providerOptions: this.getAgentProviderOptions(runtime),
+      tools: this.createAgentTools({
+        chatId: params.chatId,
+        threadId: params.threadId,
+        state,
+        saveState: async (next) => {
+          state = next;
+        },
+        tracer: new NoopTracer(),
+        toolTraces,
+      }),
+    });
+
+    let finalText = "";
+    try {
+      const stream = await withTimeout(
+        agent.stream({
+          messages: buildAgentMessages(promptSections.join("\n\n"), wakePacket, []),
+        }),
+        DEFAULT_RUN_TIMEOUT_MS,
+        "Proactive wake timed out",
+      );
+      const response = await withTimeout(
+        Promise.resolve(stream.response),
+        DEFAULT_RUN_TIMEOUT_MS,
+        "Proactive response timed out",
+      );
+      const text = await withTimeout(
+        Promise.resolve(stream.text),
+        DEFAULT_RUN_TIMEOUT_MS,
+        "Proactive text timed out",
+      );
+      finalText =
+        (typeof text === "string" ? text : "").trim() ||
+        extractAssistantText((response.messages as ModelMessage[]) ?? []);
+    } catch {
+      finalText = await this.recoverTimedOutRun({ model, userText: wakePacket, toolTraces });
+    }
+
+    for (const trace of toolTraces) state = pushHistory(state, "tool", renderToolTranscript(trace));
+
+    const messageText = normalizeProactiveMessage(finalText);
+    if (messageText) state = pushHistory(state, "assistant", messageText);
+    return {
+      state: stripEphemeralState(state),
+      messageText,
+      summary: summarizeProactiveWake(params.item, messageText, toolTraces),
+    };
+  }
+
   private async buildConversationMessages(params: {
     chatId: number;
     state: BotThreadState;
@@ -437,9 +550,10 @@ export class BotRuntime {
     threadId: string;
     state: BotThreadState;
     saveState: (state: BotThreadState) => Promise<void>;
-    tracer: VerboseTracer;
+    tracer: ToolTracer;
     toolTraces: ToolTrace[];
   }) {
+    const agenda = this.getAgendaService(params.chatId);
     const runTool = async <T>(
       name: string,
       args: Record<string, unknown>,
@@ -595,6 +709,71 @@ export class BotRuntime {
             };
           }),
       }),
+      agenda_query: tool({
+        description:
+          "Query the assistant's internal agenda of follow-ups, recurring responsibilities, and reminders.",
+        inputSchema: z.object({
+          filter: z
+            .object({
+              status: z.enum(["open", "done", "cancelled"]).optional(),
+              kind: z.string().optional(),
+              text: z.string().optional(),
+              dueBefore: z.string().optional(),
+              sourceChatId: z.number().int().optional(),
+            })
+            .optional(),
+          limit: z.number().int().min(1).max(50).optional(),
+        }),
+        execute: async (input) =>
+          runTool("agenda_query", input as Record<string, unknown>, async () => ({
+            items: await agenda.query(input.filter, input.limit ?? 20),
+          })),
+      }),
+      agenda_update: tool({
+        description:
+          "Create or update the assistant's internal agenda items. Use this to track follow-ups, reschedule wakes, snooze items, or mark them complete.",
+        inputSchema: z.discriminatedUnion("action", [
+          z.object({
+            action: z.literal("create"),
+            item: z.object({
+              kind: z.string().optional(),
+              title: z.string(),
+              notes: z.string().optional(),
+              priority: z.number().int().min(1).max(5).optional(),
+              nextWakeAt: z.string().nullable().optional(),
+              schedule: scheduleSchema.optional(),
+              sourceChatId: z.number().int().nullable().optional(),
+            }),
+          }),
+          z.object({
+            action: z.literal("patch"),
+            itemId: z.string(),
+            patch: z.object({
+              kind: z.string().optional(),
+              title: z.string().optional(),
+              notes: z.string().optional(),
+              priority: z.number().int().min(1).max(5).optional(),
+              nextWakeAt: z.string().nullable().optional(),
+              schedule: scheduleSchema.nullable().optional(),
+              sourceChatId: z.number().int().nullable().optional(),
+              status: z.enum(["open", "done", "cancelled"]).optional(),
+            }),
+          }),
+          z.object({ action: z.literal("complete"), itemId: z.string() }),
+          z.object({ action: z.literal("cancel"), itemId: z.string() }),
+          z.object({ action: z.literal("snooze"), itemId: z.string(), nextWakeAt: z.string() }),
+          z.object({
+            action: z.literal("reschedule"),
+            itemId: z.string(),
+            nextWakeAt: z.string(),
+          }),
+          z.object({ action: z.literal("append_note"), itemId: z.string(), note: z.string() }),
+        ]),
+        execute: async (input) =>
+          runTool("agenda_update", input as Record<string, unknown>, async () =>
+            agenda.update(input, { sourceChatId: params.chatId }),
+          ),
+      }),
       bash: tool({
         description:
           "Run bash commands in a sandboxed shell with core Unix tools, VFS-backed files, and full network access via curl. Use this for shell/text/file/network tasks. Use execute instead for JavaScript, google.execute, memory.*, or fs.* runtime work.",
@@ -738,6 +917,13 @@ export class BotRuntime {
     });
   }
 
+  private getAgendaService(primaryChatId?: number | null) {
+    return createAgendaService(this.env.DRECLAW_DB, {
+      timezone: this.env.USER_TIMEZONE,
+      primaryChatId: primaryChatId ?? null,
+    });
+  }
+
   private getCodeExecutionConfig() {
     return getCodeExecutionConfig(this.env as unknown as Record<string, string | undefined>);
   }
@@ -863,6 +1049,16 @@ class VerboseTracer {
   }
 }
 
+class NoopTracer implements ToolTracer {
+  async onToolStart(): Promise<void> {
+    return;
+  }
+
+  async onToolResult(): Promise<void> {
+    return;
+  }
+}
+
 function isRunCancelledError(error: unknown): error is RunCancelledError {
   return error instanceof RunCancelledError;
 }
@@ -906,6 +1102,37 @@ function mergeContinuationMessages(
 function renderHistoryContext(history: BotThreadState["history"]): string {
   if (!history.length) return "";
   return history.map((entry) => `${entry.role}: ${entry.content}`).join("\n");
+}
+
+function renderWakePacket(item: AssistantAgendaItem, recentWakeSummaries: string[]): string {
+  return [
+    "Proactive wake packet:",
+    `title: ${item.title}`,
+    `kind: ${item.kind}`,
+    `priority: ${item.priority}`,
+    `notes: ${item.notes || "-"}`,
+    `scheduled_for: ${item.nextWakeAt ?? "-"}`,
+    recentWakeSummaries.length
+      ? `recent_runs:\n${recentWakeSummaries.map((entry) => `- ${entry}`).join("\n")}`
+      : "recent_runs: -",
+  ].join("\n");
+}
+
+function normalizeProactiveMessage(text: string): string | null {
+  const normalized = String(text ?? "").trim();
+  if (!normalized || normalized === PROACTIVE_NO_MESSAGE) return null;
+  return normalized;
+}
+
+function summarizeProactiveWake(
+  item: AssistantAgendaItem,
+  messageText: string | null,
+  toolTraces: ToolTrace[],
+): string {
+  if (messageText) return messageText;
+  const successful = toolTraces.filter((trace) => trace.ok).length;
+  const failed = toolTraces.length - successful;
+  return `${item.title} | silent wake | tools ok=${successful} failed=${failed}`;
 }
 
 function sliceVfsContent(content: string, startLine?: number, endLine?: number) {

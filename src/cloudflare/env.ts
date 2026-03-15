@@ -6,11 +6,17 @@ export interface ConversationWorkflowPayload {
   state: unknown;
 }
 
+export interface ProactiveWakeWorkflowPayload {
+  agendaItemId: string;
+  claimToken: string;
+}
+
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_BOT_USERNAME?: string;
   TELEGRAM_ALLOWED_USER_ID: string;
+  USER_TIMEZONE?: string;
   AI_PROVIDER?: string;
   MODEL: string;
   BASE_URL?: string;
@@ -58,6 +64,7 @@ export interface Env {
   REASONING_EFFORT?: string;
   DRECLAW_DB: D1Database;
   CONVERSATION_WORKFLOW?: Workflow<ConversationWorkflowPayload>;
+  PROACTIVE_WAKE_WORKFLOW?: Workflow<ProactiveWakeWorkflowPayload>;
   LOADER?: {
     get(
       id: string,

@@ -10,6 +10,9 @@ export class FakeD1 {
   readonly subscriptions = new Map<string, Record<string, unknown>>();
   readonly kv = new Map<string, Record<string, unknown>>();
   readonly locks = new Map<string, Record<string, unknown>>();
+  readonly assistantProfile = new Map<number, Record<string, unknown>>();
+  readonly agendaItems = new Map<string, Record<string, unknown>>();
+  readonly wakeRuns = new Map<string, Record<string, unknown>>();
   vfsRevision = 0;
 
   prepare(sql: string) {
@@ -24,20 +27,6 @@ export class FakeD1 {
     };
   }
 
-  private async all(
-    sql: string,
-    _args: unknown[],
-  ): Promise<{ results: Array<Record<string, unknown>> }> {
-    if (sql.includes("FROM vfs_entries")) {
-      return {
-        results: [...this.vfsEntries.values()].filter(
-          (row) => row.deleted_at === null || row.deleted_at === undefined,
-        ),
-      };
-    }
-    return { results: [] };
-  }
-
   private async run(sql: string, args: unknown[]): Promise<SqlResult> {
     if (sql.includes("INSERT INTO google_oauth_states")) {
       this.oauthStates.set(String(args[0]), {
@@ -48,6 +37,114 @@ export class FakeD1 {
         used_at: null,
         created_at: String(args[4]),
       });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT INTO assistant_profile")) {
+      const existing = this.assistantProfile.get(1);
+      this.assistantProfile.set(1, {
+        id: 1,
+        timezone: String(args[0]),
+        primary_chat_id: args[1] == null ? (existing?.primary_chat_id ?? null) : Number(args[1]),
+        updated_at: String(args[2]),
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT INTO assistant_agenda_items")) {
+      this.agendaItems.set(String(args[0]), {
+        id: String(args[0]),
+        kind: String(args[1]),
+        title: String(args[2]),
+        notes: String(args[3]),
+        status: String(args[4]),
+        priority: Number(args[5]),
+        schedule_json: stringifyPrimitive(args[6]),
+        next_wake_at: stringifyPrimitive(args[7]),
+        last_wake_at: stringifyPrimitive(args[8]),
+        snooze_until: stringifyPrimitive(args[9]),
+        source_chat_id: args[10] == null ? null : Number(args[10]),
+        claimed_at: null,
+        claim_token: null,
+        workflow_id: null,
+        created_at: String(args[11]),
+        updated_at: String(args[12]),
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE assistant_agenda_items SET claimed_at = ?")) {
+      const row = this.agendaItems.get(String(args[3]));
+      if (!row) return { meta: { changes: 0 } };
+      if (
+        row.status !== "open" ||
+        !row.next_wake_at ||
+        stringifyPrimitive(row.next_wake_at)! > String(args[4]) ||
+        row.workflow_id != null ||
+        (row.claimed_at != null && stringifyPrimitive(row.claimed_at)! >= String(args[5]))
+      ) {
+        return { meta: { changes: 0 } };
+      }
+      row.claimed_at = String(args[0]);
+      row.claim_token = String(args[1]);
+      row.updated_at = String(args[2]);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE assistant_agenda_items SET workflow_id = ?")) {
+      const row = this.agendaItems.get(String(args[2]));
+      if (!row || String(row.claim_token) !== String(args[3])) return { meta: { changes: 0 } };
+      row.workflow_id = String(args[0]);
+      row.updated_at = String(args[1]);
+      return { meta: { changes: 1 } };
+    }
+    if (
+      sql.includes(
+        "UPDATE assistant_agenda_items SET claimed_at = NULL, claim_token = NULL, workflow_id = NULL",
+      )
+    ) {
+      const row = this.agendaItems.get(String(args[1]));
+      if (!row || String(row.claim_token) !== String(args[2])) return { meta: { changes: 0 } };
+      row.claimed_at = null;
+      row.claim_token = null;
+      row.workflow_id = null;
+      row.updated_at = String(args[0]);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE assistant_agenda_items SET")) {
+      const row = this.agendaItems.get(String(args[args.length - 1]));
+      if (!row) return { meta: { changes: 0 } };
+      const assignments = sql
+        .slice(sql.indexOf("SET") + 3, sql.lastIndexOf("WHERE"))
+        .split(",")
+        .map((entry) => entry.trim());
+      let bindIndex = 0;
+      for (const assignment of assignments) {
+        const column = assignment.split("=")[0]?.trim();
+        if (!column) continue;
+        row[column] = args[bindIndex] ?? null;
+        bindIndex += 1;
+      }
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT INTO assistant_wake_runs")) {
+      this.wakeRuns.set(String(args[0]), {
+        id: String(args[0]),
+        agenda_item_id: String(args[1]),
+        scheduled_for: String(args[2]),
+        started_at: String(args[3]),
+        finished_at: null,
+        outcome: null,
+        summary: null,
+        error: null,
+        next_wake_at: null,
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE assistant_wake_runs SET finished_at = ?")) {
+      const row = this.wakeRuns.get(String(args[5]));
+      if (!row) return { meta: { changes: 0 } };
+      row.finished_at = String(args[0]);
+      row.outcome = String(args[1]);
+      row.summary = stringifyPrimitive(args[2]);
+      row.error = stringifyPrimitive(args[3]);
+      row.next_wake_at = stringifyPrimitive(args[4]);
       return { meta: { changes: 1 } };
     }
     if (sql.includes("INSERT OR IGNORE INTO telegram_updates")) {
@@ -202,6 +299,11 @@ export class FakeD1 {
       return this.oauthStates.get(String(args[0])) ?? null;
     if (sql.includes("FROM google_oauth_tokens"))
       return this.oauthTokens.get(String(args[0])) ?? null;
+    if (sql.includes("FROM assistant_profile")) return this.assistantProfile.get(1) ?? null;
+    if (sql.includes("FROM assistant_agenda_items WHERE id = ?"))
+      return this.agendaItems.get(String(args[0])) ?? null;
+    if (sql.includes("FROM assistant_wake_runs WHERE id = ?"))
+      return this.wakeRuns.get(String(args[0])) ?? null;
     if (sql.includes("FROM chat_state_subscriptions"))
       return this.subscriptions.get(String(args[0])) ?? null;
     if (sql.includes("SELECT value_json FROM chat_state_kv"))
@@ -221,6 +323,59 @@ export class FakeD1 {
       };
     }
     return null;
+  }
+
+  private async all(
+    sql: string,
+    args: unknown[],
+  ): Promise<{ results: Array<Record<string, unknown>> }> {
+    if (sql.includes("FROM assistant_agenda_items")) {
+      let rows = [...this.agendaItems.values()];
+      if (sql.includes("status = 'open'")) rows = rows.filter((row) => row.status === "open");
+      if (sql.includes("next_wake_at <= ?"))
+        rows = rows.filter(
+          (row) => row.next_wake_at && stringifyPrimitive(row.next_wake_at)! <= String(args[0]),
+        );
+      if (sql.includes("workflow_id IS NULL")) rows = rows.filter((row) => row.workflow_id == null);
+      if (sql.includes("status = ?")) rows = rows.filter((row) => row.status === args[0]);
+      if (sql.includes("kind = ?")) {
+        const kindArg = args[sql.includes("status = ?") ? 1 : 0];
+        rows = rows.filter((row) => row.kind === kindArg);
+      }
+      if (sql.includes("source_chat_id = ?")) {
+        const index = sql.includes("status = ?") || sql.includes("kind = ?") ? 1 : 0;
+        rows = rows.filter((row) => Number(row.source_chat_id) === Number(args[index]));
+      }
+      if (sql.includes("title LIKE ? OR notes LIKE ?")) {
+        const textArgs = args.filter(
+          (value) => typeof value === "string" && String(value).includes("%"),
+        );
+        const needle = (stringifyPrimitive(textArgs[0]) ?? "").replace(/%/g, "").toLowerCase();
+        rows = rows.filter(
+          (row) =>
+            String(row.title).toLowerCase().includes(needle) ||
+            String(row.notes).toLowerCase().includes(needle),
+        );
+      }
+      return {
+        results: rows.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))),
+      };
+    }
+    if (sql.includes("FROM assistant_wake_runs WHERE agenda_item_id = ?")) {
+      return {
+        results: [...this.wakeRuns.values()]
+          .filter((row) => row.agenda_item_id === args[0])
+          .sort((a, b) => String(b.started_at).localeCompare(String(a.started_at))),
+      };
+    }
+    if (sql.includes("FROM vfs_entries")) {
+      return {
+        results: [...this.vfsEntries.values()].filter(
+          (row) => row.deleted_at === null || row.deleted_at === undefined,
+        ),
+      };
+    }
+    return { results: [] };
   }
 }
 

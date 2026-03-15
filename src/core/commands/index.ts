@@ -1,4 +1,5 @@
 import type { Env } from "../../cloudflare/env";
+import { createAgendaService } from "../agenda";
 import { createPluginRegistry } from "../plugins/registry";
 import { BotRuntime } from "../loop/runtime";
 import {
@@ -40,6 +41,10 @@ export async function handleAsyncCommand(params: {
   text: string;
 }): Promise<{ messages: string[] }> {
   const { env, runtime, threadId, chatId, telegramUserId, text } = params;
+  await createAgendaService(env.DRECLAW_DB, {
+    timezone: env.USER_TIMEZONE,
+    primaryChatId: chatId,
+  }).ensureProfile({ primaryChatId: chatId });
   const [command, value] = text.split(/\s+/, 2);
   const lowered = command.toLowerCase();
   const runs = createRunCoordinator(env);
