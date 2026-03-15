@@ -23,10 +23,7 @@ export async function handleTelegramWebhookRequest(
     : true;
   if (!firstSeen) return new Response("ok");
 
-  if (
-    update &&
-    (await maybeHandleAsyncTelegramCommand(env, update, (task) => ctx.waitUntil(task), ctx))
-  ) {
+  if (update && (await maybeHandleAsyncTelegramCommand(env, update, undefined, ctx))) {
     return new Response("ok");
   }
 

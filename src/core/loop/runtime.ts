@@ -14,7 +14,7 @@ import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../skil
 import { clearAllVfsEntries } from "../vfs/repo";
 import { createWorkspace } from "../vfs";
 import type { Env } from "../../cloudflare/env";
-import { createGoogleModule } from "../../integrations/google";
+import { createGooglePlugin } from "../../plugins/google";
 import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "./llm/constants";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
@@ -837,7 +837,7 @@ export class BotRuntime {
   }
 
   private google() {
-    return createGoogleModule(this.env);
+    return createGooglePlugin(this.env);
   }
 }
 

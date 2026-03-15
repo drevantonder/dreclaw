@@ -2,37 +2,50 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createEnv } from "../helpers/fakes";
 
 const mocks = vi.hoisted(() => ({
-  createGoogleModule: vi.fn(),
+  createPluginRegistry: vi.fn(),
+  getOAuthCallbackHandler: vi.fn(),
   handleOAuthCallback: vi.fn(),
+  sendTelegramTextMessage: vi.fn(),
 }));
 
-vi.mock("../../src/integrations/google", () => ({
-  createGoogleModule: mocks.createGoogleModule,
+vi.mock("../../src/core", () => ({
+  createPluginRegistry: mocks.createPluginRegistry,
+}));
+
+vi.mock("../../src/chat-adapters/telegram/api", () => ({
+  sendTelegramTextMessage: mocks.sendTelegramTextMessage,
 }));
 
 import { handleGoogleOAuthCallbackRequest } from "../../src/cloudflare/http/controllers/google-oauth-callback";
 
 describe("handleGoogleOAuthCallbackRequest", () => {
   beforeEach(() => {
-    mocks.createGoogleModule.mockReset();
+    mocks.createPluginRegistry.mockReset();
+    mocks.getOAuthCallbackHandler.mockReset();
     mocks.handleOAuthCallback.mockReset();
-    mocks.createGoogleModule.mockReturnValue({
-      handleOAuthCallback: mocks.handleOAuthCallback,
+    mocks.sendTelegramTextMessage.mockReset();
+    mocks.createPluginRegistry.mockReturnValue({
+      getOAuthCallbackHandler: mocks.getOAuthCallbackHandler,
     });
+    mocks.getOAuthCallbackHandler.mockReturnValue(mocks.handleOAuthCallback);
   });
 
   it("delegates callback handling to the google module", async () => {
     const { env } = createEnv();
-    const expected = new Response("ok", { status: 200 });
-    mocks.handleOAuthCallback.mockResolvedValue(expected);
+    mocks.handleOAuthCallback.mockResolvedValue({
+      status: 200,
+      title: "Google OAuth complete",
+      body: "You can close this tab and return to Telegram.",
+    });
     const request = new Request(
       "https://test.local/google/oauth/callback?state=test-state&code=test-code",
     );
 
     const response = await handleGoogleOAuthCallbackRequest(request, env);
 
-    expect(response).toBe(expected);
-    expect(mocks.createGoogleModule).toHaveBeenCalledWith(env);
+    expect(response.status).toBe(200);
+    expect(mocks.createPluginRegistry).toHaveBeenCalledWith(env);
+    expect(mocks.getOAuthCallbackHandler).toHaveBeenCalledWith("google");
     expect(mocks.handleOAuthCallback).toHaveBeenCalledWith(request);
   });
 });

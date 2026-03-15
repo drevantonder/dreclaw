@@ -21,7 +21,6 @@ const mocks = vi.hoisted(() => {
   return {
     runtimeInstance,
     BotRuntime: vi.fn(BotRuntimeMock),
-    createGoogleModule: vi.fn(),
     sendTelegramTextMessage: vi.fn(),
     getThreadStateSnapshot: vi.fn(),
     setPersistedThreadControls: vi.fn(),
@@ -36,10 +35,6 @@ vi.mock("../../src/core/loop/runtime", () => ({
 
 vi.mock("../../src/chat-adapters/telegram/api", () => ({
   sendTelegramTextMessage: mocks.sendTelegramTextMessage,
-}));
-
-vi.mock("../../src/integrations/google", () => ({
-  createGoogleModule: mocks.createGoogleModule,
 }));
 
 vi.mock("../../src/core/loop/repo", () => ({
@@ -70,11 +65,6 @@ describe("telegram commands", () => {
       getStatus: vi.fn(async () => ({ busy: "no", runStatus: { running: false } })),
       getWorkflowStatus: vi.fn(async () => null),
       requestStop: vi.fn(async () => undefined),
-    });
-    mocks.createGoogleModule.mockReturnValue({
-      isCommandText: vi.fn((text: string) => text.startsWith("/google")),
-      isBusySensitiveCommand: vi.fn((text: string) => text === "/google connect"),
-      handleCommand: vi.fn(async () => "google text"),
     });
     mocks.sendTelegramTextMessage.mockResolvedValue(undefined);
   });
@@ -163,7 +153,6 @@ describe("telegram commands", () => {
       text: "/google connect",
     });
 
-    expect(mocks.createGoogleModule).toHaveBeenCalledWith(env);
     expect(mocks.sendTelegramTextMessage).toHaveBeenCalledWith(
       env.TELEGRAM_BOT_TOKEN,
       777,

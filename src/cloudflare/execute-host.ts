@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { createGoogleModule } from "../integrations/google";
+import { createGooglePlugin } from "../plugins/google";
 import { createMemoryRuntime } from "../core/memory";
 import type { Env } from "./env";
 import { createWorkspace } from "../core/vfs";
@@ -160,7 +160,7 @@ export class ExecuteHost extends WorkerEntrypoint<Env, ExecuteHostProps> {
   }
 
   private google() {
-    return createGoogleModule(this.env);
+    return createGooglePlugin(this.env);
   }
 }
 

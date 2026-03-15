@@ -1,27 +1,11 @@
-import { handleTelegramWebhookRequest } from "../chat-adapters/telegram/webhook";
 import type { Env } from "./env";
 import { ConversationWorkflow } from "./conversation-workflow";
 import { ExecuteHost } from "./execute-host";
-import { handleGoogleOAuthCallbackRequest } from "./http/controllers/google-oauth-callback";
-import { handleHealthRequest } from "./http/controllers/health";
+import { handleWorkerFetch } from "../core/http";
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (request.method === "GET" && url.pathname === "/health") {
-      return handleHealthRequest();
-    }
-
-    if (request.method === "POST" && url.pathname === "/telegram/webhook") {
-      return handleTelegramWebhookRequest(request, env, ctx);
-    }
-
-    if (request.method === "GET" && url.pathname === "/google/oauth/callback") {
-      return handleGoogleOAuthCallbackRequest(request, env);
-    }
-
-    return new Response("Not found", { status: 404 });
+    return handleWorkerFetch(request, env, ctx);
   },
   async queue(): Promise<void> {
     return;

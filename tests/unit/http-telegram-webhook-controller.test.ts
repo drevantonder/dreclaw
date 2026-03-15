@@ -98,7 +98,7 @@ describe("handleTelegramWebhookRequest", () => {
     expect(mocks.maybeHandleAsyncTelegramCommand).toHaveBeenCalledWith(
       env,
       expect.objectContaining({ update_id: 9 }),
-      expect.any(Function),
+      undefined,
       ctx,
     );
     expect(mocks.createBot).not.toHaveBeenCalled();
