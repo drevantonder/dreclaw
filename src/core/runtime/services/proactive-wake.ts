@@ -3,15 +3,15 @@ import type { Reminder } from "../../../plugins/reminders";
 import type { RuntimeDeps } from "../../app/types";
 import { renderLoadedSkill, renderSkillCatalog } from "../../skills";
 import { normalizeCodeRuntimeState } from "../../tools/code-exec";
-import { withTimeout } from "../async-utils";
-import { extractAssistantText } from "../message-utils";
+import { withTimeout } from "../../../utils/async";
+import { extractAssistantText } from "../lib/messages";
 import {
   DEFAULT_RUN_TIMEOUT_MS,
   createRuntimeModel,
   getAgentProviderOptions,
   getMaxOutputTokens,
   getRuntimeConfig,
-} from "../model-policy";
+} from "../policy/model";
 import {
   MEMORY_EPISODE_TOP_K,
   MEMORY_FACT_TOP_K,
@@ -24,12 +24,12 @@ import {
   renderWakePacket,
   summarizeProactiveWake,
 } from "../prompting";
-import { NoopTracer, renderToolTranscript, type ToolTrace } from "../tracing";
-import type { MemoryGateway } from "../memory-gateway";
-import { createRunCoordinator } from "../run";
-import { normalizeBotThreadState, pushHistory, type BotThreadState } from "../state";
-import type { CreateAgentTools } from "../toolbox";
-import type { WorkspaceGateway } from "../workspace-gateway";
+import { NoopTracer, renderToolTranscript, type ToolTrace } from "../tools/tracing";
+import type { MemoryGateway } from "../adapters/memory";
+import { createRunCoordinator } from "../../loop/run";
+import { normalizeBotThreadState, pushHistory, type BotThreadState } from "../../loop/state";
+import type { CreateAgentTools } from "../tools/toolbox";
+import type { WorkspaceGateway } from "../adapters/workspace";
 
 function stripEphemeralState(state: BotThreadState): BotThreadState {
   return {

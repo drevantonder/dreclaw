@@ -1,11 +1,11 @@
 import type { RuntimeDeps } from "../../app/types";
 import { clearAllVfsEntries } from "../../vfs/repo";
-import { getPersistedThreadControls } from "../repo";
-import { createRunCoordinator, idleRunStatus } from "../run";
-import type { BotThreadState } from "../state";
-import { normalizeBotThreadState } from "../state";
-import { getRuntimeConfig } from "../model-policy";
-import type { MemoryGateway } from "../memory-gateway";
+import { getPersistedThreadControls } from "../../loop/repo";
+import { createRunCoordinator, idleRunStatus } from "../../loop/run";
+import type { BotThreadState } from "../../loop/state";
+import { normalizeBotThreadState } from "../../loop/state";
+import { getRuntimeConfig } from "../policy/model";
+import type { MemoryGateway } from "../adapters/memory";
 
 export interface RuntimeControlsService {
   status(threadId: string, state: BotThreadState): Promise<string>;

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { patchVfsContent } from "../../src/core/loop/toolbox";
+import { patchVfsContent } from "../../src/core/runtime/tools/toolbox";
 import {
   redactSensitiveText,
   renderToolTranscript,
   truncateForLog,
-} from "../../src/core/loop/tracing";
+} from "../../src/core/runtime/tools/tracing";
 
 describe("loop tracing and toolbox helpers", () => {
   it("redacts sensitive values in transcripts", () => {

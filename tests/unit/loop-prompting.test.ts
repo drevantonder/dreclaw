@@ -5,7 +5,7 @@ import {
   renderTaskGuidance,
   shouldEnableAgentTools,
   shouldIncludeMemoryContext,
-} from "../../src/core/loop/prompting";
+} from "../../src/core/runtime/prompting";
 
 describe("loop prompting", () => {
   it("enables tools for concrete task-style requests", () => {

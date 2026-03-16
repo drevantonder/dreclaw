@@ -1,16 +1,16 @@
 import type { RuntimeDeps } from "../app/types";
 import { getCodeExecutionConfig } from "../tools/code-exec";
-import { createExecuteHostBindingFactory } from "./execute-host-factory";
-import { createMemoryGateway } from "./memory-gateway";
-import { createRunCoordinator } from "./run";
+import { createExecuteHostBindingFactory } from "./adapters/execute-host";
+import { createMemoryGateway } from "./adapters/memory";
+import { createWorkspaceGateway } from "./adapters/workspace";
+import { createRunCoordinator } from "../loop/run";
 import {
   createConversationLoopService,
   type ConversationLoopService,
 } from "./services/conversation";
 import { createRuntimeControlsService, type RuntimeControlsService } from "./services/controls";
 import { createProactiveWakeService, type ProactiveWakeService } from "./services/proactive-wake";
-import { createAgentTools, type CreateAgentTools } from "./toolbox";
-import { createWorkspaceGateway } from "./workspace-gateway";
+import { createAgentTools, type CreateAgentTools } from "./tools/toolbox";
 import { getRemindersPlugin } from "../../plugins/reminders";
 
 export interface LoopServices {

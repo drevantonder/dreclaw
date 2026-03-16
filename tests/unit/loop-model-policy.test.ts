@@ -6,7 +6,7 @@ import {
   getRunTimeoutMs,
   getRuntimeConfig,
   getTypingPulseMs,
-} from "../../src/core/loop/model-policy";
+} from "../../src/core/runtime/policy/model";
 import { createEnv } from "../helpers/fakes";
 
 describe("loop model policy", () => {

@@ -1,6 +1,6 @@
-import { createMemoryRuntime } from "../memory";
-import type { RuntimeDeps } from "../app/types";
-import { compactErrorMessage } from "./tracing";
+import { createMemoryRuntime } from "../../memory";
+import type { RuntimeDeps } from "../../app/types";
+import { compactErrorMessage } from "../tools/tracing";
 
 export interface MemoryGateway {
   getConfigSafe(): ReturnType<ReturnType<typeof createMemoryRuntime>["getConfig"]>;

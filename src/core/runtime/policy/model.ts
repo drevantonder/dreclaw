@@ -1,7 +1,7 @@
-import type { RuntimeDeps } from "../app/types";
-import { FIREWORKS_BASE_URL, OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "./llm/constants";
-import { createWorkersModel } from "./llm/workers";
-import { createZenModel } from "./llm/zen";
+import type { RuntimeDeps } from "../../app/types";
+import { FIREWORKS_BASE_URL, OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "../llm/constants";
+import { createWorkersModel } from "../llm/workers";
+import { createZenModel } from "../llm/zen";
 
 export type RuntimeConfig =
   | { provider: "workers"; model: string; aiBinding: Ai }

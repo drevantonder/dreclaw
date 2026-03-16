@@ -1,7 +1,7 @@
 import type { ModelMessage } from "ai";
-import type { Reminder } from "../../plugins/reminders";
-import type { ToolTrace } from "./tracing";
-import type { BotThreadState } from "./state";
+import type { Reminder } from "../../../plugins/reminders";
+import type { ToolTrace } from "../tools/tracing";
+import type { BotThreadState } from "../../loop/state";
 
 export const MEMORY_FACT_TOP_K = 6;
 export const MEMORY_EPISODE_TOP_K = 4;

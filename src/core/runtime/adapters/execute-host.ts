@@ -1,4 +1,4 @@
-import type { ExecuteHostBinding } from "../tools/code-exec";
+import type { ExecuteHostBinding } from "../../tools/code-exec";
 
 export type ExecuteHostBindingFactory = (params: {
   threadId: string;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeDeps } from "../../src/app/deps";
-import { createLoopServices } from "../../src/core/loop/runtime";
+import { createLoopServices } from "../../src/core/runtime";
 import { createEnv } from "../helpers/fakes";
 
 describe("loop runtime composition", () => {

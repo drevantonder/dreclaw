@@ -5,8 +5,8 @@ import type { RuntimeDeps } from "../../app/types";
 import type { Profiler } from "../../profiling";
 import { renderLoadedSkill, renderSkillCatalog } from "../../skills";
 import { normalizeCodeRuntimeState } from "../../tools/code-exec";
-import { withTimeout } from "../async-utils";
-import { isRunCancelledError } from "../errors";
+import { withTimeout } from "../../../utils/async";
+import { isRunCancelledError } from "../lib/errors";
 import {
   MEMORY_EPISODE_TOP_K,
   MEMORY_FACT_TOP_K,
@@ -18,10 +18,10 @@ import {
   shouldEnableAgentTools,
   shouldIncludeMemoryContext,
 } from "../prompting";
-import { VerboseTracer, renderToolTranscript, type ToolTrace } from "../tracing";
-import { createRunCoordinator } from "../run";
-import { normalizeBotThreadState, pushHistory, type BotThreadState } from "../state";
-import type { MemoryGateway } from "../memory-gateway";
+import { VerboseTracer, renderToolTranscript, type ToolTrace } from "../tools/tracing";
+import { createRunCoordinator } from "../../loop/run";
+import { normalizeBotThreadState, pushHistory, type BotThreadState } from "../../loop/state";
+import type { MemoryGateway } from "../adapters/memory";
 import {
   createRuntimeModel,
   getAgentProviderOptions,
@@ -30,10 +30,10 @@ import {
   getRunTimeoutMs,
   getRuntimeConfig,
   getTypingPulseMs,
-} from "../model-policy";
-import { isModelMessageArray, mergeContinuationMessages } from "../message-utils";
-import type { CreateAgentTools } from "../toolbox";
-import type { WorkspaceGateway } from "../workspace-gateway";
+} from "../policy/model";
+import { isModelMessageArray, mergeContinuationMessages } from "../lib/messages";
+import type { CreateAgentTools } from "../tools/toolbox";
+import type { WorkspaceGateway } from "../adapters/workspace";
 
 function stripEphemeralState(state: BotThreadState): BotThreadState {
   return {

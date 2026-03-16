@@ -1,6 +1,6 @@
 import type { Env } from "../cloudflare/env";
 import type { RuntimeDeps } from "../core/app/types";
-import { createLoopServices } from "../core/loop/runtime";
+import { createLoopServices } from "../core/runtime";
 import { createPluginRegistry } from "../core/plugins/registry";
 import { createGooglePlugin } from "../plugins/google";
 import type { GooglePluginDeps } from "../plugins/google/types";

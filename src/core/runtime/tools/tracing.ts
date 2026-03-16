@@ -1,6 +1,6 @@
 import type { Thread } from "chat";
-import { getPersistedThreadControls } from "./repo";
-import type { BotThreadState } from "./state";
+import { getPersistedThreadControls } from "../../loop/repo";
+import type { BotThreadState } from "../../loop/state";
 
 export type ToolTrace = {
   name: string;

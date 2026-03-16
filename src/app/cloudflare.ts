@@ -8,7 +8,7 @@ import type { Env } from "../cloudflare/env";
 import { getRemindersPlugin } from "../plugins/reminders";
 import { handlePluginOAuthCallback, getHealthPayload } from "../core/http";
 import { getThreadStateSnapshot, setThreadStateSnapshot } from "../core/loop/repo";
-import { createLoopServices } from "../core/loop/runtime";
+import { createLoopServices } from "../core/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "../core/loop/state";
 import type {
   ConversationWorkflowPayload,

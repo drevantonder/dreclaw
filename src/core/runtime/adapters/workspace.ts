@@ -1,5 +1,5 @@
-import { createWorkspace, type WorkspaceBoundary, type WorkspaceWriteResult } from "../vfs";
-import type { SkillRecord } from "../skills";
+import { createWorkspace, type WorkspaceBoundary, type WorkspaceWriteResult } from "../../vfs";
+import type { SkillRecord } from "../../skills";
 
 export interface WorkspaceGateway {
   getWorkspace(): WorkspaceBoundary;

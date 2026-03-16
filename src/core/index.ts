@@ -1,4 +1,4 @@
-export { createLoopServices } from "./loop/runtime";
+export { createLoopServices } from "./runtime";
 export { createRunCoordinator } from "./loop/run";
 export { normalizeBotThreadState, type BotThreadState } from "./loop/state";
 export { createD1StateAdapter } from "./loop/chat-state";
@@ -9,4 +9,4 @@ export type {
   RuntimeControlsService,
   ConversationLoopService,
   ProactiveWakeService,
-} from "./loop/runtime";
+} from "./runtime";

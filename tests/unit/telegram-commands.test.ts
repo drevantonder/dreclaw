@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../../src/core/loop/runtime", () => ({
+vi.mock("../../src/core/runtime", () => ({
   createLoopServices: mocks.createLoopServices,
 }));
 

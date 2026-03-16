@@ -8,7 +8,7 @@ import {
 } from "../loop/repo";
 import { normalizeBotThreadState, type BotThreadState } from "../loop/state";
 import { createRunCoordinator } from "../loop/run";
-import type { RuntimeControlsService } from "../loop/runtime";
+import type { RuntimeControlsService } from "../runtime";
 
 export interface CommandDeps {
   runtimeDeps: RuntimeDeps;

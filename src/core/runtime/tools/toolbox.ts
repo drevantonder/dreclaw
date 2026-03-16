@@ -1,18 +1,22 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { executeBash } from "../tools/bash";
-import { executeCode, getCodeExecutionConfig, type ExecuteHostBinding } from "../tools/code-exec";
-import { getRemindersPlugin } from "../../plugins/reminders";
-import type { RuntimeDeps } from "../app/types";
-import { isRunCancelledError } from "./errors";
+import { executeBash } from "../../tools/bash";
+import {
+  executeCode,
+  getCodeExecutionConfig,
+  type ExecuteHostBinding,
+} from "../../tools/code-exec";
+import { getRemindersPlugin } from "../../../plugins/reminders";
+import type { RuntimeDeps } from "../../app/types";
+import { isRunCancelledError } from "../lib/errors";
 import {
   compactErrorMessage,
   redactSensitiveText,
   type ToolTrace,
   type ToolTracer,
 } from "./tracing";
-import type { WorkspaceGateway } from "./workspace-gateway";
-import { createRunCoordinator } from "./run";
+import type { WorkspaceGateway } from "../adapters/workspace";
+import { createRunCoordinator } from "../../loop/run";
 
 const scheduleSchema = z.discriminatedUnion("type", [
   z.object({
