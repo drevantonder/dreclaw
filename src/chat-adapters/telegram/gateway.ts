@@ -7,7 +7,7 @@ import {
   parseProfilingSampleRate,
 } from "../../core/profiling";
 import {
-  BotRuntime,
+  createLoopServices,
   createD1StateAdapter,
   createRunCoordinator,
   normalizeBotThreadState,
@@ -88,7 +88,7 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
   ) => {
     const requestContext = takeTelegramExecutionContext(message.raw);
     const requestExecutionContext = requestContext?.ctx ?? executionContext;
-    const runtime = new BotRuntime(runtimeDeps, requestExecutionContext as never);
+    const services = createLoopServices(runtimeDeps, requestExecutionContext as never);
     const profiler = createProfiler({
       enabled: parseProfilingEnabled(runtimeDeps.PROFILING_ENABLED),
       sampleRate: parseProfilingSampleRate(runtimeDeps.PROFILING_SAMPLE_RATE),
@@ -108,7 +108,7 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
       });
       await handleAsyncCommand({
         env,
-        runtime,
+        controls: services.controls,
         threadId: thread.id,
         chatId,
         telegramUserId: Number(message.author.userId || 0),
@@ -132,7 +132,7 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
     }
     if (runtimeDeps.AI_PROVIDER?.trim().toLowerCase() === "fireworks") {
       const nextState = await profiler.span("run_inline", async () =>
-        runtime.runConversationInline({
+        services.conversation.runConversationInline({
           thread,
           message,
           chatId,

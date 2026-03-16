@@ -2,25 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createEnv } from "../helpers/fakes";
 
 const mocks = vi.hoisted(() => {
-  const runtimeInstance = {
+  const controlsInstance = {
     help: vi.fn(() => "help text"),
     status: vi.fn(async () => "status text"),
     reset: vi.fn((state) => ({ ...state, history: [] })),
     setVerbose: vi.fn((state, enabled) => ({ ...state, verbose: enabled })),
     factoryReset: vi.fn(async () => ({ history: [], verbose: false, runStatus: {} })),
   };
-  class BotRuntimeMock {
-    constructor(_env: unknown, _executionContext?: unknown) {}
-
-    help = runtimeInstance.help;
-    status = runtimeInstance.status;
-    reset = runtimeInstance.reset;
-    setVerbose = runtimeInstance.setVerbose;
-    factoryReset = runtimeInstance.factoryReset;
-  }
   return {
-    runtimeInstance,
-    BotRuntime: vi.fn(BotRuntimeMock),
+    controlsInstance,
+    createLoopServices: vi.fn(() => ({
+      controls: controlsInstance,
+      conversation: {},
+      wake: {},
+    })),
     sendTelegramTextMessage: vi.fn(),
     getThreadStateSnapshot: vi.fn(),
     setPersistedThreadControls: vi.fn(),
@@ -30,7 +25,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("../../src/core/loop/runtime", () => ({
-  BotRuntime: mocks.BotRuntime,
+  createLoopServices: mocks.createLoopServices,
 }));
 
 vi.mock("../../src/chat-adapters/telegram/api", () => ({
@@ -84,7 +79,7 @@ describe("telegram commands", () => {
     });
 
     expect(handled).toBe(false);
-    expect(mocks.BotRuntime).not.toHaveBeenCalled();
+    expect(mocks.createLoopServices).not.toHaveBeenCalled();
     expect(mocks.sendTelegramTextMessage).not.toHaveBeenCalled();
   });
 
@@ -103,7 +98,7 @@ describe("telegram commands", () => {
     });
 
     expect(handled).toBe(true);
-    expect(mocks.BotRuntime).toHaveBeenCalled();
+    expect(mocks.createLoopServices).toHaveBeenCalled();
     expect(mocks.sendTelegramTextMessage).toHaveBeenCalledWith(
       env.TELEGRAM_BOT_TOKEN,
       777,
@@ -121,7 +116,7 @@ describe("telegram commands", () => {
 
     await handleAsyncCommand({
       env,
-      runtime: mocks.runtimeInstance as never,
+      controls: mocks.controlsInstance as never,
       threadId: "telegram:777",
       chatId: 777,
       telegramUserId: 42,
@@ -146,7 +141,7 @@ describe("telegram commands", () => {
 
     await handleAsyncCommand({
       env,
-      runtime: mocks.runtimeInstance as never,
+      controls: mocks.controlsInstance as never,
       threadId: "telegram:777",
       chatId: 777,
       telegramUserId: 42,

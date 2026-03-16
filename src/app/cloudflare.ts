@@ -8,7 +8,7 @@ import type { Env } from "../cloudflare/env";
 import { getRemindersPlugin } from "../plugins/reminders";
 import { handlePluginOAuthCallback, getHealthPayload } from "../core/http";
 import { getThreadStateSnapshot, setThreadStateSnapshot } from "../core/loop/repo";
-import { BotRuntime } from "../core/loop/runtime";
+import { createLoopServices } from "../core/loop/runtime";
 import { normalizeBotThreadState, type BotThreadState } from "../core/loop/state";
 import type {
   ConversationWorkflowPayload,
@@ -56,7 +56,7 @@ export async function runConversationWorkflow(
   void chat;
   const thread = ThreadImpl.fromJSON<BotThreadState>(event.payload.thread);
   const message = ChatMessage.fromJSON(event.payload.message);
-  const runtime = new BotRuntime(runtimeDeps, ctx as never);
+  const services = createLoopServices(runtimeDeps, ctx as never);
   profiler.event("workflow_started", { threadId: thread.id });
   let state = await profiler.span("restore_workflow_state", async () =>
     runs.restoreWorkflowState({
@@ -83,7 +83,7 @@ export async function runConversationWorkflow(
     for (let stepIndex = 0; stepIndex < 64 && shouldContinue; stepIndex += 1) {
       await sendTelegramTypingAction(env.TELEGRAM_BOT_TOKEN, chatId).catch(() => null);
       const rawResult = await step.do(`conversation-step-${stepIndex}`, async () => {
-        const stepResult = await runtime.runConversationAgentStep({
+        const stepResult = await services.conversation.runConversationStep({
           thread,
           message,
           chatId,
@@ -164,9 +164,9 @@ export async function runRemindersWakeWorkflow(
   const recentWakeRuns = await reminders.listRecentReminderWakeRuns(item.id, 5);
   try {
     const result = await step.do("run-proactive-wake", async () => {
-      const runtime = new BotRuntime(runtimeDeps, ctx as never);
+      const services = createLoopServices(runtimeDeps, ctx as never);
       const state = normalizeBotThreadState(await getThreadStateSnapshot(env.DRECLAW_DB, threadId));
-      return runtime.runProactiveWake({
+      return services.wake.runProactiveWake({
         threadId,
         chatId,
         state,

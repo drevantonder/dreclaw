@@ -2,6 +2,7 @@ import { handleAsyncCommand as handleCoreCommand, maybeHandleAsyncCoreCommand } 
 import { buildCommandDeps } from "../../app/deps";
 import { flushTelegramEffects, telegramReplyTarget } from "../../app/telegram";
 import type { Env } from "../../cloudflare/env";
+import type { RuntimeControlsService } from "../../core";
 import { sendTelegramTextMessage } from "./api";
 import type { TelegramUpdate } from "./types";
 import { isAllowedTelegramUpdate } from "./auth";
@@ -34,7 +35,7 @@ export async function maybeHandleAsyncTelegramCommand(
 
 export async function handleAsyncCommand(params: {
   env: Env;
-  runtime: any;
+  controls: RuntimeControlsService;
   threadId: string;
   chatId: number;
   telegramUserId: number;
@@ -43,7 +44,7 @@ export async function handleAsyncCommand(params: {
   const result = await handleCoreCommand({
     deps: {
       ...buildCommandDeps(params.env),
-      runtime: params.runtime,
+      controls: params.controls,
     },
     input: {
       threadId: params.threadId,

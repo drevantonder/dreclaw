@@ -1,7 +1,6 @@
 import type { CommandContext, CommandResult, RuntimeDeps } from "../app/types";
 import { getRemindersPlugin } from "../../plugins/reminders";
 import type { PluginRegistry } from "../plugins/types";
-import { BotRuntime } from "../loop/runtime";
 import {
   getThreadStateSnapshot,
   setPersistedThreadControls,
@@ -9,10 +8,11 @@ import {
 } from "../loop/repo";
 import { normalizeBotThreadState, type BotThreadState } from "../loop/state";
 import { createRunCoordinator } from "../loop/run";
+import type { RuntimeControlsService } from "../loop/runtime";
 
 export interface CommandDeps {
   runtimeDeps: RuntimeDeps;
-  runtime: BotRuntime;
+  controls: RuntimeControlsService;
   pluginRegistry: PluginRegistry;
 }
 
@@ -33,7 +33,7 @@ export async function handleAsyncCommand(params: {
   input: CommandContext;
 }): Promise<CommandResult> {
   const { deps, input } = params;
-  const { runtimeDeps, runtime, pluginRegistry } = deps;
+  const { runtimeDeps, controls, pluginRegistry } = deps;
   const { threadId, channelId, text } = input;
   await getRemindersPlugin(pluginRegistry.getByName("reminders")).ensureReminderProfile({
     primaryChatId: channelId,
@@ -51,14 +51,14 @@ export async function handleAsyncCommand(params: {
   const status = await runs.getStatus(threadId, controlledState);
   const busy = status.busy === "yes";
 
-  if (lowered === "/help") return { messages: [runtime.help()] };
+  if (lowered === "/help") return { messages: [controls.help()] };
 
   if (lowered === "/status") {
     const workflowStatus = await runs.getWorkflowStatus(threadId, controlledState);
     return {
       messages: [
         [
-          await runtime.status(threadId, {
+          await controls.status(threadId, {
             ...controlledState,
             runStatus: status.runStatus,
           }),
@@ -78,7 +78,7 @@ export async function handleAsyncCommand(params: {
 
   if (lowered === "/reset") {
     if (busy) return { messages: [busyMessage(lowered)] };
-    const next = runtime.reset(controlledState);
+    const next = controls.reset(controlledState);
     await setPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId, { verbose: false });
     await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
     return { messages: ["Session reset. Conversation context cleared."] };
@@ -86,7 +86,7 @@ export async function handleAsyncCommand(params: {
 
   if (lowered === "/factory-reset") {
     if (busy) return { messages: [busyMessage(lowered)] };
-    const next = await runtime.factoryReset(channelId);
+    const next = await controls.factoryReset(channelId);
     await setPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId, { verbose: false });
     await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
     return { messages: ["Factory reset complete. Conversation, memory, and VFS cleared."] };
@@ -98,7 +98,7 @@ export async function handleAsyncCommand(params: {
         messages: [`verbose: ${snapshot.verbose ? "on" : "off"}\nusage: /verbose on|off`],
       };
     }
-    const next = runtime.setVerbose(controlledState, value === "on");
+    const next = controls.setVerbose(controlledState, value === "on");
     await setPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId, { verbose: value === "on" });
     await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
     return { messages: [`verbose ${value === "on" ? "enabled" : "disabled"}.`] };
@@ -113,7 +113,7 @@ export async function handleAsyncCommand(params: {
     return typeof result === "string" ? { messages: [result] } : result;
   }
 
-  return { messages: [runtime.help()] };
+  return { messages: [controls.help()] };
 }
 
 function busyMessage(command: string): string {

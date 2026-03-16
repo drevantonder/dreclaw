@@ -1,6 +1,6 @@
 import type { Env } from "../cloudflare/env";
 import type { RuntimeDeps } from "../core/app/types";
-import { BotRuntime } from "../core/loop/runtime";
+import { createLoopServices } from "../core/loop/runtime";
 import { createPluginRegistry } from "../core/plugins/registry";
 import { createGooglePlugin } from "../plugins/google";
 import type { GooglePluginDeps } from "../plugins/google/types";
@@ -98,7 +98,7 @@ export function buildCommandDeps(env: Env, executionContext?: ExecutionContext):
   const runtimeDeps = buildRuntimeDeps(env);
   return {
     runtimeDeps,
-    runtime: new BotRuntime(runtimeDeps, executionContext as never),
+    controls: createLoopServices(runtimeDeps, executionContext as never).controls,
     pluginRegistry: runtimeDeps.pluginRegistry,
   };
 }
