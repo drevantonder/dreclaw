@@ -47,6 +47,8 @@ export function buildRuntimeDeps(env: Env): RuntimeDeps {
     MODEL: env.MODEL,
     BASE_URL: env.BASE_URL,
     OPENCODE_API_KEY: env.OPENCODE_API_KEY,
+    FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,
+    FIREWORKS_BASE_URL: env.FIREWORKS_BASE_URL,
     AI: env.AI,
     LOADER: env.LOADER,
     REASONING_EFFORT: env.REASONING_EFFORT,

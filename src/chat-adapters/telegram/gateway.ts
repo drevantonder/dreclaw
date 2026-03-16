@@ -130,6 +130,20 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
       profiler.flush("telegram_gateway", { outcome: "busy", chatId });
       return;
     }
+    if (runtimeDeps.AI_PROVIDER?.trim().toLowerCase() === "fireworks") {
+      const nextState = await profiler.span("run_inline", async () =>
+        runtime.runConversationInline({
+          thread,
+          message,
+          chatId,
+          state: currentState,
+          maxSlices: 4,
+        }),
+      );
+      await thread.setState(nextState, { replace: true });
+      profiler.flush("telegram_gateway", { outcome: "inline_completed", chatId });
+      return;
+    }
     await profiler.span("start_workflow", async () =>
       startConversationWorkflow(
         env,

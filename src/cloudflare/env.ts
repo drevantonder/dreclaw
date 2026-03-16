@@ -15,6 +15,8 @@ export interface Env {
   MODEL: string;
   BASE_URL?: string;
   OPENCODE_API_KEY?: string;
+  FIREWORKS_API_KEY?: string;
+  FIREWORKS_BASE_URL?: string;
   GOOGLE_OAUTH_CLIENT_ID?: string;
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
   GOOGLE_OAUTH_REDIRECT_URI?: string;

@@ -17,7 +17,7 @@ import { renderLoadedSkill, renderSkillCatalog, type SkillRecord } from "../skil
 import { clearAllVfsEntries } from "../vfs/repo";
 import { createWorkspace } from "../vfs";
 import type { RuntimeDeps } from "../app/types";
-import { OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "./llm/constants";
+import { FIREWORKS_BASE_URL, OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "./llm/constants";
 import { createZenModel } from "./llm/zen";
 import { createWorkersModel } from "./llm/workers";
 import { RunCancelledError, createRunCoordinator, idleRunStatus } from "./run";
@@ -25,7 +25,13 @@ import { normalizeBotThreadState, pushHistory, type BotThreadState } from "./sta
 
 type RuntimeConfig =
   | { provider: "workers"; model: string; aiBinding: Ai }
-  | { provider: "opencode" | "opencode-go"; model: string; apiKey: string; baseUrl: string };
+  | {
+      provider: "opencode" | "opencode-go" | "fireworks";
+      providerName: "opencode" | "fireworks";
+      model: string;
+      apiKey: string;
+      baseUrl: string;
+    };
 
 type ToolTrace = {
   name: string;
@@ -140,6 +146,47 @@ export class BotRuntime {
     return { ...state, verbose: enabled };
   }
 
+  async runConversationInline(params: {
+    thread: Thread<BotThreadState>;
+    message: Message;
+    chatId: number;
+    state: BotThreadState;
+    imageBlocks?: string[];
+    maxSlices?: number;
+  }): Promise<BotThreadState> {
+    let state = this.runs.startRun(normalizeBotThreadState(params.state));
+    state = await this.runs.recoverState(params.thread.id, state);
+    await params.thread.setState(stripEphemeralState(state), { replace: true });
+    await this.runs.persistRunState(params.thread.id, state);
+
+    let messages: ModelMessage[] | undefined;
+    let shouldContinue = true;
+    const maxSlices = params.maxSlices ?? 6;
+    for (let stepIndex = 0; stepIndex < maxSlices && shouldContinue; stepIndex += 1) {
+      const result = await this.runConversationAgentStep({
+        thread: params.thread,
+        message: params.message,
+        chatId: params.chatId,
+        state,
+        imageBlocks: params.imageBlocks,
+        baseMessages: messages,
+        isFirstStep: stepIndex === 0,
+        runTimeoutMs: getRunTimeoutMs(params.message.text.trim()),
+        stepIndex,
+      });
+      state = result.state;
+      messages = result.nextMessages;
+      shouldContinue = result.shouldContinue;
+    }
+
+    if (shouldContinue) {
+      state = this.runs.finishRun(state);
+      await this.runs.persistRunState(params.thread.id, state);
+    }
+
+    return stripEphemeralState(state);
+  }
+
   async runConversationAgentStep(params: {
     thread: Thread<BotThreadState>;
     message: Message;
@@ -161,6 +208,8 @@ export class BotRuntime {
     const toolTraces: ToolTrace[] = [];
     const tracer = new VerboseTracer(this.deps.DRECLAW_DB, thread);
     const model = this.createModel(runtime);
+    const enableTools = shouldEnableAgentTools(userText);
+    const includeMemory = shouldIncludeMemoryContext(userText);
     const inputMessages = isModelMessageArray(params.baseMessages)
       ? params.baseMessages
       : await (params.profiler?.span("build_conversation_messages", async () =>
@@ -169,9 +218,19 @@ export class BotRuntime {
             state,
             userText,
             imageBlocks,
+            includeSkills: enableTools,
+            includeMemory,
             profiler: params.profiler,
           }),
-        ) ?? this.buildConversationMessages({ chatId, state, userText, imageBlocks }));
+        ) ??
+          this.buildConversationMessages({
+            chatId,
+            state,
+            userText,
+            imageBlocks,
+            includeSkills: enableTools,
+            includeMemory,
+          }));
     const runTimeoutMs = params.runTimeoutMs ?? getRunTimeoutMs(userText);
     let stepHadToolCalls = false;
     let stepText = "";
@@ -179,18 +238,21 @@ export class BotRuntime {
     const agent = new ToolLoopAgent({
       model,
       stopWhen: stepCountIs(getRunSliceSteps(this.deps.RUN_SLICE_STEPS)),
+      maxOutputTokens: this.getMaxOutputTokens(runtime, "conversation"),
       providerOptions: this.getAgentProviderOptions(runtime),
-      tools: this.createAgentTools({
-        chatId,
-        threadId: thread.id,
-        state,
-        saveState: async (next) => {
-          state = next;
-          await thread.setState(stripEphemeralState(state), { replace: true });
-        },
-        tracer,
-        toolTraces,
-      }),
+      tools: enableTools
+        ? this.createAgentTools({
+            chatId,
+            threadId: thread.id,
+            state,
+            saveState: async (next) => {
+              state = next;
+              await thread.setState(stripEphemeralState(state), { replace: true });
+            },
+            tracer,
+            toolTraces,
+          })
+        : {},
     });
 
     const heartbeat = this.runs.createHeartbeat({
@@ -344,6 +406,7 @@ export class BotRuntime {
     const agent = new ToolLoopAgent({
       model,
       stopWhen: stepCountIs(8),
+      maxOutputTokens: this.getMaxOutputTokens(runtime, "reminder"),
       providerOptions: this.getAgentProviderOptions(runtime),
       tools: this.createAgentTools({
         chatId: params.chatId,
@@ -399,38 +462,44 @@ export class BotRuntime {
     state: BotThreadState;
     userText: string;
     imageBlocks: string[];
+    includeSkills?: boolean;
+    includeMemory?: boolean;
     profiler?: Profiler;
   }) {
     const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
-    const skillCatalog = await (params.profiler?.span("list_skills", async () =>
-      this.listSkills(),
-    ) ?? this.listSkills());
-    promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
-    const loadedSkills = await (params.profiler?.span("load_skills", async () =>
-      this.getLoadedSkills(inferImplicitSkillNames(params.userText)),
-    ) ?? this.getLoadedSkills(inferImplicitSkillNames(params.userText)));
-    if (loadedSkills.length) {
-      promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
+    if (params.includeSkills !== false) {
+      const skillCatalog = await (params.profiler?.span("list_skills", async () =>
+        this.listSkills(),
+      ) ?? this.listSkills());
+      promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
+      const loadedSkills = await (params.profiler?.span("load_skills", async () =>
+        this.getLoadedSkills(inferImplicitSkillNames(params.userText)),
+      ) ?? this.getLoadedSkills(inferImplicitSkillNames(params.userText)));
+      if (loadedSkills.length) {
+        promptSections.push(`Loaded skills:\n${loadedSkills.map(renderLoadedSkill).join("\n\n")}`);
+      }
     }
     const taskGuidance = renderTaskGuidance(params.userText);
     if (taskGuidance) promptSections.push(`Task guidance:\n${taskGuidance}`);
     const historyContext = renderHistoryContext(params.state.history);
     if (historyContext) promptSections.push(`Recent context:\n${historyContext}`);
-    const memoryContext = await (params.profiler?.span("memory_context", async () =>
-      this.getMemoryRuntime().renderContext({
-        chatId: params.chatId,
-        query: params.userText || "[image message]",
-        factTopK: MEMORY_FACT_TOP_K,
-        episodeTopK: MEMORY_EPISODE_TOP_K,
-      }),
-    ) ??
-      this.getMemoryRuntime().renderContext({
-        chatId: params.chatId,
-        query: params.userText || "[image message]",
-        factTopK: MEMORY_FACT_TOP_K,
-        episodeTopK: MEMORY_EPISODE_TOP_K,
-      }));
-    if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
+    if (params.includeMemory !== false) {
+      const memoryContext = await (params.profiler?.span("memory_context", async () =>
+        this.getMemoryRuntime().renderContext({
+          chatId: params.chatId,
+          query: params.userText || "[image message]",
+          factTopK: MEMORY_FACT_TOP_K,
+          episodeTopK: MEMORY_EPISODE_TOP_K,
+        }),
+      ) ??
+        this.getMemoryRuntime().renderContext({
+          chatId: params.chatId,
+          query: params.userText || "[image message]",
+          factTopK: MEMORY_FACT_TOP_K,
+          episodeTopK: MEMORY_EPISODE_TOP_K,
+        }));
+      if (memoryContext) promptSections.push(`Memory context:\n${memoryContext}`);
+    }
     return buildAgentMessages(promptSections.join("\n\n"), params.userText, params.imageBlocks);
   }
 
@@ -731,6 +800,8 @@ export class BotRuntime {
         const result = await withTimeout(
           generateText({
             model: params.model,
+            maxOutputTokens: this.getMaxOutputTokens(this.getRuntimeConfig(), "recovery"),
+            providerOptions: this.getAgentProviderOptions(this.getRuntimeConfig()),
             system:
               "You are dréclaw. Finish the user's task using only the provided tool results. Be concise, direct, and helpful. Do not mention timeouts, internal failures, or tool orchestration. If the gathered data is incomplete, give the best useful answer you can and state the uncertainty briefly.",
             messages: [
@@ -851,6 +922,7 @@ export class BotRuntime {
     const provider = (this.deps.AI_PROVIDER?.trim().toLowerCase() || "opencode") as
       | "opencode"
       | "opencode-go"
+      | "fireworks"
       | "workers";
     const model =
       this.deps.MODEL?.trim() || (provider === "workers" ? "@cf/zai-org/glm-4.7-flash" : "");
@@ -859,31 +931,99 @@ export class BotRuntime {
       if (!this.deps.AI) throw new Error("Missing AI binding");
       return { provider, model, aiBinding: this.deps.AI };
     }
-    const apiKey = this.deps.OPENCODE_API_KEY?.trim();
-    if (!apiKey) throw new Error("Missing OPENCODE_API_KEY");
+    const apiKey =
+      provider === "fireworks"
+        ? this.deps.FIREWORKS_API_KEY?.trim()
+        : this.deps.OPENCODE_API_KEY?.trim();
+    if (!apiKey) {
+      throw new Error(
+        provider === "fireworks" ? "Missing FIREWORKS_API_KEY" : "Missing OPENCODE_API_KEY",
+      );
+    }
     return {
       provider,
+      providerName: provider === "fireworks" ? "fireworks" : "opencode",
       model,
       apiKey,
       baseUrl:
-        this.deps.BASE_URL?.trim() ||
-        (provider === "opencode-go" ? OPENCODE_GO_BASE_URL : OPENCODE_ZEN_BASE_URL),
+        provider === "fireworks"
+          ? this.deps.FIREWORKS_BASE_URL?.trim() || FIREWORKS_BASE_URL
+          : this.deps.BASE_URL?.trim() ||
+            (provider === "opencode-go" ? OPENCODE_GO_BASE_URL : OPENCODE_ZEN_BASE_URL),
     };
   }
 
   private createModel(runtime: RuntimeConfig) {
     return runtime.provider === "workers"
       ? createWorkersModel(runtime.aiBinding, runtime.model)
-      : createZenModel({ model: runtime.model, apiKey: runtime.apiKey, baseUrl: runtime.baseUrl });
+      : createZenModel({
+          providerName: runtime.providerName,
+          model: runtime.model,
+          apiKey: runtime.apiKey,
+          baseUrl: runtime.baseUrl,
+        });
   }
 
   private getAgentProviderOptions(
     runtime: RuntimeConfig,
-  ): Record<string, Record<string, string>> | undefined {
+  ): Record<string, Record<string, string | number | boolean | null>> | undefined {
     if (runtime.provider === "workers") return undefined;
+    const extraOptions =
+      runtime.provider === "fireworks" ? this.getFireworksProviderOptions(runtime.model) : {};
     return {
-      [runtime.provider]: { reasoningEffort: this.deps.REASONING_EFFORT?.trim() || "medium" },
+      [runtime.providerName]: {
+        reasoningEffort: this.getReasoningEffort(runtime),
+        ...extraOptions,
+      },
     };
+  }
+
+  private getReasoningEffort(runtime: Exclude<RuntimeConfig, { provider: "workers" }>): string {
+    const configured = this.deps.REASONING_EFFORT?.trim();
+    if (configured) return configured;
+    if (runtime.provider !== "fireworks") return "medium";
+
+    const model = runtime.model.toLowerCase();
+    if (model.includes("kimi-k2p5")) return "none";
+    if (model.includes("minimax-m2p5")) return "low";
+    return "medium";
+  }
+
+  private getFireworksProviderOptions(
+    model: string,
+  ): Record<string, string | number | boolean | null> {
+    const lower = model.toLowerCase();
+    if (lower.includes("kimi-k2p5")) {
+      return {
+        reasoning_history: "interleaved",
+        prompt_truncate_len: 12000,
+      };
+    }
+    if (lower.includes("minimax-m2p5")) {
+      return {
+        prompt_truncate_len: 12000,
+      };
+    }
+    return {};
+  }
+
+  private getMaxOutputTokens(
+    runtime: RuntimeConfig,
+    mode: "conversation" | "reminder" | "recovery",
+  ): number | undefined {
+    if (runtime.provider !== "fireworks") return undefined;
+    const lower = runtime.model.toLowerCase();
+    if (lower.includes("kimi-k2p5")) {
+      if (mode === "conversation") return 192;
+      if (mode === "reminder") return 160;
+      return 128;
+    }
+    if (lower.includes("minimax-m2p5")) {
+      if (mode === "conversation") return 256;
+      if (mode === "reminder") return 192;
+      return 128;
+    }
+    return undefined;
   }
 
   private getMemoryConfigSafe() {
@@ -1147,6 +1287,32 @@ function getTypingPulseMs(value: string | undefined): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 500) return 2500;
   return Math.floor(parsed);
+}
+
+function shouldEnableAgentTools(userText: string): boolean {
+  const text = String(userText ?? "")
+    .trim()
+    .toLowerCase();
+  if (!text) return false;
+  if (text.length > 120) return true;
+  if (
+    /(gmail|email|calendar|drive|docs|sheets|google|bash|shell|tool|file|skill|workflow|search|find|list|create|update|delete|remind|todo|memory|debug|investigate|compare)/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  if (text.startsWith("/")) return false;
+  return false;
+}
+
+function shouldIncludeMemoryContext(userText: string): boolean {
+  const text = String(userText ?? "")
+    .trim()
+    .toLowerCase();
+  if (!text) return false;
+  if (text.length > 80) return true;
+  return /(remember|earlier|before|previous|context|history|memory|follow up|follow-up)/.test(text);
 }
 
 function inferImplicitSkillNames(userText: string): string[] {

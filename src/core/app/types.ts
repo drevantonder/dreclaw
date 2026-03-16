@@ -25,6 +25,8 @@ export interface RuntimeDeps {
   MODEL: string;
   BASE_URL?: string;
   OPENCODE_API_KEY?: string;
+  FIREWORKS_API_KEY?: string;
+  FIREWORKS_BASE_URL?: string;
   AI?: Ai;
   LOADER?: {
     get(

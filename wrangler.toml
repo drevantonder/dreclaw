@@ -6,6 +6,10 @@ route = "dreclaw.thevantonders.com/*"
 
 [vars]
 USER_TIMEZONE = "Australia/Brisbane"
+PROFILING_ENABLED = "true"
+PROFILING_SAMPLE_RATE = "1"
+AI_PROVIDER = "opencode-go"
+MODEL = "kimi-k2.5"
 
 [ai]
 binding = "AI"

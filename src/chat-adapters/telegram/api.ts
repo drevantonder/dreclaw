@@ -212,11 +212,9 @@ async function telegramMethod<T = unknown>(
   return JSON.parse(payloadText) as T;
 }
 
-function createDraftId(): string {
-  return (
-    globalThis.crypto?.randomUUID?.() ??
-    `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-  );
+function createDraftId(): number {
+  const random = globalThis.crypto?.getRandomValues?.(new Uint32Array(1))?.[0] ?? Date.now();
+  return Math.max(1, random >>> 0);
 }
 
 function isUnsupportedDraftMethod(error: unknown): boolean {
