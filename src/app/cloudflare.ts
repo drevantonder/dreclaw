@@ -20,6 +20,7 @@ import { flushTelegramEffects } from "./telegram";
 import { createRunCoordinator } from "../core/loop/run";
 import { createProfiler, parseProfilingEnabled, parseProfilingSampleRate } from "../core/profiling";
 import { getRunTimeoutMs } from "../core/runtime/policy/model";
+import { isRunCancelledError } from "../core/runtime/lib/errors";
 
 export async function handleHttpRequest(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
@@ -123,6 +124,21 @@ export async function runConversationWorkflow(
     await runs.clearWorkflowInstance(thread.id);
   } catch (error) {
     outcome = error instanceof Error ? error.message : "failed";
+    const finishedState = runs.finishRun(state);
+    await Promise.allSettled([
+      thread.setState(finishedState as any, { replace: true }),
+      runs.persistRunState(thread.id, finishedState),
+      runs.clearWorkflowInstance(thread.id),
+    ]);
+    if (!isRunCancelledError(error)) {
+      await flushTelegramEffects(env, [
+        {
+          type: "send-text",
+          target: { channel: "telegram", id: String(chatId) },
+          text: "I hit an internal error while handling that request. Please retry.",
+        },
+      ]).catch(() => null);
+    }
     throw error;
   } finally {
     stopTypingPulse();

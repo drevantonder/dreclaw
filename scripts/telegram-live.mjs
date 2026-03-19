@@ -9,6 +9,8 @@ import { loadDotEnvIntoProcess } from "./lib/env.mjs";
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_POLL_MS = 800;
+const DEFAULT_QUIET_MS = 1200;
+const TRACE_QUIET_MS = 4000;
 const AUTH_STATE_PATH = path.join(process.cwd(), ".telegram-test-auth.json");
 
 function parseArgs(argv) {
@@ -257,11 +259,17 @@ async function runPrompt(client, args) {
 
   const deadline = Date.now() + args.timeoutMs;
   let transcript = [];
-  let lastNonThinkingAt = 0;
+  let lastTranscriptSignature = "";
+  let lastTranscriptChangeAt = 0;
 
   while (Date.now() < deadline) {
     const messages = await client.getMessages(entity, { limit: 20 });
     transcript = pickReply(messages, baselineId);
+    const signature = JSON.stringify(transcript);
+    if (signature !== lastTranscriptSignature) {
+      lastTranscriptSignature = signature;
+      lastTranscriptChangeAt = Date.now();
+    }
 
     const botReplies = transcript.filter((message) => message.direction === "bot");
     const nonThinkingReplies = botReplies.filter(
@@ -269,21 +277,42 @@ async function runPrompt(client, args) {
     );
 
     if (nonThinkingReplies.length) {
-      if (!lastNonThinkingAt) lastNonThinkingAt = Date.now();
-      const latest = nonThinkingReplies[nonThinkingReplies.length - 1];
-      const hasThinkingAfterLatest = botReplies.some(
-        (message) => message.id > latest.id && message.text === "Thinking...",
-      );
-      if (!hasThinkingAfterLatest && Date.now() - lastNonThinkingAt >= 1200) {
-        assertTranscript(botReplies, args.expect, args.reject);
-        return { ok: true, bot, prompt: args.prompt, transcript };
+      const quietMs = hasTraceMessages(nonThinkingReplies) ? TRACE_QUIET_MS : DEFAULT_QUIET_MS;
+      if (Date.now() - lastTranscriptChangeAt >= quietMs) {
+        const expectationsMet = transcriptMatches(botReplies, args.expect, args.reject);
+        if (!args.expect.length || expectationsMet) {
+          assertTranscript(botReplies, args.expect, args.reject);
+          return { ok: true, bot, prompt: args.prompt, transcript };
+        }
       }
     }
 
     await sleep(args.pollMs);
   }
 
-  throw new Error(`Timed out after ${args.timeoutMs}ms waiting for bot reply`);
+  const transcriptText = transcript.length
+    ? transcript.map((item) => `- ${item.direction}#${item.id}: ${item.text}`).join("\n")
+    : "(no transcript)";
+  throw new Error(
+    `Timed out after ${args.timeoutMs}ms waiting for bot reply\nTranscript so far:\n${transcriptText}`,
+  );
+}
+
+function transcriptMatches(transcript, expect, reject) {
+  const joined = transcript.map((item) => item.text).join("\n");
+  for (const needle of expect) {
+    if (needle && !joined.includes(needle)) return false;
+  }
+  for (const needle of reject) {
+    if (needle && joined.includes(needle)) return false;
+  }
+  return true;
+}
+
+function hasTraceMessages(transcript) {
+  return transcript.some(
+    (item) => item.text.startsWith("Tool: ") || item.text.startsWith("Tool result: "),
+  );
 }
 
 function extractCurrentAlias(transcript) {
