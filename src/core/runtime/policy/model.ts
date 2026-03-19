@@ -1,7 +1,15 @@
 import type { RuntimeDeps } from "../../app/types";
+import type { BotThreadState } from "../../loop/state";
 import { FIREWORKS_BASE_URL, OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL } from "../llm/constants";
 import { createWorkersModel } from "../llm/workers";
 import { createZenModel } from "../llm/zen";
+import {
+  findModelCatalogEntry,
+  getDefaultModelCatalogEntry,
+  listModelAliases,
+} from "./model-catalog";
+
+export { findModelCatalogEntry } from "./model-catalog";
 
 export type RuntimeConfig =
   | { provider: "workers"; model: string; aiBinding: Ai }
@@ -15,13 +23,22 @@ export type RuntimeConfig =
 
 export const DEFAULT_RUN_TIMEOUT_MS = 25_000;
 
-export function getRuntimeConfig(deps: RuntimeDeps): RuntimeConfig {
-  const provider = (deps.AI_PROVIDER?.trim().toLowerCase() || "opencode") as
-    | "opencode"
-    | "opencode-go"
-    | "fireworks"
-    | "workers";
-  const model = deps.MODEL?.trim() || (provider === "workers" ? "@cf/zai-org/glm-4.7-flash" : "");
+export function getRuntimeConfig(
+  deps: RuntimeDeps,
+  state?: Pick<BotThreadState, "modelAlias"> | null,
+): RuntimeConfig {
+  const selected = findModelCatalogEntry(state?.modelAlias) ?? getDefaultModelCatalogEntry();
+  const provider =
+    selected.provider ||
+    ((deps.AI_PROVIDER?.trim().toLowerCase() || "opencode") as
+      | "opencode"
+      | "opencode-go"
+      | "fireworks"
+      | "workers");
+  const model =
+    selected.model ||
+    deps.MODEL?.trim() ||
+    (provider === "workers" ? "@cf/zai-org/glm-4.7-flash" : "");
   if (!model) throw new Error("Missing MODEL");
   if (provider === "workers") {
     if (!deps.AI) throw new Error("Missing AI binding");
@@ -45,6 +62,14 @@ export function getRuntimeConfig(deps: RuntimeDeps): RuntimeConfig {
         : deps.BASE_URL?.trim() ||
           (provider === "opencode-go" ? OPENCODE_GO_BASE_URL : OPENCODE_ZEN_BASE_URL),
   };
+}
+
+export function getRuntimeAlias(state?: Pick<BotThreadState, "modelAlias"> | null): string {
+  return (findModelCatalogEntry(state?.modelAlias) ?? getDefaultModelCatalogEntry()).alias;
+}
+
+export function listRuntimeAliases(): string[] {
+  return listModelAliases();
 }
 
 export function createRuntimeModel(runtime: RuntimeConfig) {

@@ -404,6 +404,7 @@ export function createEnv(overrides?: Partial<Env>) {
     TELEGRAM_BOT_USERNAME: "dreclawbot",
     TELEGRAM_ALLOWED_USER_ID: "42",
     MODEL: "test-model",
+    AI: {} as Ai,
     OPENCODE_API_KEY: "test-key",
     GOOGLE_OAUTH_CLIENT_ID: "client-id",
     GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",

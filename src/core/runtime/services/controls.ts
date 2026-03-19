@@ -5,6 +5,7 @@ import { createRunCoordinator, idleRunStatus } from "../../loop/run";
 import type { BotThreadState } from "../../loop/state";
 import { normalizeBotThreadState } from "../../loop/state";
 import { getRuntimeConfig } from "../policy/model";
+import { getRuntimeAlias, listRuntimeAliases } from "../policy/model";
 import type { MemoryGateway } from "../adapters/memory";
 
 export interface RuntimeControlsService {
@@ -23,12 +24,13 @@ export function createRuntimeControlsService(params: {
 }): RuntimeControlsService {
   return {
     async status(threadId, state) {
-      const runtime = getRuntimeConfig(params.runtimeDeps);
+      const runtime = getRuntimeConfig(params.runtimeDeps, state);
       const memory = params.memoryGateway.getConfigSafe();
       const googleLinked = Boolean(await params.googlePlugin?.isLinked?.());
       const controls = await getPersistedThreadControls(params.runtimeDeps.DRECLAW_DB, threadId);
       const run = await params.runs.getStatus(threadId, state);
       return [
+        `alias: ${getRuntimeAlias(state)}`,
         `model: ${runtime.model}`,
         `provider: ${runtime.provider}`,
         `memory: ${memory.enabled ? "on" : "off"}`,
@@ -50,6 +52,8 @@ export function createRuntimeControlsService(params: {
         "Commands:",
         "/help - show commands",
         "/status - show current bot status",
+        "/model - show current model and aliases",
+        "/model <alias> - switch model for this chat",
         "/reset - clear conversation context",
         "/factory-reset - clear conversation, memory, and VFS",
         "/stop - cooperatively stop the current run",
@@ -57,6 +61,7 @@ export function createRuntimeControlsService(params: {
         "/google connect - link your Google account",
         "/google status - show Google link status",
         "/google disconnect - unlink your Google account",
+        `models: ${listRuntimeAliases().join(", ")}`,
       ].join("\n");
     },
 

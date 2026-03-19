@@ -540,7 +540,9 @@ describe("chat sdk bot", () => {
     await tracker.wait();
 
     const output = sent.join("\n");
-    expect(output).toContain("model: test-model");
+    expect(output).toContain("alias: glm");
+    expect(output).toContain("model: @cf/zai-org/glm-4.7-flash");
+    expect(output).toContain("provider: workers");
     expect(output).toContain("google: not linked");
     expect(output).toContain("Open this URL to connect Google:");
     expect(db.oauthStates.size).toBe(1);

@@ -21,6 +21,8 @@ function parseArgs(argv) {
     reject: [],
     json: false,
     loginOnly: false,
+    withModel: "",
+    restorePreviousModel: false,
     phone: process.env.TELEGRAM_TEST_PHONE ?? "",
     code: process.env.TELEGRAM_TEST_CODE ?? "",
     password: process.env.TELEGRAM_TEST_PASSWORD ?? "",
@@ -36,6 +38,8 @@ function parseArgs(argv) {
     else if (part === "--reject") args.reject.push(argv[++i] ?? "");
     else if (part === "--json") args.json = true;
     else if (part === "--login") args.loginOnly = true;
+    else if (part === "--with-model") args.withModel = argv[++i] ?? "";
+    else if (part === "--restore-previous-model") args.restorePreviousModel = true;
     else if (part === "--phone") args.phone = argv[++i] ?? "";
     else if (part === "--code") args.code = argv[++i] ?? "";
     else if (part === "--password") args.password = argv[++i] ?? "";
@@ -65,6 +69,8 @@ function printHelp() {
       "  --reject <text>   Can repeat",
       "  --json",
       "  --login           Login/update session only",
+      "  --with-model <alias>",
+      "  --restore-previous-model",
       "  --phone <number>",
       "  --code <login-code>",
       "  --password <2fa-password>",
@@ -280,6 +286,25 @@ async function runPrompt(client, args) {
   throw new Error(`Timed out after ${args.timeoutMs}ms waiting for bot reply`);
 }
 
+function extractCurrentAlias(transcript) {
+  const joined = transcript.map((item) => item.text).join("\n");
+  const match = joined.match(/current:\s*([a-z0-9-]+)/i);
+  return match?.[1]?.trim().toLowerCase() || "";
+}
+
+async function runCommand(client, args, prompt) {
+  const result = await runPrompt(client, {
+    ...args,
+    prompt,
+    expect: [],
+    reject: [],
+  });
+  return {
+    ...result,
+    currentAlias: extractCurrentAlias(result.transcript),
+  };
+}
+
 function printResult(result, json) {
   if (json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -297,14 +322,36 @@ async function main() {
   loadDotEnvIntoProcess(path.join(process.cwd(), ".env"));
   const args = parseArgs(process.argv.slice(2));
   const client = await connectClient(args);
+  let restoreAlias = "";
   try {
     if (args.loginOnly) {
       if (await client.isUserAuthorized()) process.stdout.write("Telegram test session ready.\n");
       return;
     }
+
+    if (args.withModel.trim()) {
+      const requestedAlias = args.withModel.trim().toLowerCase();
+      const current = await runCommand(client, args, "/model");
+      const currentAlias = current.currentAlias;
+      if (!currentAlias) fail("Could not determine current model alias from /model reply");
+      if (args.restorePreviousModel) restoreAlias = currentAlias;
+      if (currentAlias !== requestedAlias) {
+        await runCommand(client, args, `/model ${requestedAlias}`);
+      }
+    }
+
     const result = await runPrompt(client, args);
     printResult(result, args.json);
   } finally {
+    if (restoreAlias) {
+      try {
+        await runCommand(client, args, `/model ${restoreAlias}`);
+      } catch (error) {
+        process.stderr.write(
+          `Failed to restore previous model alias (${restoreAlias}): ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
+    }
     await client.destroy();
   }
 }

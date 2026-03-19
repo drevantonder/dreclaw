@@ -59,7 +59,7 @@ export function createProactiveWakeService(params: {
   return {
     async runProactiveWake(input) {
       let state = normalizeBotThreadState(input.state);
-      const runtime = getRuntimeConfig(params.runtimeDeps);
+      const runtime = getRuntimeConfig(params.runtimeDeps, state);
       const toolTraces: ToolTrace[] = [];
       const model = createRuntimeModel(runtime);
       const wakePacket = renderWakePacket(input.item, input.recentWakeSummaries);

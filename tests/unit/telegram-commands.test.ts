@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
       wake: {},
     })),
     sendTelegramTextMessage: vi.fn(),
+    getPersistedThreadControls: vi.fn(),
     getThreadStateSnapshot: vi.fn(),
     setPersistedThreadControls: vi.fn(),
     setThreadStateSnapshot: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock("../../src/chat-adapters/telegram/api", () => ({
 }));
 
 vi.mock("../../src/core/loop/repo", () => ({
+  getPersistedThreadControls: mocks.getPersistedThreadControls,
   getThreadStateSnapshot: mocks.getThreadStateSnapshot,
   setPersistedThreadControls: mocks.setPersistedThreadControls,
   setThreadStateSnapshot: mocks.setThreadStateSnapshot,
@@ -53,8 +55,10 @@ describe("telegram commands", () => {
     mocks.getThreadStateSnapshot.mockResolvedValue({
       history: ["old"],
       verbose: false,
+      modelAlias: null,
       runStatus: { running: false },
     });
+    mocks.getPersistedThreadControls.mockResolvedValue({ verbose: false, modelAlias: null });
     mocks.createRunCoordinator.mockReturnValue({
       recoverState: vi.fn(async (_threadId: string, state: unknown) => state),
       getStatus: vi.fn(async () => ({ busy: "no", runStatus: { running: false } })),
@@ -111,6 +115,7 @@ describe("telegram commands", () => {
     mocks.getThreadStateSnapshot.mockResolvedValue({
       history: [],
       verbose: true,
+      modelAlias: null,
       runStatus: { running: false },
     });
 
@@ -153,5 +158,94 @@ describe("telegram commands", () => {
       777,
       "Currently busy. Not executed. Run /google connect again when not busy.",
     );
+  });
+
+  it("shows current model aliases", async () => {
+    const { env } = createEnv();
+
+    await handleAsyncCommand({
+      env,
+      controls: mocks.controlsInstance as never,
+      threadId: "telegram:777",
+      chatId: 777,
+      telegramUserId: 42,
+      text: "/model",
+    });
+
+    expect(mocks.sendTelegramTextMessage).toHaveBeenCalledWith(
+      env.TELEGRAM_BOT_TOKEN,
+      777,
+      expect.stringContaining("current: glm"),
+    );
+    expect(mocks.sendTelegramTextMessage).toHaveBeenCalledWith(
+      env.TELEGRAM_BOT_TOKEN,
+      777,
+      expect.stringContaining("aliases: glm, kimi, fireworks-kimi, fireworks-minimax"),
+    );
+  });
+
+  it("persists model alias for the thread", async () => {
+    const { env } = createEnv();
+
+    await handleAsyncCommand({
+      env,
+      controls: mocks.controlsInstance as never,
+      threadId: "telegram:777",
+      chatId: 777,
+      telegramUserId: 42,
+      text: "/model kimi",
+    });
+
+    expect(mocks.setPersistedThreadControls).toHaveBeenCalledWith(env.DRECLAW_DB, "telegram:777", {
+      verbose: false,
+      modelAlias: "kimi",
+    });
+    expect(mocks.setThreadStateSnapshot).toHaveBeenCalledWith(env.DRECLAW_DB, "telegram:777", {
+      history: [],
+      memoryTurns: 0,
+      verbose: false,
+      modelAlias: "kimi",
+      codeRuntime: {},
+      loadedSkills: [],
+      runStatus: {
+        running: false,
+        startedAt: null,
+        lastHeartbeatAt: null,
+        cancelRequested: false,
+        cancelRequestedAt: null,
+        stoppedAt: null,
+        workflowInstanceId: null,
+      },
+    });
+    expect(mocks.sendTelegramTextMessage).toHaveBeenCalledWith(
+      env.TELEGRAM_BOT_TOKEN,
+      777,
+      expect.stringContaining("model set: kimi"),
+    );
+  });
+
+  it("clears saved model alias on factory reset", async () => {
+    const { env } = createEnv();
+    mocks.getPersistedThreadControls.mockResolvedValue({ verbose: true, modelAlias: "kimi" });
+    mocks.controlsInstance.factoryReset.mockResolvedValue({
+      history: [],
+      verbose: false,
+      modelAlias: null,
+      runStatus: {},
+    } as never);
+
+    await handleAsyncCommand({
+      env,
+      controls: mocks.controlsInstance as never,
+      threadId: "telegram:777",
+      chatId: 777,
+      telegramUserId: 42,
+      text: "/factory-reset",
+    });
+
+    expect(mocks.setPersistedThreadControls).toHaveBeenCalledWith(env.DRECLAW_DB, "telegram:777", {
+      verbose: false,
+      modelAlias: null,
+    });
   });
 });

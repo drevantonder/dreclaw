@@ -36,6 +36,7 @@ export interface PersistedRunStatus {
 
 export interface PersistedThreadControls {
   verbose: boolean;
+  modelAlias?: string | null;
 }
 
 export async function getThreadStateSnapshot<T>(

@@ -19,6 +19,7 @@ export interface BotThreadState {
   history: ConversationEntry[];
   memoryTurns: number;
   verbose: boolean;
+  modelAlias: string | null;
   codeRuntime: CodeRuntimeState;
   loadedSkills: string[];
   runStatus: RunStatus;
@@ -43,6 +44,10 @@ export function normalizeBotThreadState(input: BotThreadState | null | undefined
       ? Math.max(0, Math.trunc(source?.memoryTurns ?? 0))
       : 0,
     verbose: Boolean(source?.verbose),
+    modelAlias:
+      typeof source?.modelAlias === "string" && source.modelAlias.trim()
+        ? source.modelAlias.trim().toLowerCase()
+        : null,
     codeRuntime: normalizeCodeRuntimeState(source?.codeRuntime),
     loadedSkills: Array.isArray(source?.loadedSkills)
       ? source.loadedSkills

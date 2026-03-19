@@ -113,7 +113,7 @@ export function createConversationLoopService(params: {
       let state = normalizeBotThreadState(input.state);
       const userText = message.text.trim();
       const imageBlocks = input.imageBlocks ?? [];
-      const runtime = getRuntimeConfig(params.runtimeDeps);
+      const runtime = getRuntimeConfig(params.runtimeDeps, state);
       const toolTraces: ToolTrace[] = [];
       const tracer = new VerboseTracer(params.runtimeDeps.DRECLAW_DB, thread);
       const model = createRuntimeModel(runtime);

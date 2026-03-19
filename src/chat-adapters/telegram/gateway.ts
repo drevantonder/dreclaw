@@ -11,6 +11,7 @@ import {
   createD1StateAdapter,
   createRunCoordinator,
   normalizeBotThreadState,
+  getRuntimeConfig,
   type BotThreadState,
 } from "../../core";
 import { getRemindersPlugin } from "../../plugins/reminders";
@@ -130,7 +131,7 @@ export function createBot(env: Env, executionContext?: ExecutionContext) {
       profiler.flush("telegram_gateway", { outcome: "busy", chatId });
       return;
     }
-    if (runtimeDeps.AI_PROVIDER?.trim().toLowerCase() === "fireworks") {
+    if (getRuntimeConfig(runtimeDeps, currentState).provider === "fireworks") {
       const nextState = await profiler.span("run_inline", async () =>
         services.conversation.runConversationInline({
           thread,

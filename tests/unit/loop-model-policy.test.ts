@@ -18,7 +18,7 @@ describe("loop model policy", () => {
       FIREWORKS_BASE_URL: undefined,
     });
 
-    const runtime = getRuntimeConfig(env as never);
+    const runtime = getRuntimeConfig(env as never, { modelAlias: "fireworks-kimi" });
 
     expect(runtime.provider).toBe("fireworks");
     if (runtime.provider === "workers") throw new Error("expected fireworks runtime");
