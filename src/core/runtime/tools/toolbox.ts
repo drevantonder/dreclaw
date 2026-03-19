@@ -101,13 +101,10 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
   };
 
   const config = deps.getCodeExecutionConfig();
-  const globalOutbound = config.netFetchEnabled
-    ? ({ fetch: globalThis.fetch.bind(globalThis) } as never)
-    : null;
   const executor = new DynamicWorkerExecutor({
     loader: deps.loader as never,
     timeout: config.limits.execTimeoutMs,
-    globalOutbound,
+    globalOutbound: null,
   } as never);
 
   const stateWrites: string[] = [];
@@ -269,7 +266,6 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
       "{{types}}",
       "",
       "Also available:",
-      "- Standard fetch(input, init) with full outbound web access.",
       "- console.log / console.warn / console.error.",
       "",
       "Write an async arrow function in JavaScript that returns the final result.",

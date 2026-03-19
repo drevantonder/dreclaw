@@ -17,19 +17,14 @@ Use this skill when writing or fixing codemode scripts.
 
 Rules:
 - The runtime is a sandboxed Worker, not Node.js.
-- Use only built-in runtime globals, fetch, and the provided namespaces.
+- Use only built-in runtime globals and the provided namespaces.
 - Do not use require(), fs from Node, process, Buffer, or googleapis imports.
 - If a script uses await or multiple statements, explicitly return the final value.
 - Files are exposed through state.*.
-- Prefer state.* for workspace operations and fetch() for general web access.
+- Prefer state.* for workspace operations.
 - When formatting user-facing summaries, prefer simple string concatenation over large template literals.
 
 Patterns:
-
-~~~js
-const result = await fetch("https://example.com").then((r) => r.text());
-return result;
-~~~
 
 ~~~js
 await state.writeFile("/tmp/example.txt", "hello");

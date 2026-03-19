@@ -106,7 +106,7 @@ export function renderTaskGuidance(userText: string): string {
   const lines: string[] = [];
   if (/shell|curl|grep|sed|awk|jq|yq|find|xargs|pipe|regex|http|web|url/.test(text)) {
     lines.push(
-      "- Use codemode for file, web, and automation tasks. Prefer fetch() for web requests and state.* for workspace operations.",
+      "- Use codemode for file and automation tasks. Prefer state.* for workspace operations.",
     );
     lines.push(
       "- Available namespaces inside codemode: state.*, memory.*, google.*, reminders.*, and skills.*.",
