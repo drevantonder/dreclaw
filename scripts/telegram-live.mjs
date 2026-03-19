@@ -27,6 +27,8 @@ function parseArgs(argv) {
     loginOnly: false,
     withModel: "",
     restorePreviousModel: false,
+    withVerbose: "",
+    restorePreviousVerbose: false,
     phone: process.env.TELEGRAM_TEST_PHONE ?? "",
     code: process.env.TELEGRAM_TEST_CODE ?? "",
     password: process.env.TELEGRAM_TEST_PASSWORD ?? "",
@@ -45,6 +47,8 @@ function parseArgs(argv) {
     else if (part === "--login") args.loginOnly = true;
     else if (part === "--with-model") args.withModel = argv[++i] ?? "";
     else if (part === "--restore-previous-model") args.restorePreviousModel = true;
+    else if (part === "--with-verbose") args.withVerbose = argv[++i] ?? "";
+    else if (part === "--restore-previous-verbose") args.restorePreviousVerbose = true;
     else if (part === "--phone") args.phone = argv[++i] ?? "";
     else if (part === "--code") args.code = argv[++i] ?? "";
     else if (part === "--password") args.password = argv[++i] ?? "";
@@ -77,6 +81,8 @@ function printHelp() {
       "  --login           Login/update session only",
       "  --with-model <alias>",
       "  --restore-previous-model",
+      "  --with-verbose <on|off>",
+      "  --restore-previous-verbose",
       "  --phone <number>",
       "  --code <login-code>",
       "  --password <2fa-password>",
@@ -376,6 +382,16 @@ function extractCurrentAlias(transcript) {
   return match?.[1]?.trim().toLowerCase() || "";
 }
 
+function extractVerboseSetting(transcript) {
+  const joined = transcript
+    .map((item) => item.text)
+    .join("\n")
+    .toLowerCase();
+  if (joined.includes("verbose: on") || joined.includes("verbose enabled.")) return "on";
+  if (joined.includes("verbose: off") || joined.includes("verbose disabled.")) return "off";
+  return "";
+}
+
 async function runCommand(client, args, prompt) {
   const result = await runPrompt(client, {
     ...args,
@@ -386,6 +402,7 @@ async function runCommand(client, args, prompt) {
   return {
     ...result,
     currentAlias: extractCurrentAlias(result.transcript),
+    currentVerbose: extractVerboseSetting(result.transcript),
   };
 }
 
@@ -408,6 +425,7 @@ async function main() {
   const releaseLock = acquireLiveLock();
   const client = await connectClient(args);
   let restoreAlias = "";
+  let restoreVerbose = "";
   try {
     if (args.loginOnly) {
       if (await client.isUserAuthorized()) process.stdout.write("Telegram test session ready.\n");
@@ -425,6 +443,20 @@ async function main() {
       }
     }
 
+    if (args.withVerbose.trim()) {
+      const requestedVerbose = args.withVerbose.trim().toLowerCase();
+      if (!["on", "off"].includes(requestedVerbose)) {
+        fail("--with-verbose must be 'on' or 'off'");
+      }
+      const current = await runCommand(client, args, "/verbose");
+      const currentVerbose = current.currentVerbose;
+      if (!currentVerbose) fail("Could not determine current verbose setting from /verbose reply");
+      if (args.restorePreviousVerbose) restoreVerbose = currentVerbose;
+      if (currentVerbose !== requestedVerbose) {
+        await runCommand(client, args, `/verbose ${requestedVerbose}`);
+      }
+    }
+
     const result = await runPrompt(client, args);
     printResult(result, args.json);
   } finally {
@@ -434,6 +466,15 @@ async function main() {
       } catch (error) {
         process.stderr.write(
           `Failed to restore previous model alias (${restoreAlias}): ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
+    }
+    if (restoreVerbose) {
+      try {
+        await runCommand(client, args, `/verbose ${restoreVerbose}`);
+      } catch (error) {
+        process.stderr.write(
+          `Failed to restore previous verbose setting (${restoreVerbose}): ${error instanceof Error ? error.message : String(error)}\n`,
         );
       }
     }
