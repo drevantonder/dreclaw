@@ -11,6 +11,11 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     model: "@cf/zai-org/glm-4.7-flash",
   },
   {
+    alias: "workers-kimi",
+    provider: "workers",
+    model: "@cf/moonshotai/kimi-k2.5",
+  },
+  {
     alias: "kimi",
     provider: "opencode-go",
     model: "kimi-k2.5",

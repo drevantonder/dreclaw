@@ -74,6 +74,7 @@ vp run cf:deploy
 - Message the bot in a private Telegram chat.
 - `/help` lists commands.
 - `/status` shows model/provider/memory/google/verbose status.
+- `/model` lists aliases including `glm`, `workers-kimi`, `kimi`, `fireworks-kimi`, and `fireworks-minimax`.
 - `/reset` clears conversation context only (keeps memory).
 - `/factory-reset` clears conversation, memory, runtime state, and workspace files.
 - `/verbose on|off` toggles tool traces, including codemode code, writes, and result summaries.

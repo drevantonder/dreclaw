@@ -10,6 +10,18 @@ import {
 import { createEnv } from "../helpers/fakes";
 
 describe("loop model policy", () => {
+  it("builds workers runtime config for Workers AI Kimi", () => {
+    const { env } = createEnv({
+      AI_PROVIDER: "workers",
+      MODEL: "@cf/zai-org/glm-4.7-flash",
+    });
+
+    const runtime = getRuntimeConfig(env as never, { modelAlias: "workers-kimi" });
+
+    expect(runtime.provider).toBe("workers");
+    expect(runtime.model).toBe("@cf/moonshotai/kimi-k2.5");
+  });
+
   it("builds non-worker runtime config with provider defaults", () => {
     const { env } = createEnv({
       AI_PROVIDER: "fireworks",

@@ -180,7 +180,9 @@ describe("telegram commands", () => {
     expect(mocks.sendTelegramTextMessage).toHaveBeenCalledWith(
       env.TELEGRAM_BOT_TOKEN,
       777,
-      expect.stringContaining("aliases: glm, kimi, fireworks-kimi, fireworks-minimax"),
+      expect.stringContaining(
+        "aliases: glm, workers-kimi, kimi, fireworks-kimi, fireworks-minimax",
+      ),
     );
   });
 
