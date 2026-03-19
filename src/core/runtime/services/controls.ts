@@ -1,5 +1,4 @@
 import type { RuntimeDeps } from "../../app/types";
-import { clearAllVfsEntries } from "../../vfs/repo";
 import { getPersistedThreadControls } from "../../loop/repo";
 import { createRunCoordinator, idleRunStatus } from "../../loop/run";
 import type { BotThreadState } from "../../loop/state";
@@ -7,6 +6,7 @@ import { normalizeBotThreadState } from "../../loop/state";
 import { getRuntimeConfig } from "../policy/model";
 import { getRuntimeAlias, listRuntimeAliases } from "../policy/model";
 import type { MemoryGateway } from "../adapters/memory";
+import type { WorkspaceGateway } from "../adapters/workspace";
 
 export interface RuntimeControlsService {
   status(threadId: string, state: BotThreadState): Promise<string>;
@@ -20,6 +20,7 @@ export function createRuntimeControlsService(params: {
   runtimeDeps: RuntimeDeps;
   runs: ReturnType<typeof createRunCoordinator>;
   memoryGateway: MemoryGateway;
+  workspaceGateway: WorkspaceGateway;
   googlePlugin?: { isLinked?: () => Promise<boolean> } | null;
 }): RuntimeControlsService {
   return {
@@ -55,7 +56,7 @@ export function createRuntimeControlsService(params: {
         "/model - show current model and aliases",
         "/model <alias> - switch model for this chat",
         "/reset - clear conversation context",
-        "/factory-reset - clear conversation, memory, and VFS",
+        "/factory-reset - clear conversation, memory, and workspace files",
         "/stop - cooperatively stop the current run",
         "/verbose on|off - show tool traces",
         "/google connect - link your Google account",
@@ -76,7 +77,7 @@ export function createRuntimeControlsService(params: {
 
     async factoryReset(chatId) {
       await params.memoryGateway.factoryReset({ chatId });
-      await clearAllVfsEntries(params.runtimeDeps.DRECLAW_DB, new Date().toISOString());
+      await params.workspaceGateway.factoryReset();
       return normalizeBotThreadState(undefined);
     },
 

@@ -78,19 +78,6 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
 }));
 
 vi.mock("../../src/core/tools/code-exec", () => ({
-  executeCode: vi.fn(
-    async (
-      _input: { code: string },
-      ctx: {
-        vfs?: {
-          writeFile: (path: string, content: string, overwrite: boolean) => Promise<unknown>;
-        };
-      },
-    ) => {
-      await ctx.vfs?.writeFile("/tmp/output.txt", "hello", true);
-      return { ok: true, result: "done", logs: [], stats: {} };
-    },
-  ),
   getCodeExecutionConfig: vi.fn(() => ({
     codeExecEnabled: true,
     netFetchEnabled: true,
@@ -108,27 +95,6 @@ vi.mock("../../src/core/tools/code-exec", () => ({
     },
   })),
   normalizeCodeRuntimeState: vi.fn(() => ({})),
-}));
-
-vi.mock("../../src/core/tools/bash", () => ({
-  executeBash: vi.fn(
-    async (
-      _input: { command: string },
-      ctx: {
-        vfs: { writeFile: (path: string, content: string, overwrite: boolean) => Promise<unknown> };
-      },
-    ) => {
-      await ctx.vfs.writeFile("/tmp/bash-output.txt", "hello from bash\n", true);
-      return {
-        ok: true,
-        stdout: "hello from bash\n",
-        stderr: "",
-        exitCode: 0,
-        cwd: "/",
-        writes: ["write /tmp/bash-output.txt"],
-      };
-    },
-  ),
 }));
 
 vi.mock("ai", () => {
@@ -291,7 +257,7 @@ describe("chat sdk bot", () => {
     );
   });
 
-  it("supports /verbose and emits execute traces with code, writes, and result", async () => {
+  it("supports /verbose and emits codemode traces with code, writes, and result", async () => {
     const { env } = createEnv();
     const sent: string[] = [];
     const edited: string[] = [];
@@ -356,8 +322,15 @@ describe("chat sdk bot", () => {
           {
             type: "toolCall",
             id: "tool-1",
-            name: "execute",
-            arguments: { code: 'await fs.write("/tmp/output.txt", "hello")' },
+            name: "codemode",
+            arguments: {
+              code: [
+                "async () => {",
+                '  await state.writeFile("/tmp/output.txt", "hello");',
+                "  return { ok: true };",
+                "}",
+              ].join("\n"),
+            },
           },
         ],
       },
@@ -377,13 +350,14 @@ describe("chat sdk bot", () => {
 
     const output = [...sent, ...edited].join("\n");
     expect(output).toContain("verbose enabled");
-    expect(output).toContain("Tool: execute");
-    expect(output).toContain("await fs.write");
-    expect(output).toContain('result: {"ok":true');
+    expect(output).toContain("Tool: codemode");
+    expect(output).toContain('await state.writeFile("/tmp/output.txt", "hello")');
+    expect(output).toContain("writes: write /tmp/output.txt");
+    expect(output).toContain('"ok":true');
     expect(output).toContain("Done running code.");
   });
 
-  it("supports /verbose and emits bash traces with commands, writes, and result", async () => {
+  it("supports /verbose and emits codemode traces for outbound fetch", async () => {
     const { env } = createEnv();
     const sent: string[] = [];
     const edited: string[] = [];
@@ -447,22 +421,27 @@ describe("chat sdk bot", () => {
         content: [
           {
             type: "toolCall",
-            id: "tool-bash-1",
-            name: "bash",
+            id: "tool-web-1",
+            name: "codemode",
             arguments: {
-              command: 'printf "hello" > /tmp/bash-output.txt && cat /tmp/bash-output.txt',
+              code: [
+                "async () => {",
+                '  const response = await fetch("https://example.com/test.json");',
+                "  return await response.json();",
+                "}",
+              ].join("\n"),
             },
           },
         ],
       },
-      { stopReason: "endTurn", content: [{ type: "text", text: "Done running bash." }] },
+      { stopReason: "endTurn", content: [{ type: "text", text: "Done running web request." }] },
     );
 
     await app.fetch(
       new Request("https://test.local/telegram/webhook", {
         method: "POST",
         headers,
-        body: JSON.stringify(makeUpdate(31, "run bash")),
+        body: JSON.stringify(makeUpdate(31, "fetch a web page")),
       }) as unknown as Request,
       env,
       tracker.ctx,
@@ -471,11 +450,10 @@ describe("chat sdk bot", () => {
 
     const output = [...sent, ...edited].join("\n");
     expect(output).toContain("verbose enabled");
-    expect(output).toContain("Tool: bash");
-    expect(output).toContain('printf "hello"');
-    expect(output).toContain("writes: write /tmp/bash-output.txt");
-    expect(output).toContain('result: {"ok":true');
-    expect(output).toContain("Done running bash.");
+    expect(output).toContain("Tool: codemode");
+    expect(output).toContain('fetch("https://example.com/test.json")');
+    expect(output).toContain('"ok":true');
+    expect(output).toContain("Done running web request.");
   });
 
   it("handles status and google connect commands", async () => {
@@ -610,8 +588,20 @@ describe("chat sdk bot", () => {
       {
         stopReason: "toolUse",
         content: [
-          { type: "toolCall", id: "tool-2", name: "list_skills", arguments: {} },
-          { type: "toolCall", id: "tool-3", name: "load_skill", arguments: { name: "google" } },
+          {
+            type: "toolCall",
+            id: "tool-2",
+            name: "codemode",
+            arguments: {
+              code: [
+                "async () => {",
+                "  const catalog = await skills.list({});",
+                '  const loaded = await skills.load({ name: "google" });',
+                "  return { catalog, loaded: loaded.name };",
+                "}",
+              ].join("\n"),
+            },
+          },
         ],
       },
       { stopReason: "endTurn", content: [{ type: "text", text: "Loaded the google skill." }] },
@@ -629,13 +619,14 @@ describe("chat sdk bot", () => {
     await tracker.wait();
 
     const output = [...sent, ...edited].join("\n");
-    expect(output).toContain("Tool: list\\_skills");
-    expect(output).toContain("Tool: load\\_skill");
-    expect(output).toContain("loaded: google");
+    expect(output).toContain("Tool: codemode");
+    expect(output).toContain("skills.list");
+    expect(output).toContain('skills.load({ name: "google" })');
+    expect(output).toContain('"loaded":"google"');
     expect(output).toContain("Loaded the google skill.");
   });
 
-  it("manages VFS files and loads a user skill", async () => {
+  it("manages workspace files and loads a user skill", async () => {
     const { env } = createEnv();
     const sent: string[] = [];
     const edited: string[] = [];
@@ -700,26 +691,26 @@ describe("chat sdk bot", () => {
           {
             type: "toolCall",
             id: "tool-4",
-            name: "vfs",
+            name: "codemode",
             arguments: {
-              action: "write",
-              path: "/skills/user/inbox-summary/SKILL.md",
-              mode: "create",
-              content:
-                "---\nname: inbox-summary\ndescription: Summarize inbox messages when asked for email summaries.\n---\n\n# Inbox Summary\n\n1. Load google if needed.\n2. Summarize messages.\n",
+              code: [
+                "async () => {",
+                '  await state.writeFile("/skills/user/inbox-summary/SKILL.md", `---',
+                "name: inbox-summary",
+                "description: Summarize inbox messages when asked for email summaries.",
+                "---",
+                "",
+                "# Inbox Summary",
+                "",
+                "1. Load google if needed.",
+                "2. Summarize messages.",
+                "`);",
+                '  const content = await state.readFile("/skills/user/inbox-summary/SKILL.md");',
+                '  const loaded = await skills.load({ name: "inbox-summary" });',
+                "  return { loaded: loaded.name, contentLength: content.length };",
+                "}",
+              ].join("\n"),
             },
-          },
-          {
-            type: "toolCall",
-            id: "tool-5",
-            name: "vfs",
-            arguments: { action: "read", path: "/skills/user/inbox-summary/SKILL.md" },
-          },
-          {
-            type: "toolCall",
-            id: "tool-6",
-            name: "load_skill",
-            arguments: { name: "inbox-summary" },
           },
         ],
       },
@@ -741,9 +732,9 @@ describe("chat sdk bot", () => {
     await tracker.wait();
 
     const output = [...sent, ...edited].join("\n");
-    expect(output).toContain("Tool: vfs");
+    expect(output).toContain("Tool: codemode");
     expect(output).toContain("/skills/user/inbox-summary/SKILL.md");
-    expect(output).toContain("loaded: inbox-summary");
+    expect(output).toContain('"loaded":"inbox-summary"');
     expect(output).toContain("Updated the inbox-summary skill.");
   });
 });

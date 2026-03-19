@@ -7,7 +7,7 @@ export const MEMORY_FACT_TOP_K = 6;
 export const MEMORY_EPISODE_TOP_K = 4;
 export const PROACTIVE_NO_MESSAGE = "NO_MESSAGE";
 export const SYSTEM_PROMPT =
-  "Be concise. Solve tasks with runtime-native tools and sandboxed execute scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If an execute script fails, simplify it immediately instead of retrying the same shape. Use reminders tools to track follow-ups, recurring responsibilities, and commitments you should wake for later.";
+  "Be concise. Solve tasks with runtime-native tools and sandboxed codemode scripts. Finish once you have enough information. Use the simplest reliable path. Keep streaming natural. Do not narrate plans. Before the final answer, avoid filler progress updates like 'let me check' or 'now I will'. Prefer silent tool calls unless a brief user-facing checkpoint is genuinely helpful. If a codemode script fails, simplify it immediately instead of retrying the same shape. Use reminders tools to track follow-ups, recurring responsibilities, and commitments you should wake for later.";
 
 export function buildAgentMessages(
   systemPrompt: string,
@@ -66,7 +66,7 @@ export function shouldEnableAgentTools(userText: string): boolean {
   if (!text) return false;
   if (text.length > 120) return true;
   if (
-    /(gmail|email|calendar|drive|docs|sheets|google|bash|shell|tool|file|skill|workflow|search|find|list|create|update|delete|remind|todo|memory|debug|investigate|compare|code|script|write|read|open|organize|library)/.test(
+    /(gmail|email|calendar|drive|docs|sheets|google|web|http|url|tool|file|skill|workflow|search|find|list|create|update|delete|remind|todo|memory|debug|investigate|compare|code|script|write|read|open|organize|library)/.test(
       text,
     )
   ) {
@@ -92,7 +92,7 @@ export function inferImplicitSkillNames(userText: string): string[] {
     names.add("google");
     names.add("execute-runtime");
   }
-  if (/script|helper|vfs|file/.test(text)) {
+  if (/script|helper|vfs|workspace|file/.test(text)) {
     names.add("vfs");
     names.add("execute-runtime");
   }
@@ -104,29 +104,29 @@ export function inferImplicitSkillNames(userText: string): string[] {
 export function renderTaskGuidance(userText: string): string {
   const text = String(userText ?? "").toLowerCase();
   const lines: string[] = [];
-  if (/bash|shell|curl|grep|sed|awk|jq|yq|find|xargs|pipe|regex/.test(text)) {
+  if (/shell|curl|grep|sed|awk|jq|yq|find|xargs|pipe|regex|http|web|url/.test(text)) {
     lines.push(
-      "- Prefer bash for shell pipelines, curl, jq/yq, grep/sed/awk, and file-oriented text processing.",
+      "- Use codemode for file, web, and automation tasks. Prefer fetch() for web requests and state.* for workspace operations.",
     );
     lines.push(
-      "- Prefer execute only when the task needs JavaScript, google.execute, memory.*, or fs.* runtime work.",
+      "- Available namespaces inside codemode: state.*, memory.*, google.*, reminders.*, and skills.*.",
     );
   }
   if (/gmail|email|inbox/.test(text)) {
-    lines.push("- For Gmail summaries, use at most one google.execute call per execute run.");
+    lines.push("- For Gmail summaries, use at most one google.execute call per codemode run.");
     lines.push(
-      "- Good pattern: one execute run to list ids, one execute run per message detail, one final execute run to format a string summary.",
+      "- Good pattern: one codemode run to list ids, one codemode run per message detail, one final codemode run to format a string summary.",
     );
     lines.push(
       "- For detail fetch runs, do not use return JSON.stringify({ ... }). Assign fields to const vars and return a plain string.",
     );
     lines.push(
-      "- If one execute script fails, rewrite it to the simplest plain-string form on the next try.",
+      "- If one codemode script fails, rewrite it to the simplest plain-string form on the next try.",
     );
   }
   if (/calendar/.test(text)) {
     lines.push(
-      "- For Calendar tasks, prefer one focused execute run per API step and return a final string summary.",
+      "- For Calendar tasks, prefer one focused codemode run per API step and return a final string summary.",
     );
   }
   return lines.join("\n");

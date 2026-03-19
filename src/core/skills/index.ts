@@ -10,34 +10,30 @@ const BUILTIN_SKILLS = [
   {
     name: "execute-runtime",
     description:
-      "Sandboxed execute runtime rules and patterns. Use for execute scripts, async returns, and non-Node constraints.",
-    content: `# Execute Runtime
+      "Sandboxed codemode runtime rules and patterns. Use for codemode scripts, async returns, and non-Node constraints.",
+    content: `# Codemode Runtime
 
-Use this skill when writing or fixing execute scripts.
+Use this skill when writing or fixing codemode scripts.
 
 Rules:
 - The runtime is a sandboxed Worker, not Node.js.
-- Use only built-in runtime globals and host APIs.
+- Use only built-in runtime globals, fetch, and the provided namespaces.
 - Do not use require(), fs from Node, process, Buffer, or googleapis imports.
 - If a script uses await or multiple statements, explicitly return the final value.
-- VFS is file storage exposed through fs.read/fs.write/fs.list/fs.remove only.
-- For repeated logic, keep code inline or save data in VFS and read it explicitly when needed.
+- Files are exposed through state.*.
+- Prefer state.* for workspace operations and fetch() for general web access.
 - When formatting user-facing summaries, prefer simple string concatenation over large template literals.
 
 Patterns:
 
 ~~~js
-const result = await fetch('https://example.com').then((r) => r.text());
+const result = await fetch("https://example.com").then((r) => r.text());
 return result;
 ~~~
 
 ~~~js
-await fs.write({
-  path: '/tmp/example.txt',
-  content: 'hello',
-  overwrite: true,
-});
-return await fs.read({ path: '/tmp/example.txt' });
+await state.writeFile("/tmp/example.txt", "hello");
+return await state.readFile("/tmp/example.txt");
 ~~~
 `,
   },
@@ -53,7 +49,7 @@ Rules:
 - Use the built-in global google.
 - Call google.execute with only: service, version, method, params, body.
 - Never use endpoint.
-- Prefer reusable snippets under /scripts/google/... for repeatable workflows.
+- Prefer reusable snippets under /scripts/google/... for repeatable workflows saved through state.*.
 - For multi-step flows, keep each execute run small and copy in only the helper logic you need.
 - For inbox summaries, fetch the list first, then fetch each message with format: 'metadata' and metadataHeaders: ['From', 'Subject', 'Date'].
 - For user-facing summaries, return one final formatted string instead of a raw array when possible.
@@ -115,31 +111,29 @@ return events.result?.items || [];
   {
     name: "vfs",
     description:
-      "VFS file rules for scripts, skills, and reusable artifacts. Use for fs.read/fs.write/fs.list/fs.remove patterns.",
-    content: `# VFS
+      "Workspace file rules for scripts, skills, and reusable artifacts. Use for state.* file operations.",
+    content: `# Workspace Files
 
 Use this skill when reading, writing, listing, or deleting runtime files.
 
 Rules:
-- VFS paths must be absolute, like /scripts/google/gmail.js.
-- Prefer the vfs tool for direct file access; use fs.* inside execute only when the running script itself needs file access.
-- Use fs.write with an object payload: path, content, overwrite.
-- Files stored in VFS are data/files, not runtime modules.
+- Paths must be absolute, like /scripts/google/gmail.js.
+- Use state.readFile/state.writeFile/state.glob/state.find for workspace access.
+- Files stored in the workspace are data/files, not runtime modules.
 - System skills under /skills/system/... are read-only.
 - User-created skills belong under /skills/user/<name>/SKILL.md.
 
 Examples:
 
 ~~~js
-await fs.write({
-  path: '/scripts/google/gmail.js',
-  content: "export async function run(input) { return input; }",
-  overwrite: true,
-});
+await state.writeFile(
+  "/scripts/google/gmail.js",
+  "export async function run(input) { return input; }",
+);
 ~~~
 
 ~~~js
-const files = await fs.list({ prefix: '/scripts/google' });
+const files = await state.glob("/scripts/google/**/*");
 return files;
 ~~~
 `,
@@ -172,7 +166,7 @@ return await memory.find({ query: 'recent inbox summary labels' });
   {
     name: "skill-authoring",
     description:
-      "Create concise user skills in VFS. Use when a reusable workflow should become a skill.",
+      "Create concise user skills in the workspace. Use when a reusable workflow should become a skill.",
     content: `# Skill Authoring
 
 Use this skill when creating or refining user skills.

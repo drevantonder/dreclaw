@@ -1,13 +1,11 @@
+import { DynamicWorkerExecutor } from "@cloudflare/codemode";
+import { createCodeTool } from "@cloudflare/codemode/ai";
+import { stateToolsFromBackend } from "@cloudflare/shell/workers";
 import { tool } from "ai";
 import { z } from "zod";
-import { executeBash } from "../../tools/bash";
-import {
-  executeCode,
-  getCodeExecutionConfig,
-  type ExecuteHostBinding,
-} from "../../tools/code-exec";
 import { getRemindersPlugin } from "../../../plugins/reminders";
 import type { RuntimeDeps } from "../../app/types";
+import { createRunCoordinator } from "../../loop/run";
 import { isRunCancelledError } from "../lib/errors";
 import {
   compactErrorMessage,
@@ -15,8 +13,8 @@ import {
   type ToolTrace,
   type ToolTracer,
 } from "./tracing";
+import type { MemoryGateway } from "../adapters/memory";
 import type { WorkspaceGateway } from "../adapters/workspace";
-import { createRunCoordinator } from "../../loop/run";
 
 const scheduleSchema = z.discriminatedUnion("type", [
   z.object({
@@ -36,12 +34,29 @@ const scheduleSchema = z.discriminatedUnion("type", [
 export interface AgentToolsDeps {
   runs: ReturnType<typeof createRunCoordinator>;
   workspaceGateway: WorkspaceGateway;
+  memoryGateway: MemoryGateway;
+  googlePlugin?: {
+    execute?: (
+      payload: {
+        service?: string;
+        version?: string;
+        method?: string;
+        params?: Record<string, unknown>;
+        body?: unknown;
+      },
+      options: { allowedServices: string[]; timeoutMs: number },
+    ) => Promise<unknown>;
+  } | null;
   reminders: ReturnType<typeof getRemindersPlugin>;
-  getCodeExecutionConfig: () => ReturnType<typeof getCodeExecutionConfig>;
-  createExecuteHostBinding: (params: {
-    threadId: string;
-    chatId: number;
-  }) => ExecuteHostBinding | null;
+  getCodeExecutionConfig: () => {
+    codeExecEnabled: boolean;
+    netFetchEnabled: boolean;
+    limits: {
+      execTimeoutMs: number;
+      execMaxOutputBytes: number;
+      netRequestTimeoutMs: number;
+    };
+  };
   loader: RuntimeDeps["LOADER"] | null | undefined;
 }
 
@@ -81,126 +96,157 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
       };
       params.toolTraces.push(trace);
       await params.tracer.onToolResult(trace);
-      return { ok: false, error: trace.error } as T;
+      throw error;
     }
   };
 
-  return {
-    vfs: tool({
-      description:
-        "Manage VFS files for scripts and user skills. Use this to list, read, write, patch, and delete files when file access is needed.",
-      inputSchema: z.discriminatedUnion("action", [
-        z.object({
-          action: z.literal("list"),
-          prefix: z.string().optional(),
-          limit: z.number().int().min(1).max(200).optional(),
+  const config = deps.getCodeExecutionConfig();
+  const globalOutbound = config.netFetchEnabled
+    ? ({ fetch: globalThis.fetch.bind(globalThis) } as never)
+    : null;
+  const executor = new DynamicWorkerExecutor({
+    loader: deps.loader as never,
+    timeout: config.limits.execTimeoutMs,
+    globalOutbound,
+  } as never);
+
+  const stateWrites: string[] = [];
+  const stateProvider = stateToolsFromBackend(
+    deps.workspaceGateway.createStateBackend(stateWrites),
+  );
+  const memoryProvider = {
+    name: "memory",
+    tools: {
+      find: tool({
+        description: "Find durable memories relevant to a query.",
+        inputSchema: z.object({
+          query: z.string().default(""),
+          topK: z.number().int().min(1).max(20).optional(),
         }),
-        z.object({
-          action: z.literal("read"),
-          path: z.string(),
-          startLine: z.number().int().min(1).optional(),
-          endLine: z.number().int().min(1).optional(),
+        execute: async (input) =>
+          deps.memoryGateway.find({ chatId: params.chatId, payload: input }),
+      }),
+      save: tool({
+        description: "Save a durable memory fact, preference, or goal.",
+        inputSchema: z.object({
+          text: z.string(),
+          kind: z.enum(["preference", "fact", "goal", "identity"]).optional(),
+          confidence: z.number().min(0).max(1).optional(),
         }),
-        z.object({
-          action: z.literal("write"),
-          path: z.string(),
-          content: z.string(),
-          mode: z.enum(["create", "overwrite"]).default("overwrite"),
+        execute: async (input) =>
+          deps.memoryGateway.save({ chatId: params.chatId, payload: input }),
+      }),
+      remove: tool({
+        description: "Remove a stored memory by id or matching text target.",
+        inputSchema: z.object({ target: z.string() }),
+        execute: async (input) =>
+          deps.memoryGateway.remove({ chatId: params.chatId, payload: input }),
+      }),
+    },
+  } as const;
+  const googleProvider = {
+    name: "google",
+    tools: {
+      execute: tool({
+        description: "Run an allowed Google API request.",
+        inputSchema: z.object({
+          service: z.string().optional(),
+          version: z.string().optional(),
+          method: z.string().optional(),
+          params: z.record(z.string(), z.unknown()).optional(),
+          body: z.unknown().optional(),
         }),
-        z.object({
-          action: z.literal("patch"),
-          path: z.string(),
-          search: z.string(),
-          replace: z.string(),
-          replaceAll: z.boolean().optional(),
+        execute: async (input) => {
+          if (!deps.googlePlugin?.execute) throw new Error("GOOGLE_PLUGIN_UNAVAILABLE");
+          return deps.googlePlugin.execute(input, {
+            allowedServices: ["gmail", "drive", "sheets", "docs", "calendar"],
+            timeoutMs: config.limits.netRequestTimeoutMs,
+          });
+        },
+      }),
+    },
+  } as const;
+  const remindersProvider = {
+    name: "reminders",
+    tools: {
+      query: tool({
+        description:
+          "Query the assistant's internal reminders of follow-ups, recurring responsibilities, and wake-ups.",
+        inputSchema: z.object({
+          filter: z
+            .object({
+              status: z.enum(["open", "done", "cancelled"]).optional(),
+              kind: z.string().optional(),
+              text: z.string().optional(),
+              dueBefore: z.string().optional(),
+              sourceChatId: z.number().int().optional(),
+            })
+            .optional(),
+          limit: z.number().int().min(1).max(50).optional(),
         }),
-        z.object({ action: z.literal("delete"), path: z.string() }),
-      ]),
-      execute: async (input) => {
-        const writes: string[] = [];
-        return runTool(
-          "vfs",
-          input as Record<string, unknown>,
-          async () => {
-            const workspace = deps.workspaceGateway.getWorkspace();
-            switch (input.action) {
-              case "list": {
-                const prefix = input.prefix || "/";
-                const limit = input.limit ?? 50;
-                const paths = await workspace.listFiles(prefix, limit);
-                return { prefix: workspace.normalizePath(prefix), paths };
-              }
-              case "read": {
-                const content = await workspace.readFile(input.path);
-                if (content === null) throw new Error(`ENOENT: ${input.path}`);
-                return {
-                  path: workspace.normalizePath(input.path),
-                  ...sliceVfsContent(content, input.startLine, input.endLine),
-                };
-              }
-              case "write": {
-                const result = await deps.workspaceGateway.writeFile(
-                  input.path,
-                  input.content,
-                  input.mode === "overwrite",
-                  writes,
-                );
-                if (!result.ok) throw new Error(result.code);
-                return {
-                  path: result.path,
-                  mode: input.mode,
-                  sizeBytes: new TextEncoder().encode(input.content).byteLength,
-                  lines: countLines(input.content),
-                };
-              }
-              case "patch": {
-                const current = await workspace.readFile(input.path);
-                if (current === null) throw new Error(`ENOENT: ${input.path}`);
-                const patched = patchVfsContent(
-                  current,
-                  input.search,
-                  input.replace,
-                  Boolean(input.replaceAll),
-                );
-                const result = await deps.workspaceGateway.writeFile(
-                  input.path,
-                  patched.content,
-                  true,
-                  writes,
-                );
-                if (!result.ok) throw new Error(result.code);
-                return {
-                  path: result.path,
-                  replacements: patched.replacements,
-                  ...sliceVfsContent(patched.content),
-                };
-              }
-              case "delete": {
-                const deleted = await deps.workspaceGateway.deleteFile(input.path, writes);
-                if (!deleted) throw new Error(`ENOENT: ${input.path}`);
-                return { path: workspace.normalizePath(input.path), deleted: true };
-              }
-            }
-          },
-          writes,
-        );
-      },
-    }),
-    list_skills: tool({
-      description: "List available built-in and user skills by name and description",
-      inputSchema: z.object({}),
-      execute: async () =>
-        runTool("list_skills", {}, async () => ({
-          skills: await deps.workspaceGateway.listSkills(),
-        })),
-    }),
-    load_skill: tool({
-      description: "Load full instructions for a named skill for the current turn",
-      inputSchema: z.object({ name: z.string() }),
-      execute: async (input) =>
-        runTool("load_skill", input as Record<string, unknown>, async () => {
-          const skill = await deps.workspaceGateway.getWorkspace().loadSkill(input.name);
-          if (!skill) throw new Error(`SKILL_NOT_FOUND: ${input.name}`);
+        execute: async (input) => ({
+          items: await deps.reminders.queryReminders(input.filter, input.limit ?? 20),
+        }),
+      }),
+      update: tool({
+        description:
+          "Create or update the assistant's internal reminders. Use this to track follow-ups, reschedule wakes, snooze items, or mark them complete.",
+        inputSchema: z.discriminatedUnion("action", [
+          z.object({
+            action: z.literal("create"),
+            item: z.object({
+              kind: z.string().optional(),
+              title: z.string(),
+              notes: z.string().optional(),
+              priority: z.number().int().min(1).max(5).optional(),
+              nextWakeAt: z.string().nullable().optional(),
+              schedule: scheduleSchema.optional(),
+              sourceChatId: z.number().int().nullable().optional(),
+            }),
+          }),
+          z.object({
+            action: z.literal("patch"),
+            itemId: z.string(),
+            patch: z.object({
+              kind: z.string().optional(),
+              title: z.string().optional(),
+              notes: z.string().optional(),
+              priority: z.number().int().min(1).max(5).optional(),
+              nextWakeAt: z.string().nullable().optional(),
+              schedule: scheduleSchema.nullable().optional(),
+              sourceChatId: z.number().int().nullable().optional(),
+              status: z.enum(["open", "done", "cancelled"]).optional(),
+            }),
+          }),
+          z.object({ action: z.literal("complete"), itemId: z.string() }),
+          z.object({ action: z.literal("cancel"), itemId: z.string() }),
+          z.object({ action: z.literal("snooze"), itemId: z.string(), nextWakeAt: z.string() }),
+          z.object({
+            action: z.literal("reschedule"),
+            itemId: z.string(),
+            nextWakeAt: z.string(),
+          }),
+          z.object({ action: z.literal("append_note"), itemId: z.string(), note: z.string() }),
+        ]),
+        execute: async (input) =>
+          deps.reminders.updateReminder(input, { sourceChatId: params.chatId }),
+      }),
+    },
+  } as const;
+  const skillsProvider = {
+    name: "skills",
+    tools: {
+      list: tool({
+        description: "List available built-in and user skills by name and description.",
+        inputSchema: z.object({}),
+        execute: async () => ({ skills: await deps.workspaceGateway.listSkills() }),
+      }),
+      load: tool({
+        description: "Load full instructions for a named skill.",
+        inputSchema: z.object({ name: z.string() }),
+        execute: async ({ name }) => {
+          const [skill] = await deps.workspaceGateway.getLoadedSkills([name]);
+          if (!skill) throw new Error(`SKILL_NOT_FOUND: ${name}`);
           return {
             name: skill.name,
             description: skill.description,
@@ -208,167 +254,50 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
             path: skill.path,
             content: skill.content,
           };
-        }),
-    }),
-    reminders_query: tool({
-      description:
-        "Query the assistant's internal reminders of follow-ups, recurring responsibilities, and wake-ups.",
-      inputSchema: z.object({
-        filter: z
-          .object({
-            status: z.enum(["open", "done", "cancelled"]).optional(),
-            kind: z.string().optional(),
-            text: z.string().optional(),
-            dueBefore: z.string().optional(),
-            sourceChatId: z.number().int().optional(),
-          })
-          .optional(),
-        limit: z.number().int().min(1).max(50).optional(),
+        },
       }),
-      execute: async (input) =>
-        runTool("reminders_query", input as Record<string, unknown>, async () => ({
-          items: await deps.reminders.queryReminders(input.filter, input.limit ?? 20),
-        })),
-    }),
-    reminders_update: tool({
-      description:
-        "Create or update the assistant's internal reminders. Use this to track follow-ups, reschedule wakes, snooze items, or mark them complete.",
-      inputSchema: z.discriminatedUnion("action", [
-        z.object({
-          action: z.literal("create"),
-          item: z.object({
-            kind: z.string().optional(),
-            title: z.string(),
-            notes: z.string().optional(),
-            priority: z.number().int().min(1).max(5).optional(),
-            nextWakeAt: z.string().nullable().optional(),
-            schedule: scheduleSchema.optional(),
-            sourceChatId: z.number().int().nullable().optional(),
-          }),
-        }),
-        z.object({
-          action: z.literal("patch"),
-          itemId: z.string(),
-          patch: z.object({
-            kind: z.string().optional(),
-            title: z.string().optional(),
-            notes: z.string().optional(),
-            priority: z.number().int().min(1).max(5).optional(),
-            nextWakeAt: z.string().nullable().optional(),
-            schedule: scheduleSchema.nullable().optional(),
-            sourceChatId: z.number().int().nullable().optional(),
-            status: z.enum(["open", "done", "cancelled"]).optional(),
-          }),
-        }),
-        z.object({ action: z.literal("complete"), itemId: z.string() }),
-        z.object({ action: z.literal("cancel"), itemId: z.string() }),
-        z.object({ action: z.literal("snooze"), itemId: z.string(), nextWakeAt: z.string() }),
-        z.object({ action: z.literal("reschedule"), itemId: z.string(), nextWakeAt: z.string() }),
-        z.object({ action: z.literal("append_note"), itemId: z.string(), note: z.string() }),
-      ]),
-      execute: async (input) =>
-        runTool("reminders_update", input as Record<string, unknown>, async () =>
-          deps.reminders.updateReminder(input, { sourceChatId: params.chatId }),
+    },
+  } as const;
+
+  const codemode = createCodeTool({
+    tools: [stateProvider, memoryProvider, googleProvider, remindersProvider, skillsProvider],
+    executor,
+    description: [
+      "Execute JavaScript to achieve the goal.",
+      "",
+      "Available namespaces:",
+      "{{types}}",
+      "",
+      "Also available:",
+      "- Standard fetch(input, init) with full outbound web access.",
+      "- console.log / console.warn / console.error.",
+      "",
+      "Write an async arrow function in JavaScript that returns the final result.",
+      "Do not use TypeScript syntax.",
+      "Prefer state.* for file and workspace operations.",
+      "Use memory.*, google.execute(...), reminders.*, and skills.* when needed.",
+    ].join("\n"),
+  } as never);
+  const executeCodemode = (
+    codemode.execute as
+      | ((input: { code: string }, options?: unknown) => Promise<unknown>)
+      | undefined
+  )?.bind(codemode);
+
+  return {
+    codemode: {
+      ...codemode,
+      execute: async (input: { code: string }) =>
+        runTool(
+          "codemode",
+          input as Record<string, unknown>,
+          async () => {
+            stateWrites.length = 0;
+            if (!executeCodemode) throw new Error("CODEMODE_EXECUTE_UNAVAILABLE");
+            return executeCodemode(input, undefined);
+          },
+          stateWrites,
         ),
-    }),
-    bash: tool({
-      description:
-        "Run bash commands in a sandboxed shell with core Unix tools, VFS-backed files, and full network access via curl. Use this for shell/text/file/network tasks. Use execute instead for JavaScript, google.execute, memory.*, or fs.* runtime work.",
-      inputSchema: z.object({
-        command: z.string(),
-        cwd: z.string().optional(),
-        stdin: z.string().optional(),
-      }),
-      execute: async (input) => {
-        const writes: string[] = [];
-        return runTool(
-          "bash",
-          input as Record<string, unknown>,
-          async () =>
-            executeBash(
-              { command: input.command, cwd: input.cwd, stdin: input.stdin },
-              {
-                config: {
-                  execMaxOutputBytes: deps.getCodeExecutionConfig().limits.execMaxOutputBytes,
-                  netRequestTimeoutMs: deps.getCodeExecutionConfig().limits.netRequestTimeoutMs,
-                  netMaxResponseBytes: deps.getCodeExecutionConfig().limits.netMaxResponseBytes,
-                  netMaxRedirects: deps.getCodeExecutionConfig().limits.netMaxRedirects,
-                  vfsMaxFiles: deps.getCodeExecutionConfig().limits.vfsMaxFiles,
-                },
-                vfs: deps.workspaceGateway.createVfsAdapter(writes),
-              },
-            ),
-          writes,
-        );
-      },
-    }),
-    execute: tool({
-      description:
-        "Run JavaScript in a sandboxed Worker runtime with async/await, fetch, fs.read/fs.write/fs.list/fs.remove, memory.*, and built-in global `google`. Return the final value explicitly. VFS is file storage exposed through fs.* only. For repeated logic, keep code inline or copy in the small helper you need. For user-facing report tasks, prefer returning a final string summary. Load relevant skills first for specialized guidance.",
-      inputSchema: z.object({ code: z.string(), input: z.unknown().optional() }),
-      execute: async (input) => {
-        const writes: string[] = [];
-        return runTool(
-          "execute",
-          input as Record<string, unknown>,
-          async () =>
-            executeCode(
-              { code: input.code, input: input.input },
-              {
-                config: deps.getCodeExecutionConfig(),
-                loader: deps.loader ?? null,
-                host: deps.createExecuteHostBinding({
-                  threadId: params.threadId,
-                  chatId: params.chatId,
-                }),
-              },
-            ),
-          writes,
-        );
-      },
-    }),
+    },
   };
-}
-
-export function sliceVfsContent(content: string, startLine?: number, endLine?: number) {
-  const lines = content.split("\n");
-  const start = Math.max(1, Math.min(lines.length || 1, startLine ?? 1));
-  const end = Math.max(start, Math.min(lines.length || start, endLine ?? lines.length));
-  return {
-    content: lines.slice(start - 1, end).join("\n"),
-    totalLines: lines.length,
-    startLine: start,
-    endLine: end,
-  };
-}
-
-export function patchVfsContent(
-  content: string,
-  search: string,
-  replace: string,
-  replaceAll: boolean,
-) {
-  if (!search) throw new Error("PATCH_INVALID: search must be non-empty");
-  const occurrences = countOccurrences(content, search);
-  if (occurrences === 0) throw new Error("PATCH_NOT_FOUND");
-  if (!replaceAll && occurrences > 1) throw new Error("PATCH_AMBIGUOUS");
-  return {
-    content: replaceAll ? content.split(search).join(replace) : content.replace(search, replace),
-    replacements: replaceAll ? occurrences : 1,
-  };
-}
-
-function countOccurrences(content: string, search: string): number {
-  let count = 0;
-  let index = 0;
-  while (true) {
-    index = content.indexOf(search, index);
-    if (index === -1) return count;
-    count += 1;
-    index += Math.max(1, search.length);
-  }
-}
-
-function countLines(content: string): number {
-  return content ? content.split("\n").length : 0;
 }

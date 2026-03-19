@@ -27,7 +27,7 @@ describe("loop prompting", () => {
   });
 
   it("renders task guidance and suppresses proactive NO_MESSAGE replies", () => {
-    expect(renderTaskGuidance("Use bash and grep to inspect logs")).toContain("Prefer bash");
+    expect(renderTaskGuidance("Use bash and grep to inspect logs")).toContain("Use codemode");
     expect(normalizeProactiveMessage("NO_MESSAGE")).toBe(null);
     expect(normalizeProactiveMessage("  Follow up now.  ")).toBe("Follow up now.");
   });

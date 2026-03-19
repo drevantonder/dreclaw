@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import { patchVfsContent } from "../../src/core/runtime/tools/toolbox";
 import {
   redactSensitiveText,
+  renderTraceStart,
   renderToolTranscript,
   truncateForLog,
 } from "../../src/core/runtime/tools/tracing";
@@ -20,12 +20,13 @@ describe("loop tracing and toolbox helpers", () => {
     expect(truncateForLog("a\nb\nc", 4)).toBe("a b...");
   });
 
-  it("patches VFS content and rejects ambiguous replacements", () => {
-    expect(patchVfsContent("hello world", "world", "dreclaw", false)).toEqual({
-      content: "hello dreclaw",
-      replacements: 1,
+  it("renders codemode traces with a code block", () => {
+    const trace = renderTraceStart("codemode", {
+      code: 'async () => {\n  return "ok";\n}',
     });
-    expect(() => patchVfsContent("x x", "x", "y", false)).toThrow("PATCH_AMBIGUOUS");
-    expect(() => patchVfsContent("x", "", "y", false)).toThrow("PATCH_INVALID");
+
+    expect(trace).toContain("Tool: codemode");
+    expect(trace).toContain("```js");
+    expect(trace).toContain('return "ok"');
   });
 });

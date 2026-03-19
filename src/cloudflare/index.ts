@@ -1,7 +1,6 @@
 import { handleHttpRequest, handleScheduled } from "../app/cloudflare";
 import type { Env } from "./env";
 import { ConversationWorkflow } from "./conversation-workflow";
-import { ExecuteHost } from "./execute-host";
 import { RemindersWakeWorkflow } from "./reminders-wake-workflow";
 
 export default {
@@ -17,5 +16,4 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 export { ConversationWorkflow };
-export { ExecuteHost };
 export { RemindersWakeWorkflow };

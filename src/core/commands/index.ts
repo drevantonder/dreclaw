@@ -123,7 +123,9 @@ export async function handleAsyncCommand(params: {
       modelAlias: null,
     });
     await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
-    return { messages: ["Factory reset complete. Conversation, memory, and VFS cleared."] };
+    return {
+      messages: ["Factory reset complete. Conversation, memory, and workspace files cleared."],
+    };
   }
 
   if (lowered === "/verbose") {

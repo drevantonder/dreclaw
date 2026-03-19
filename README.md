@@ -7,7 +7,7 @@
 - Telegram private chat-only, single-user (me)
 - Chat SDK + Telegram adapter runtime
 - Commands: `/help`, `/status`, `/reset`, `/factory-reset`, `/verbose`, `/google ...`
-- Core tools: `search`, `execute`, `bash`
+- Core tools: `search`, `codemode`
 - Persistent memory: D1 episodic/fact memory + Vectorize semantic recall
 - Hybrid memory pipeline: D1 episodic/fact memory + Vectorize semantic recall (Workers AI embeddings)
 - AI SDK provider switch: `opencode`, `opencode-go`, or `workers` (Workers AI)
@@ -20,7 +20,7 @@ flowchart TD
   W --> C[Chat SDK]
   C --> M[Model Loop]
   M --> MM[Memory: episodes/facts]
-  M --> T[Tools: search/execute]
+  M --> T[Tools: search/codemode]
   C --> W --> U
 ```
 
@@ -30,7 +30,7 @@ flowchart TD
 - Agent loop runs on AI SDK `ToolLoopAgent` with runtime-managed memory persistence.
 - OpenCode uses `AI_PROVIDER=opencode` (Zen default URL) or `AI_PROVIDER=opencode-go` (Go default URL).
 - Workers AI runs via `workers-ai-provider` binding (`env.AI`) when `AI_PROVIDER=workers`.
-- Agent can run sandboxed JS with `execute`, and shell commands with `bash`; `search` lists runtime limits/capabilities and installed packages.
+- Agent can run sandboxed JS with `codemode`; `search` lists runtime limits/capabilities and installed packages.
 
 ## Setup
 
@@ -75,8 +75,8 @@ vp run cf:deploy
 - `/help` lists commands.
 - `/status` shows model/provider/memory/google/verbose status.
 - `/reset` clears conversation context only (keeps memory).
-- `/factory-reset` clears conversation, memory, runtime state, and VFS.
-- `/verbose on|off` toggles tool traces, including execute code, writes, and result summaries.
+- `/factory-reset` clears conversation, memory, runtime state, and workspace files.
+- `/verbose on|off` toggles tool traces, including codemode code, writes, and result summaries.
 - `/google connect` starts Google OAuth linking flow.
 - `/google status` shows current Google link status and scopes.
 - `/google disconnect` removes stored Google OAuth token.
@@ -104,12 +104,11 @@ Normal messages stream a single assistant reply.
 - Conversation history and bot state live in Chat SDK thread state backed by D1.
 - Long-term memory facts/episodes live in D1 + Vectorize (`VECTORIZE_MEMORY`) with Workers AI embeddings (`env.AI`).
 - Memory writes are salience-gated and consolidated through reflection.
-- `bash` runs a sandboxed shell with core Unix text/file tools, VFS-backed file persistence, and full `curl` network access.
-- `bash` currently excludes Python and SQLite workflows; use `execute` for JavaScript-native tasks.
-- `execute` runs JavaScript in a sandboxed dynamic Worker and exposes `fetch`, `fs.read/fs.write/fs.list/fs.remove`, `memory.find/save/remove`, and `google.execute`.
-- `execute` uses VFS as a filesystem only; it does not import code from VFS paths.
-- `execute` also exposes `memory.find(query, opts?)`, `memory.save(text, opts?)`, and `memory.remove(target)` for direct memory control.
-- `execute` exposes `google.execute({...})` for Google API calls.
+- `codemode` runs JavaScript in a sandboxed dynamic Worker powered by `@cloudflare/codemode`.
+- Filesystem and workspace state are provided by `@cloudflare/shell` via `state.*`.
+- `codemode` exposes standard `fetch`, `state.*`, `memory.find/save/remove`, `google.execute`, `reminders.query/update`, and `skills.list/load`.
+- Built-in skills live under `/skills/system/*`; user skills live under `/skills/user/*`.
+- Workspace writes are durable and traced through the state backend.
 
 ### Google OAuth setup
 
@@ -119,7 +118,7 @@ Normal messages stream a single assistant reply.
 - Recommended full-access scope set for this project: Gmail (`https://mail.google.com/`), Sheets (`https://www.googleapis.com/auth/spreadsheets`), Docs (`https://www.googleapis.com/auth/documents`), Calendar (`https://www.googleapis.com/auth/calendar`), Drive (`https://www.googleapis.com/auth/drive`).
 - In Telegram, run `/google connect`, open link, approve scopes.
 
-### Google execute examples
+### Google codemode examples
 
 ```js
 const messages = await google.execute({

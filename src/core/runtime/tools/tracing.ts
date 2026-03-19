@@ -63,73 +63,15 @@ export function renderToolTranscript(trace: ToolTrace): string {
 }
 
 export function renderTraceStart(name: string, args: Record<string, unknown>): string {
-  if (name === "load_skill") {
-    const skillName = typeof args.name === "string" ? args.name : serializeUnknown(args.name);
-    return `Tool: ${name}\nname: ${skillName}`;
-  }
-  if (name === "list_skills") return `Tool: ${name}`;
-  if (name === "vfs") {
-    const action = typeof args.action === "string" ? args.action : serializeUnknown(args.action);
-    const path = typeof args.path === "string" ? `\npath: ${args.path}` : "";
-    const prefix = typeof args.prefix === "string" ? `\nprefix: ${args.prefix}` : "";
-    return `Tool: ${name}\naction: ${action}${path}${prefix}`;
-  }
-  if (name === "bash") {
-    const command = typeof args.command === "string" ? args.command : "";
-    const cwd = typeof args.cwd === "string" ? `\ncwd: ${args.cwd}` : "";
-    const stdin =
-      typeof args.stdin === "string" && args.stdin
-        ? `\nstdin: ${redactSensitiveText(args.stdin)}`
-        : "";
-    return `Tool: ${name}\n\n\`\`\`bash\n${command}\n\`\`\`${cwd}${stdin}`;
-  }
-  if (name === "execute") {
+  if (name === "codemode") {
     const code = typeof args.code === "string" ? args.code : "";
-    const input = Object.prototype.hasOwnProperty.call(args, "input")
-      ? `\ninput: ${redactSensitiveText(serializeUnknown(args.input))}`
-      : "";
-    return `Tool: ${name}\n\n\`\`\`js\n${code}\n\`\`\`${input}`;
+    return `Tool: ${name}\n\n\`\`\`js\n${code}\n\`\`\``;
   }
   return `Tool: ${name}\nargs: ${redactSensitiveText(serializeUnknown(args))}`;
 }
 
 export function renderTraceResult(trace: ToolTrace): string {
-  const executeOk =
-    trace.name === "execute" &&
-    trace.output &&
-    typeof trace.output === "object" &&
-    "ok" in (trace.output as Record<string, unknown>)
-      ? Boolean((trace.output as Record<string, unknown>).ok)
-      : trace.ok;
-  const lines = [`Tool result: ${trace.name} ${executeOk ? "ok" : "failed"}`];
-  if (trace.ok && trace.name === "load_skill" && trace.output && typeof trace.output === "object") {
-    const output = trace.output as Record<string, unknown>;
-    lines.push(`loaded: ${serializeUnknown(output.name)}`);
-    lines.push(`scope: ${serializeUnknown(output.scope)}`);
-    lines.push(`path: ${serializeUnknown(output.path)}`);
-    return lines.join("\n");
-  }
-  if (
-    trace.ok &&
-    trace.name === "list_skills" &&
-    trace.output &&
-    typeof trace.output === "object"
-  ) {
-    const skills = Array.isArray((trace.output as { skills?: unknown[] }).skills)
-      ? ((trace.output as { skills: unknown[] }).skills as unknown[])
-      : [];
-    lines.push(`skills: ${skills.length}`);
-    lines.push(
-      `result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 600))}`,
-    );
-    return lines.join("\n");
-  }
-  if (trace.ok && trace.name === "vfs") {
-    lines.push(
-      `result: ${redactSensitiveText(truncateForLog(serializeUnknown(trace.output), 1200))}`,
-    );
-    return lines.join("\n");
-  }
+  const lines = [`Tool result: ${trace.name} ${trace.ok ? "ok" : "failed"}`];
   if (trace.writes?.length) lines.push(`writes: ${trace.writes.join(", ")}`);
   if (trace.ok) {
     lines.push(
