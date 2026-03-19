@@ -1,6 +1,9 @@
 import type { Thread } from "chat";
 import { getPersistedThreadControls } from "../../loop/repo";
 import type { BotThreadState } from "../../loop/state";
+import { withTimeout } from "../../../utils/async";
+
+const TRACE_POST_TIMEOUT_MS = 5_000;
 
 export type ToolTrace = {
   name: string;
@@ -27,14 +30,22 @@ export class VerboseTracer implements ToolTracer {
     return Boolean(controls?.verbose);
   }
 
+  private async postMarkdown(markdown: string): Promise<void> {
+    await withTimeout(
+      this.thread.post({ markdown }),
+      TRACE_POST_TIMEOUT_MS,
+      "Verbose trace post timed out",
+    ).catch(() => null);
+  }
+
   async onToolStart(name: string, args: Record<string, unknown>): Promise<void> {
     if (!(await this.isEnabled())) return;
-    await this.thread.post({ markdown: renderTraceStart(name, args) });
+    await this.postMarkdown(renderTraceStart(name, args));
   }
 
   async onToolResult(trace: ToolTrace): Promise<void> {
     if (!(await this.isEnabled())) return;
-    await this.thread.post({ markdown: renderTraceResult(trace) });
+    await this.postMarkdown(renderTraceResult(trace));
   }
 }
 
