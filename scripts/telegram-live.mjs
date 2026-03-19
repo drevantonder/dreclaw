@@ -12,6 +12,7 @@ const DEFAULT_POLL_MS = 800;
 const DEFAULT_QUIET_MS = 1200;
 const TRACE_QUIET_MS = 4000;
 const AUTH_STATE_PATH = path.join(process.cwd(), ".telegram-test-auth.json");
+const LIVE_LOCK_PATH = path.join(process.cwd(), ".telegram-live.lock");
 
 function parseArgs(argv) {
   const args = {
@@ -21,6 +22,7 @@ function parseArgs(argv) {
     pollMs: DEFAULT_POLL_MS,
     expect: [],
     reject: [],
+    finalOnly: false,
     json: false,
     loginOnly: false,
     withModel: "",
@@ -38,6 +40,7 @@ function parseArgs(argv) {
     else if (part === "--poll-ms") args.pollMs = Number(argv[++i] ?? args.pollMs);
     else if (part === "--expect") args.expect.push(argv[++i] ?? "");
     else if (part === "--reject") args.reject.push(argv[++i] ?? "");
+    else if (part === "--final-only") args.finalOnly = true;
     else if (part === "--json") args.json = true;
     else if (part === "--login") args.loginOnly = true;
     else if (part === "--with-model") args.withModel = argv[++i] ?? "";
@@ -69,6 +72,7 @@ function printHelp() {
       "  --poll-ms <n>",
       "  --expect <text>   Can repeat",
       "  --reject <text>   Can repeat",
+      "  --final-only",
       "  --json",
       "  --login           Login/update session only",
       "  --with-model <alias>",
@@ -96,6 +100,32 @@ function fail(message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function acquireLiveLock() {
+  try {
+    const fd = fs.openSync(LIVE_LOCK_PATH, "wx");
+    fs.writeFileSync(
+      fd,
+      `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2)}\n`,
+    );
+    return () => {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+      try {
+        fs.unlinkSync(LIVE_LOCK_PATH);
+      } catch {}
+    };
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      const details = fs.existsSync(LIVE_LOCK_PATH) ? fs.readFileSync(LIVE_LOCK_PATH, "utf8") : "";
+      fail(
+        `Another telegram-live session is already running.${details ? `\n${details.trim()}` : ""}`,
+      );
+    }
+    throw error;
+  }
 }
 
 function normalizeUsername(value) {
@@ -249,13 +279,8 @@ async function runPrompt(client, args) {
   if (!args.prompt.trim()) fail("Missing prompt. Pass --prompt or --scenario");
 
   const entity = await client.getEntity(bot);
-  const beforeMessages = await client.getMessages(entity, { limit: 10 });
-  const baselineId = beforeMessages.reduce(
-    (max, message) => Math.max(max, Number(message?.id ?? 0)),
-    0,
-  );
-
-  await client.sendMessage(entity, { message: args.prompt });
+  const sentMessage = await client.sendMessage(entity, { message: args.prompt });
+  const sentMessageId = Number(sentMessage?.id ?? 0);
 
   const deadline = Date.now() + args.timeoutMs;
   let transcript = [];
@@ -264,24 +289,40 @@ async function runPrompt(client, args) {
 
   while (Date.now() < deadline) {
     const messages = await client.getMessages(entity, { limit: 20 });
-    transcript = pickReply(messages, baselineId);
+    transcript = pickReply(messages, sentMessageId - 1);
     const signature = JSON.stringify(transcript);
     if (signature !== lastTranscriptSignature) {
       lastTranscriptSignature = signature;
       lastTranscriptChangeAt = Date.now();
     }
 
+    const extraOutgoing = transcript.find(
+      (message) => message.direction === "me" && message.id > sentMessageId,
+    );
+    if (extraOutgoing) {
+      throw new Error(
+        `Detected another outbound message in the same chat while waiting for a live reply: ${extraOutgoing.text}`,
+      );
+    }
+
     const botReplies = transcript.filter((message) => message.direction === "bot");
     const nonThinkingReplies = botReplies.filter(
       (message) => message.text && message.text !== "Thinking...",
     );
+    const completionReplies = nonThinkingReplies.filter((message) => !isTraceMessage(message));
 
     if (nonThinkingReplies.length) {
       const quietMs = hasTraceMessages(nonThinkingReplies) ? TRACE_QUIET_MS : DEFAULT_QUIET_MS;
       if (Date.now() - lastTranscriptChangeAt >= quietMs && !hasPendingToolTrace(botReplies)) {
-        const expectationsMet = transcriptMatches(botReplies, args.expect, args.reject);
+        const targetReplies =
+          args.finalOnly || hasTraceMessages(nonThinkingReplies) ? completionReplies : botReplies;
+        if (!targetReplies.length) {
+          await sleep(args.pollMs);
+          continue;
+        }
+        const expectationsMet = transcriptMatches(targetReplies, args.expect, args.reject);
         if (!args.expect.length || expectationsMet) {
-          assertTranscript(botReplies, args.expect, args.reject);
+          assertTranscript(targetReplies, args.expect, args.reject);
           return { ok: true, bot, prompt: args.prompt, transcript };
         }
       }
@@ -325,6 +366,10 @@ function hasPendingToolTrace(transcript) {
   return started > finished;
 }
 
+function isTraceMessage(message) {
+  return message.text.startsWith("Tool: ") || message.text.startsWith("Tool result: ");
+}
+
 function extractCurrentAlias(transcript) {
   const joined = transcript.map((item) => item.text).join("\n");
   const match = joined.match(/current:\s*([a-z0-9-]+)/i);
@@ -360,6 +405,7 @@ function printResult(result, json) {
 async function main() {
   loadDotEnvIntoProcess(path.join(process.cwd(), ".env"));
   const args = parseArgs(process.argv.slice(2));
+  const releaseLock = acquireLiveLock();
   const client = await connectClient(args);
   let restoreAlias = "";
   try {
@@ -392,6 +438,7 @@ async function main() {
       }
     }
     await client.destroy();
+    releaseLock();
   }
 }
 
