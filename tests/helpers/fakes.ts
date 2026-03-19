@@ -14,14 +14,12 @@ export class FakeD1 {
   readonly telegramUpdates = new Set<number>();
   readonly oauthStates = new Map<string, Record<string, unknown>>();
   readonly oauthTokens = new Map<string, Record<string, unknown>>();
-  readonly vfsEntries = new Map<string, Record<string, unknown>>();
   readonly subscriptions = new Map<string, Record<string, unknown>>();
   readonly kv = new Map<string, Record<string, unknown>>();
   readonly locks = new Map<string, Record<string, unknown>>();
   readonly remindersProfile = new Map<number, Record<string, unknown>>();
   readonly remindersItems = new Map<string, Record<string, unknown>>();
   readonly reminderRuns = new Map<string, Record<string, unknown>>();
-  vfsRevision = 0;
 
   prepare(sql: string) {
     return {
@@ -254,51 +252,6 @@ export class FakeD1 {
       this.locks.delete(String(args[0]));
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("INSERT INTO vfs_entries")) {
-      this.vfsEntries.set(String(args[0]), {
-        path: String(args[0]),
-        content: String(args[1]),
-        size_bytes: Number(args[2]),
-        sha256: String(args[3]),
-        version: Number(args[4]),
-        created_at: String(args[5]),
-        updated_at: String(args[6]),
-        deleted_at: null,
-      });
-      return { meta: { changes: 1 } };
-    }
-    if (
-      sql.includes(
-        "UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE path = ?",
-      )
-    ) {
-      const row = this.vfsEntries.get(String(args[2]));
-      if (!row || row.deleted_at) return { meta: { changes: 0 } };
-      row.deleted_at = String(args[0]);
-      row.updated_at = String(args[1]);
-      row.version = Number(row.version ?? 0) + 1;
-      return { meta: { changes: 1 } };
-    }
-    if (
-      sql.includes(
-        "UPDATE vfs_entries SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE deleted_at IS NULL",
-      )
-    ) {
-      let changes = 0;
-      for (const row of this.vfsEntries.values()) {
-        if (row.deleted_at) continue;
-        row.deleted_at = String(args[0]);
-        row.updated_at = String(args[1]);
-        row.version = Number(row.version ?? 0) + 1;
-        changes += 1;
-      }
-      return { meta: { changes } };
-    }
-    if (sql.includes("INSERT OR IGNORE INTO vfs_meta")) return { meta: { changes: 1 } };
-    if (sql.includes("UPDATE vfs_meta SET revision = revision + 1")) {
-      this.vfsRevision += 1;
-      return { meta: { changes: 1 } };
-    }
     return { meta: { changes: 0 } };
   }
 
@@ -316,20 +269,6 @@ export class FakeD1 {
       return this.subscriptions.get(String(args[0])) ?? null;
     if (sql.includes("SELECT value_json FROM chat_state_kv"))
       return this.kv.get(String(args[0])) ?? null;
-    if (
-      sql.includes(
-        "SELECT path, content, size_bytes, sha256, version, created_at, updated_at FROM vfs_entries WHERE path = ?",
-      )
-    ) {
-      const row = this.vfsEntries.get(String(args[0]));
-      return !row || row.deleted_at ? null : row;
-    }
-    if (sql.includes("SELECT revision FROM vfs_meta")) return { revision: this.vfsRevision };
-    if (sql.includes("SELECT COUNT(*) AS count FROM vfs_entries")) {
-      return {
-        count: [...this.vfsEntries.values()].filter((row) => row.deleted_at == null).length,
-      };
-    }
     return null;
   }
 
@@ -374,13 +313,6 @@ export class FakeD1 {
         results: [...this.reminderRuns.values()]
           .filter((row) => row.reminder_id === args[0])
           .sort((a, b) => String(b.started_at).localeCompare(String(a.started_at))),
-      };
-    }
-    if (sql.includes("FROM vfs_entries")) {
-      return {
-        results: [...this.vfsEntries.values()].filter(
-          (row) => row.deleted_at === null || row.deleted_at === undefined,
-        ),
       };
     }
     return { results: [] };

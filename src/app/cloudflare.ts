@@ -19,6 +19,7 @@ import { buildRuntimeDeps } from "./deps";
 import { flushTelegramEffects } from "./telegram";
 import { createRunCoordinator } from "../core/loop/run";
 import { createProfiler, parseProfilingEnabled, parseProfilingSampleRate } from "../core/profiling";
+import { getRunTimeoutMs } from "../core/runtime/policy/model";
 
 export async function handleHttpRequest(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
@@ -91,7 +92,10 @@ export async function runConversationWorkflow(
           imageBlocks,
           baseMessages: Array.isArray(messages) ? (messages as any) : undefined,
           isFirstStep: stepIndex === 0,
-          runTimeoutMs: getWorkflowBurstMs(runtimeDeps, stepIndex === 0),
+          runTimeoutMs: Math.max(
+            getWorkflowBurstMs(runtimeDeps, stepIndex === 0),
+            getRunTimeoutMs(message.text.trim()),
+          ),
           profiler,
           stepIndex,
         });

@@ -55,6 +55,7 @@ export interface AgentToolsDeps {
       execTimeoutMs: number;
       execMaxOutputBytes: number;
       netRequestTimeoutMs: number;
+      netMaxResponseBytes: number;
     };
   };
   loader: RuntimeDeps["LOADER"] | null | undefined;
@@ -163,6 +164,50 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
       }),
     },
   } as const;
+  const webProvider = {
+    name: "web",
+    tools: {
+      fetch: tool({
+        description: "Fetch a web URL and return the response body as text or JSON.",
+        inputSchema: z.object({
+          url: z.string().url(),
+          method: z.string().optional(),
+          headers: z.record(z.string(), z.string()).optional(),
+          body: z.string().optional(),
+          responseType: z.enum(["text", "json"]).optional(),
+        }),
+        execute: async (input) => {
+          if (!config.netFetchEnabled) throw new Error("NET_FETCH_DISABLED");
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), config.limits.netRequestTimeoutMs);
+          try {
+            const response = await fetch(input.url, {
+              method: input.method ?? (input.body ? "POST" : "GET"),
+              headers: input.headers,
+              body: input.body,
+              signal: controller.signal,
+            });
+            const text = await response.text();
+            if (new TextEncoder().encode(text).byteLength > config.limits.netMaxResponseBytes) {
+              throw new Error(
+                `NET_RESPONSE_TOO_LARGE: max ${config.limits.netMaxResponseBytes} bytes`,
+              );
+            }
+            const headers = Object.fromEntries(response.headers.entries());
+            return {
+              ok: response.ok,
+              status: response.status,
+              url: response.url,
+              headers,
+              body: (input.responseType ?? "text") === "json" ? JSON.parse(text || "null") : text,
+            };
+          } finally {
+            clearTimeout(timeout);
+          }
+        },
+      }),
+    },
+  } as const;
   const remindersProvider = {
     name: "reminders",
     tools: {
@@ -258,6 +303,7 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
 
   const codemodeProviders = [
     stateProvider,
+    webProvider,
     memoryProvider,
     googleProvider,
     remindersProvider,
@@ -278,6 +324,7 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
       "Write an async arrow function in JavaScript that returns the final result.",
       "Do not use TypeScript syntax.",
       "Prefer state.* for file and workspace operations.",
+      "Use web.fetch(...) for outbound web requests.",
       "Use memory.*, google.execute(...), reminders.*, and skills.* when needed.",
     ].join("\n"),
   } as never);

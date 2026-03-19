@@ -90,11 +90,11 @@ export function inferImplicitSkillNames(userText: string): string[] {
   const names = new Set<string>();
   if (/gmail|email|inbox|calendar|drive|docs|sheets|google/.test(text)) {
     names.add("google");
-    names.add("execute-runtime");
+    names.add("codemode-runtime");
   }
   if (/script|helper|vfs|workspace|file/.test(text)) {
-    names.add("vfs");
-    names.add("execute-runtime");
+    names.add("workspace-files");
+    names.add("codemode-runtime");
   }
   if (/memory|remember|label/.test(text)) names.add("memory");
   if (/skill|workflow/.test(text)) names.add("skill-authoring");
@@ -109,7 +109,7 @@ export function renderTaskGuidance(userText: string): string {
       "- Use codemode for file and automation tasks. Prefer state.* for workspace operations.",
     );
     lines.push(
-      "- Available namespaces inside codemode: state.*, memory.*, google.*, reminders.*, and skills.*.",
+      "- Available namespaces inside codemode: state.*, web.*, memory.*, google.*, reminders.*, and skills.*. Use web.fetch(...) for web requests.",
     );
   }
   if (/gmail|email|inbox/.test(text)) {

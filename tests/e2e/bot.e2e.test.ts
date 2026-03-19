@@ -426,8 +426,8 @@ describe("chat sdk bot", () => {
             arguments: {
               code: [
                 "async () => {",
-                '  const response = await fetch("https://example.com/test.json");',
-                "  return await response.json();",
+                '  const response = await web.fetch({ url: "https://example.com/test.json", responseType: "json" });',
+                "  return response.body;",
                 "}",
               ].join("\n"),
             },
@@ -451,7 +451,9 @@ describe("chat sdk bot", () => {
     const output = [...sent, ...edited].join("\n");
     expect(output).toContain("verbose enabled");
     expect(output).toContain("Tool: codemode");
-    expect(output).toContain('fetch("https://example.com/test.json")');
+    expect(output).toContain(
+      'web.fetch({ url: "https://example.com/test.json", responseType: "json" })',
+    );
     expect(output).toContain('"ok":true');
     expect(output).toContain("Done running web request.");
   });

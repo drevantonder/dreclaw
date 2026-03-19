@@ -13,7 +13,7 @@ import type { ConversationWorkflowPayload, Env } from "../../src/cloudflare/env"
 import { createEnv } from "../helpers/fakes";
 
 describe("run coordinator", () => {
-  it("reports busy state with the existing active/stale thresholds", async () => {
+  it("reports busy state and reconciles stale runs on inspection", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-14T10:00:10.000Z"));
 
@@ -47,12 +47,15 @@ describe("run coordinator", () => {
     });
 
     expect(active.busy).toBe("yes");
-    expect(stale.busy).toBe("stale");
+    expect(stale.busy).toBe("no");
 
     vi.useRealTimers();
   });
 
   it("recovers thread state from persisted controls and workflow status", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-14T10:00:10.000Z"));
+
     const { env } = createEnv();
     const runs = createRunCoordinator(env);
 
@@ -73,6 +76,8 @@ describe("run coordinator", () => {
     expect(state.verbose).toBe(true);
     expect(state.runStatus.running).toBe(true);
     expect(state.runStatus.workflowInstanceId).toBe("wf-123");
+
+    vi.useRealTimers();
   });
 
   it("starts workflow runs through the coordinator boundary", async () => {
@@ -107,6 +112,9 @@ describe("run coordinator", () => {
   });
 
   it("requests stop, terminates workflow, and snapshots final state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-14T10:00:10.000Z"));
+
     const terminate = vi.fn(async () => undefined);
     const { env } = createEnv({
       CONVERSATION_WORKFLOW: {
@@ -141,5 +149,51 @@ describe("run coordinator", () => {
     expect(await getPersistedWorkflowInstanceId(env.DRECLAW_DB, "telegram:777")).toBe(null);
     expect(snapshot?.runStatus.workflowInstanceId).toBe(null);
     expect(snapshot?.runStatus.stoppedAt).toBeTruthy();
+
+    vi.useRealTimers();
+  });
+
+  it("reconciles stale runs and clears abandoned workflow state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-20T10:00:30.000Z"));
+
+    const terminate = vi.fn(async () => undefined);
+    const { env } = createEnv({
+      CONVERSATION_WORKFLOW: {
+        get: vi.fn(async () => ({ terminate })),
+      } as unknown as Env["CONVERSATION_WORKFLOW"],
+    });
+    const runs = createRunCoordinator(env);
+
+    await setPersistedRunStatus(env.DRECLAW_DB, "telegram:777", {
+      running: true,
+      startedAt: "2026-03-20T10:00:00.000Z",
+      lastHeartbeatAt: "2026-03-20T10:00:05.000Z",
+      cancelRequested: false,
+      cancelRequestedAt: null,
+      stoppedAt: null,
+      workflowInstanceId: "wf-stale-1",
+    });
+    await setPersistedWorkflowInstanceId(env.DRECLAW_DB, "telegram:777", "wf-stale-1");
+
+    const inspected = await runs.inspect("telegram:777", normalizeBotThreadState(undefined));
+    const persisted = await getPersistedRunStatus(env.DRECLAW_DB, "telegram:777");
+    const snapshot = await getThreadStateSnapshot<ReturnType<typeof normalizeBotThreadState>>(
+      env.DRECLAW_DB,
+      "telegram:777",
+    );
+
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(inspected.busy).toBe(false);
+    expect(inspected.workflowInstanceId).toBe(null);
+    expect(inspected.runStatus.running).toBe(false);
+    expect(persisted?.running).toBe(false);
+    expect(persisted?.workflowInstanceId).toBe(null);
+    expect(persisted?.stoppedAt).toBeTruthy();
+    expect(await getPersistedWorkflowInstanceId(env.DRECLAW_DB, "telegram:777")).toBe(null);
+    expect(snapshot?.runStatus.running).toBe(false);
+    expect(snapshot?.runStatus.workflowInstanceId).toBe(null);
+
+    vi.useRealTimers();
   });
 });

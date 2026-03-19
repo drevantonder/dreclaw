@@ -21,7 +21,7 @@ export type RuntimeConfig =
       baseUrl: string;
     };
 
-export const DEFAULT_RUN_TIMEOUT_MS = 25_000;
+export const DEFAULT_RUN_TIMEOUT_MS = 40_000;
 
 export function getRuntimeConfig(
   deps: RuntimeDeps,
@@ -152,7 +152,7 @@ export function getMaxOutputTokens(
 export function getRunTimeoutMs(userText: string): number {
   const text = String(userText ?? "").toLowerCase();
   if (/gmail|email|inbox|calendar|drive|docs|sheets|google/.test(text)) {
-    return 22_000;
+    return 45_000;
   }
   return DEFAULT_RUN_TIMEOUT_MS;
 }

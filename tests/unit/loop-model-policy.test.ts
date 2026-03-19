@@ -40,8 +40,8 @@ describe("loop model policy", () => {
   });
 
   it("uses parsing guards for runtime heuristics", () => {
-    expect(getRunTimeoutMs("Summarize my Gmail inbox")).toBe(22_000);
-    expect(getRunTimeoutMs("hello")).toBe(25_000);
+    expect(getRunTimeoutMs("Summarize my Gmail inbox")).toBe(45_000);
+    expect(getRunTimeoutMs("hello")).toBe(40_000);
     expect(getRunSliceSteps("30")).toBe(12);
     expect(getRunSliceSteps("bad")).toBe(4);
     expect(getTypingPulseMs("300")).toBe(2500);

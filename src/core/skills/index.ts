@@ -8,7 +8,7 @@ export interface SkillRecord {
 
 const BUILTIN_SKILLS = [
   {
-    name: "execute-runtime",
+    name: "codemode-runtime",
     description:
       "Sandboxed codemode runtime rules and patterns. Use for codemode scripts, async returns, and non-Node constraints.",
     content: `# Codemode Runtime
@@ -104,7 +104,7 @@ return events.result?.items || [];
 `,
   },
   {
-    name: "vfs",
+    name: "workspace-files",
     description:
       "Workspace file rules for scripts, skills, and reusable artifacts. Use for state.* file operations.",
     content: `# Workspace Files
@@ -203,12 +203,21 @@ const BUILTIN_BY_NAME = new Map<string, SkillRecord>(
   ]),
 );
 
+const LEGACY_SKILL_ALIASES = new Map<string, string>([
+  ["execute-runtime", "codemode-runtime"],
+  ["vfs", "workspace-files"],
+]);
+
 export function listBuiltinSkills(): SkillRecord[] {
   return [...BUILTIN_BY_NAME.values()].map((skill) => ({ ...skill }));
 }
 
 export function getBuiltinSkillByName(name: string): SkillRecord | null {
-  const skill = BUILTIN_BY_NAME.get(String(name ?? "").trim());
+  const normalized = String(name ?? "")
+    .trim()
+    .toLowerCase();
+  const canonical = LEGACY_SKILL_ALIASES.get(normalized) ?? normalized;
+  const skill = BUILTIN_BY_NAME.get(canonical);
   return skill ? { ...skill } : null;
 }
 
@@ -218,7 +227,10 @@ export function getBuiltinSkillByPath(path: string): SkillRecord | null {
 }
 
 export function isSystemSkillName(name: string): boolean {
-  return BUILTIN_BY_NAME.has(String(name ?? "").trim());
+  const normalized = String(name ?? "")
+    .trim()
+    .toLowerCase();
+  return BUILTIN_BY_NAME.has(normalized) || LEGACY_SKILL_ALIASES.has(normalized);
 }
 
 export function renderSkillCatalog(

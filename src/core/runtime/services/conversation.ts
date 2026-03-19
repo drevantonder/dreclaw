@@ -265,10 +265,14 @@ async function buildConversationMessages(params: {
 }) {
   const promptSections = [SYSTEM_PROMPT, `Current date/time (UTC): ${new Date().toISOString()}`];
   if (params.includeSkills !== false) {
-    const skillCatalog = params.profiler
-      ? await params.profiler.span("list_skills", async () => params.workspaceGateway.listSkills())
-      : await params.workspaceGateway.listSkills();
-    promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
+    if (shouldRenderSkillCatalog(params.userText)) {
+      const skillCatalog = params.profiler
+        ? await params.profiler.span("list_skills", async () =>
+            params.workspaceGateway.listSkills(),
+          )
+        : await params.workspaceGateway.listSkills();
+      promptSections.push(`Available skills:\n${renderSkillCatalog(skillCatalog)}`);
+    }
     const loadedSkills = params.profiler
       ? await params.profiler.span("load_skills", async () =>
           params.workspaceGateway.getLoadedSkills(inferImplicitSkillNames(params.userText)),
@@ -322,4 +326,9 @@ async function streamAssistantReply(params: {
 
   await params.thread.post(params.textStream);
   return "";
+}
+
+function shouldRenderSkillCatalog(userText: string): boolean {
+  const text = String(userText ?? "").toLowerCase();
+  return /skill|workflow|available skills|list skills|which skill|what skill/.test(text);
 }

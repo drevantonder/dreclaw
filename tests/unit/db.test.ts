@@ -8,14 +8,6 @@ import {
   upsertGoogleOAuthToken,
 } from "../../src/plugins/google/testing";
 import { markUpdateSeen } from "../../src/chat-adapters/telegram/repo";
-import {
-  countVfsEntries,
-  deleteVfsEntry,
-  getVfsEntry,
-  getVfsRevision,
-  listVfsEntries,
-  putVfsEntry,
-} from "../../src/core/vfs/repo";
 
 type Statement = {
   bind: (...args: unknown[]) => Statement;
@@ -171,63 +163,5 @@ describe("db", () => {
     const ok = await markUpdateSeen(db, 202);
     expect(ok).toBe(true);
     expect(calls).toBe(2);
-  });
-
-  it("supports vfs revision + file crud", async () => {
-    const sql: string[] = [];
-    const binds: unknown[][] = [];
-    const db = createMockDb({
-      captureSql: sql,
-      captureBind: binds,
-      firstRow: {
-        revision: 7,
-        path: "/scripts/demo.js",
-        content: "export default 1;",
-        size_bytes: 17,
-        sha256: "abc",
-        version: 2,
-        created_at: "2026-01-01T00:00:00.000Z",
-        updated_at: "2026-01-01T00:00:00.000Z",
-      },
-      allRows: [
-        {
-          path: "/scripts/demo.js",
-          content: "export default 1;",
-          size_bytes: 17,
-          sha256: "abc",
-          version: 2,
-          created_at: "2026-01-01T00:00:00.000Z",
-          updated_at: "2026-01-01T00:00:00.000Z",
-        },
-      ],
-    });
-
-    const revision = await getVfsRevision(db);
-    expect(revision).toBe(7);
-
-    const put = await putVfsEntry(db, {
-      path: "/scripts/demo.js",
-      content: "export default 1;",
-      sizeBytes: 17,
-      sha256: "abc",
-      nowIso: "2026-01-01T00:00:00.000Z",
-      overwrite: true,
-    });
-    expect(put.ok).toBe(true);
-
-    const got = await getVfsEntry(db, "/scripts/demo.js");
-    expect(got?.path).toBe("/scripts/demo.js");
-
-    const list = await listVfsEntries(db, "/scripts", 20);
-    expect(list[0]?.path).toBe("/scripts/demo.js");
-
-    const count = await countVfsEntries(db);
-    expect(typeof count).toBe("number");
-
-    const removed = await deleteVfsEntry(db, "/scripts/demo.js", "2026-01-01T00:01:00.000Z");
-    expect(removed).toBe(true);
-
-    expect(sql.some((entry) => entry.includes("vfs_entries"))).toBe(true);
-    expect(binds.length).toBeGreaterThan(0);
   });
 });

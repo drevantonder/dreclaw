@@ -107,7 +107,7 @@ Normal messages stream a single assistant reply.
 - Memory writes are salience-gated and consolidated through reflection.
 - `codemode` runs JavaScript in a sandboxed dynamic Worker powered by `@cloudflare/codemode`.
 - Filesystem and workspace state are provided by `@cloudflare/shell` via `state.*`.
-- `codemode` exposes `state.*`, `memory.find/save/remove`, `google.execute`, `reminders.query/update`, and `skills.list/load`.
+- `codemode` exposes `web.fetch`, `state.*`, `memory.find/save/remove`, `google.execute`, `reminders.query/update`, and `skills.list/load`.
 - Built-in skills live under `/skills/system/*`; user skills live under `/skills/user/*`.
 - Workspace writes are durable and traced through the state backend.
 

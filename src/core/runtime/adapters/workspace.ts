@@ -5,7 +5,6 @@ import {
   type FileSystem,
   type FsStat,
 } from "@cloudflare/shell";
-import { listVfsEntries } from "../../vfs/repo";
 import {
   getBuiltinSkillByName,
   isSystemSkillName,
@@ -15,7 +14,6 @@ import {
 } from "../../skills";
 
 const WORKSPACE_NAMESPACE = "dreclaw";
-const LEGACY_MIGRATION_MARKER = "/.dreclaw/migrations/legacy-vfs-imported.json";
 
 export interface WorkspaceGateway {
   listSkills(): Promise<Array<Pick<SkillRecord, "name" | "description" | "scope">>>;
@@ -52,8 +50,6 @@ export function createWorkspaceGateway(params: {
   const ensureReady = async () => {
     if (!readyPromise) {
       readyPromise = (async () => {
-        await ensureBuiltinSkills(workspace);
-        await migrateLegacyVfs(params.db, workspace);
         await ensureBuiltinSkills(workspace);
       })();
     }
@@ -342,28 +338,11 @@ async function ensureBuiltinSkills(workspace: Workspace): Promise<void> {
     const current = await readWorkspaceText(workspace, skill.path);
     if (current !== skill.content) await writeWorkspaceText(workspace, skill.path, skill.content);
   }
-}
-
-async function migrateLegacyVfs(db: D1Database, workspace: Workspace): Promise<void> {
-  if (await readWorkspaceText(workspace, LEGACY_MIGRATION_MARKER)) return;
-  const rows = await listVfsEntries(db, "/", 10_000);
-  for (const row of rows) {
-    if (row.path === LEGACY_MIGRATION_MARKER) continue;
-    if (row.path.startsWith("/skills/system/")) continue;
-    const parent = dirname(row.path);
-    if (parent !== "/") await workspace.mkdir(parent, { recursive: true });
-    await writeWorkspaceText(workspace, row.path, row.content);
+  for (const legacyPath of ["/skills/system/execute-runtime", "/skills/system/vfs"]) {
+    if (await workspace.exists(legacyPath)) {
+      await workspace.rm(legacyPath, { recursive: true, force: true });
+    }
   }
-  const parent = dirname(LEGACY_MIGRATION_MARKER);
-  if (parent !== "/") await workspace.mkdir(parent, { recursive: true });
-  await writeWorkspaceText(
-    workspace,
-    LEGACY_MIGRATION_MARKER,
-    JSON.stringify({
-      migratedAt: new Date().toISOString(),
-      files: rows.filter((row) => !row.path.startsWith("/skills/system/")).length,
-    }),
-  );
 }
 
 function createD1WorkspaceHost(db: D1Database, name: string) {
@@ -447,7 +426,7 @@ function assertFileSize(sizeBytes: number, maxFileBytes: number): void {
 function normalizeWorkspacePath(rawPath: string, maxPathLength: number): string {
   const input = String(rawPath ?? "").trim();
   if (!input) throw new Error("VFS_INVALID_PATH: path is required");
-  const path = input.startsWith("vfs:/") ? input.slice(4) : input;
+  const path = input;
   if (!path.startsWith("/")) throw new Error("VFS_INVALID_PATH: path must be absolute");
   const normalized: string[] = [];
   for (const part of path.split("/")) {

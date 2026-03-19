@@ -47,11 +47,20 @@ export class RunCoordinator {
   async inspect(threadId: string, fallbackState: BotThreadState) {
     const state = normalizeBotThreadState(fallbackState);
     const controls = await getPersistedThreadControls(this.deps.db, threadId);
-    const workflowInstanceId = await getPersistedWorkflowInstanceId(this.deps.db, threadId);
-    const runStatus = withWorkflowInstanceId(
-      (await getPersistedRunStatus(this.deps.db, threadId)) ?? state.runStatus,
-      workflowInstanceId,
+    const persistedWorkflowInstanceId = await getPersistedWorkflowInstanceId(
+      this.deps.db,
+      threadId,
     );
+    let runStatus = withWorkflowInstanceId(
+      (await getPersistedRunStatus(this.deps.db, threadId)) ?? state.runStatus,
+      persistedWorkflowInstanceId,
+    );
+    let workflowInstanceId = persistedWorkflowInstanceId;
+    if (isRunStatusStale(runStatus)) {
+      const reconciled = await this.reconcileStaleRun(threadId, state, runStatus);
+      runStatus = reconciled.runStatus;
+      workflowInstanceId = reconciled.workflowInstanceId;
+    }
     return {
       state: {
         ...state,
@@ -290,6 +299,37 @@ export class RunCoordinator {
     const source = params.payloadState as Parameters<typeof normalizeBotThreadState>[0];
     return this.recoverState(params.threadId, normalizeBotThreadState(source ?? params.state));
   }
+
+  private async reconcileStaleRun(
+    threadId: string,
+    state: BotThreadState,
+    runStatus: RunStatus,
+  ): Promise<{ runStatus: RunStatus; workflowInstanceId: string | null }> {
+    const workflowInstanceId = runStatus.workflowInstanceId ?? null;
+    if (workflowInstanceId && this.deps.workflow) {
+      await (await this.deps.workflow.get(workflowInstanceId)).terminate().catch(() => null);
+    }
+    await clearPersistedWorkflowInstanceId(this.deps.db, threadId);
+    const nowIso = new Date().toISOString();
+    const nextRunStatus: RunStatus = {
+      running: false,
+      startedAt: null,
+      lastHeartbeatAt: runStatus.lastHeartbeatAt,
+      cancelRequested: false,
+      cancelRequestedAt: runStatus.cancelRequestedAt,
+      stoppedAt: runStatus.stoppedAt ?? nowIso,
+      workflowInstanceId: null,
+    };
+    await setPersistedRunStatus(this.deps.db, threadId, nextRunStatus);
+    await setThreadStateSnapshot(this.deps.db, threadId, {
+      ...state,
+      runStatus: nextRunStatus,
+    });
+    return {
+      runStatus: nextRunStatus,
+      workflowInstanceId: null,
+    };
+  }
 }
 
 export function idleRunStatus(): RunStatus {
@@ -319,6 +359,10 @@ export function isRunStatusActive(runStatus: RunStatus): boolean {
   if (!runStatus.lastHeartbeatAt) return false;
   const deltaMs = Date.now() - Date.parse(runStatus.lastHeartbeatAt);
   return Number.isFinite(deltaMs) && deltaMs >= 0 && deltaMs <= RUN_ACTIVE_WINDOW_MS;
+}
+
+function isRunStatusStale(runStatus: RunStatus): boolean {
+  return runStatus.running && !isRunStatusActive(runStatus);
 }
 
 export function formatElapsedSince(iso: string | null): string {

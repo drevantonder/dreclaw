@@ -21,8 +21,8 @@ describe("loop prompting", () => {
   it("infers builtin skills from the prompt text", () => {
     expect(inferImplicitSkillNames("Check my Gmail and save a helper file")).toEqual([
       "google",
-      "execute-runtime",
-      "vfs",
+      "codemode-runtime",
+      "workspace-files",
     ]);
   });
 

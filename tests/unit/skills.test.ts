@@ -9,9 +9,9 @@ describe("skills", () => {
   it("lists builtin skills", () => {
     const skills = listBuiltinSkills();
     expect(skills.map((skill) => skill.name)).toEqual([
-      "execute-runtime",
+      "codemode-runtime",
       "google",
-      "vfs",
+      "workspace-files",
       "memory",
       "skill-authoring",
     ]);
