@@ -469,7 +469,9 @@ function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
 }
 
 async function readWorkspaceText(workspace: Workspace, path: string): Promise<string | null> {
-  return workspace.readFile(path);
+  const bytes = await workspace.readFileBytes(path);
+  if (bytes === null) return null;
+  return new TextDecoder().decode(bytes);
 }
 
 async function writeWorkspaceText(
@@ -477,5 +479,5 @@ async function writeWorkspaceText(
   path: string,
   content: string,
 ): Promise<void> {
-  await workspace.writeFile(path, content);
+  await workspace.writeFileBytes(path, new TextEncoder().encode(content));
 }
