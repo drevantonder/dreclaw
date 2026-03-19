@@ -6,8 +6,8 @@ import {
   getRunTimeoutMs,
   getRuntimeConfig,
   getTypingPulseMs,
-} from "../../src/core/runtime/policy/model";
-import { createEnv } from "../helpers/fakes";
+} from "../../../src/core/runtime/policy/model";
+import { createEnv } from "../../helpers/fakes";
 
 describe("loop model policy", () => {
   it("builds workers runtime config for Workers AI Kimi", () => {

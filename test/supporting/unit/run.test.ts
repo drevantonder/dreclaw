@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { normalizeBotThreadState } from "../../src/core/loop/state";
+import { normalizeBotThreadState } from "../../../src/core/loop/state";
 import {
   getPersistedRunStatus,
   getPersistedWorkflowInstanceId,
@@ -7,10 +7,10 @@ import {
   setPersistedRunStatus,
   setPersistedThreadControls,
   setPersistedWorkflowInstanceId,
-} from "../../src/core/loop/repo";
-import { createRunCoordinator } from "../../src/core/loop/run";
-import type { ConversationWorkflowPayload, Env } from "../../src/cloudflare/env";
-import { createEnv } from "../helpers/fakes";
+} from "../../../src/core/loop/repo";
+import { createRunCoordinator } from "../../../src/core/loop/run";
+import type { ConversationWorkflowPayload, Env } from "../../../src/cloudflare/env";
+import { createEnv } from "../../helpers/fakes";
 
 describe("run coordinator", () => {
   it("reports busy state and reconciles stale runs on inspection", async () => {

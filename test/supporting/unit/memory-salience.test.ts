@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { extractFacts, scoreSalience } from "../../src/core/memory/salience";
+import { extractFacts, scoreSalience } from "../../../src/core/memory/salience";
 
 describe("memory salience", () => {
   it("scores durable preference higher than chatter", () => {

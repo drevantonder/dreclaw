@@ -38,14 +38,14 @@ const {
   extractFacts: vi.fn(),
 }));
 
-vi.mock("../../src/core/memory/config", () => ({ getMemoryConfig }));
-vi.mock("../../src/core/memory/execute-api", () => ({
+vi.mock("../../../src/core/memory/config", () => ({ getMemoryConfig }));
+vi.mock("../../../src/core/memory/execute-api", () => ({
   executeMemoryFind,
   executeMemorySave,
   executeMemoryRemove,
 }));
-vi.mock("../../src/core/memory/retrieve", () => ({ retrieveMemoryContext }));
-vi.mock("../../src/core/memory/repo", () => ({
+vi.mock("../../../src/core/memory/retrieve", () => ({ retrieveMemoryContext }));
+vi.mock("../../../src/core/memory/repo", () => ({
   insertMemoryEpisode,
   upsertSimilarMemoryFact,
   attachMemoryFactSource,
@@ -53,12 +53,12 @@ vi.mock("../../src/core/memory/repo", () => ({
   deleteMemoryForChat,
   deleteOldMemoryEpisodes,
 }));
-vi.mock("../../src/core/memory/reflection", () => ({ runMemoryReflection }));
-vi.mock("../../src/core/memory/embeddings", () => ({ embedText }));
-vi.mock("../../src/core/memory/vectorize", () => ({ upsertFactVector, deleteFactVectors }));
-vi.mock("../../src/core/memory/salience", () => ({ scoreSalience, extractFacts }));
+vi.mock("../../../src/core/memory/reflection", () => ({ runMemoryReflection }));
+vi.mock("../../../src/core/memory/embeddings", () => ({ embedText }));
+vi.mock("../../../src/core/memory/vectorize", () => ({ upsertFactVector, deleteFactVectors }));
+vi.mock("../../../src/core/memory/salience", () => ({ scoreSalience, extractFacts }));
 
-import { createMemoryRuntime } from "../../src/core/memory";
+import { createMemoryRuntime } from "../../../src/core/memory";
 
 describe("memory facade", () => {
   beforeEach(() => {

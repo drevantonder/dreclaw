@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   fetchTelegramImageAsDataUrl: vi.fn(),
 }));
 
-vi.mock("../../src/chat-adapters/telegram/api", () => ({
+vi.mock("../../../src/chat-adapters/telegram/api", () => ({
   fetchTelegramImageAsDataUrl: mocks.fetchTelegramImageAsDataUrl,
 }));
 
@@ -13,7 +13,7 @@ import {
   isPrivateTelegramUpdate,
   isTelegramPrivateMessage,
   loadTelegramImageBlocks,
-} from "../../src/chat-adapters/telegram/message";
+} from "../../../src/chat-adapters/telegram/message";
 
 describe("telegram message helpers", () => {
   it("detects private Telegram messages and updates", () => {

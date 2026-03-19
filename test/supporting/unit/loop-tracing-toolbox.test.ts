@@ -4,7 +4,7 @@ import {
   renderTraceStart,
   renderToolTranscript,
   truncateForLog,
-} from "../../src/core/runtime/tools/tracing";
+} from "../../../src/core/runtime/tools/tracing";
 
 describe("loop tracing and toolbox helpers", () => {
   it("redacts sensitive values in transcripts", () => {

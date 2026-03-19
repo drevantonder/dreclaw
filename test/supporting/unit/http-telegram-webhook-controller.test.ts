@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createEnv } from "../helpers/fakes";
+import { createEnv } from "../../helpers/fakes";
 
 const mocks = vi.hoisted(() => ({
   createBot: vi.fn(),
@@ -8,20 +8,20 @@ const mocks = vi.hoisted(() => ({
   markUpdateSeen: vi.fn(),
 }));
 
-vi.mock("../../src/chat-adapters/telegram/gateway", () => ({
+vi.mock("../../../src/chat-adapters/telegram/gateway", () => ({
   createBot: mocks.createBot,
   rememberTelegramExecutionContext: mocks.rememberTelegramExecutionContext,
 }));
 
-vi.mock("../../src/chat-adapters/telegram/commands", () => ({
+vi.mock("../../../src/chat-adapters/telegram/commands", () => ({
   maybeHandleAsyncTelegramCommand: mocks.maybeHandleAsyncTelegramCommand,
 }));
 
-vi.mock("../../src/chat-adapters/telegram/repo", () => ({
+vi.mock("../../../src/chat-adapters/telegram/repo", () => ({
   markUpdateSeen: mocks.markUpdateSeen,
 }));
 
-import { handleTelegramWebhookRequest } from "../../src/chat-adapters/telegram/webhook";
+import { handleTelegramWebhookRequest } from "../../../src/chat-adapters/telegram/webhook";
 
 function createCtx() {
   return {

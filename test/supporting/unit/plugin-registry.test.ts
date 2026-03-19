@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createPluginRegistry } from "../../src/core/plugins/registry";
+import { createPluginRegistry } from "../../../src/core/plugins/registry";
 
 describe("plugin registry", () => {
   it("rejects duplicate owned tables", () => {

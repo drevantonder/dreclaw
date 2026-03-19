@@ -14,15 +14,15 @@ const {
   listRecentMemoryEpisodes: vi.fn(),
 }));
 
-vi.mock("../../src/core/memory/embeddings", () => ({ embedText }));
-vi.mock("../../src/core/memory/vectorize", () => ({ queryFactVectors }));
-vi.mock("../../src/core/memory/repo", () => ({
+vi.mock("../../../src/core/memory/embeddings", () => ({ embedText }));
+vi.mock("../../../src/core/memory/vectorize", () => ({ queryFactVectors }));
+vi.mock("../../../src/core/memory/repo", () => ({
   listMemoryFactsByIds,
   searchMemoryFactsKeyword,
   listRecentMemoryEpisodes,
 }));
 
-import { retrieveMemoryContext } from "../../src/core/memory/retrieve";
+import { retrieveMemoryContext } from "../../../src/core/memory/retrieve";
 
 describe("memory retrieve", () => {
   beforeEach(() => {

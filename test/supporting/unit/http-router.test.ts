@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createEnv } from "../helpers/fakes";
+import { createEnv } from "../../helpers/fakes";
 
 const mocks = vi.hoisted(() => ({
   handlePluginOAuthCallback: vi.fn(),
@@ -7,20 +7,20 @@ const mocks = vi.hoisted(() => ({
   handleTelegramWebhookRequest: vi.fn(),
 }));
 
-vi.mock("../../src/core/http", () => ({
+vi.mock("../../../src/core/http", () => ({
   getHealthPayload: () => ({ ok: true, service: "dreclaw", ts: 123 }),
   handlePluginOAuthCallback: mocks.handlePluginOAuthCallback,
 }));
 
-vi.mock("../../src/chat-adapters/telegram/api", () => ({
+vi.mock("../../../src/chat-adapters/telegram/api", () => ({
   sendTelegramTextMessage: mocks.sendTelegramTextMessage,
 }));
 
-vi.mock("../../src/chat-adapters/telegram/webhook", () => ({
+vi.mock("../../../src/chat-adapters/telegram/webhook", () => ({
   handleTelegramWebhookRequest: mocks.handleTelegramWebhookRequest,
 }));
 
-import { handleHttpRequest } from "../../src/cloudflare/http/router";
+import { handleHttpRequest } from "../../../src/cloudflare/http/router";
 
 describe("handleHttpRequest", () => {
   beforeEach(() => {

@@ -6,13 +6,13 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "cloudflare:workers": "/Users/drevan/projects/dreclaw/tests/support/cloudflare-workers.ts",
+      "cloudflare:workers": "/Users/drevan/projects/dreclaw/test/support/cloudflare-workers.ts",
     },
   },
   lint: { options: { typeAware: true, typeCheck: true } },
   test: {
-    setupFiles: ["tests/setup.ts"],
-    include: ["tests/**/*.test.ts"],
+    setupFiles: ["test/setup.ts"],
+    include: ["test/**/*.test.ts"],
     exclude: [".worktrees/**", "node_modules/**"],
   },
 });

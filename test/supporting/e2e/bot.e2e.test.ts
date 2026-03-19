@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import worker from "../../src/cloudflare/index";
-import { createEnv, waitForWorkflowTasks } from "../helpers/fakes";
+import worker from "../../../src/cloudflare/index";
+import { createEnv, waitForWorkflowTasks } from "../../helpers/fakes";
 
 const app = worker as unknown as {
   fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response>;
@@ -77,7 +77,7 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
   createOpenAICompatible: () => (_modelId: string) => ({ id: "mock-model" }),
 }));
 
-vi.mock("../../src/core/tools/code-exec", () => ({
+vi.mock("../../../src/core/tools/code-exec", () => ({
   getCodeExecutionConfig: vi.fn(() => ({
     codeExecEnabled: true,
     netFetchEnabled: true,

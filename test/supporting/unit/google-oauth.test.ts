@@ -6,8 +6,8 @@ import {
   getGoogleOAuthConfig,
   parseGoogleScopes,
   refreshGoogleAccessToken,
-} from "../../src/plugins/google/testing";
-import type { Env } from "../../src/cloudflare/env";
+} from "../../../src/plugins/google/testing";
+import type { Env } from "../../../src/cloudflare/env";
 
 afterEach(() => {
   vi.restoreAllMocks();

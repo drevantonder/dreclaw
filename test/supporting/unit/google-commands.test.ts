@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createEnv } from "../helpers/fakes";
+import { createEnv } from "../../helpers/fakes";
 
 const mocks = vi.hoisted(() => ({
   getGoogleOAuthConfig: vi.fn(),
@@ -9,21 +9,21 @@ const mocks = vi.hoisted(() => ({
   deleteGoogleOAuthToken: vi.fn(),
 }));
 
-vi.mock("../../src/plugins/google/config", () => ({
+vi.mock("../../../src/plugins/google/config", () => ({
   GOOGLE_OAUTH_DEFAULT_PRINCIPAL: "default",
   getGoogleOAuthConfig: mocks.getGoogleOAuthConfig,
 }));
-vi.mock("../../src/plugins/google/oauth", () => ({
+vi.mock("../../../src/plugins/google/oauth", () => ({
   buildGoogleOAuthUrl: vi.fn((_config: unknown, state: string) => `https://auth.test/${state}`),
   createOAuthStateToken: mocks.createOAuthStateToken,
 }));
-vi.mock("../../src/plugins/google/repo", () => ({
+vi.mock("../../../src/plugins/google/repo", () => ({
   createGoogleOAuthState: mocks.createGoogleOAuthState,
   getGoogleOAuthToken: mocks.getGoogleOAuthToken,
   deleteGoogleOAuthToken: mocks.deleteGoogleOAuthToken,
 }));
 
-import { handleGoogleCommand } from "../../src/plugins/google/testing";
+import { handleGoogleCommand } from "../../../src/plugins/google/testing";
 
 describe("google commands", () => {
   beforeEach(() => {

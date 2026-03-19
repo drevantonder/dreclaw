@@ -6,8 +6,8 @@ import {
   getGoogleOAuthToken,
   markGoogleOAuthStateUsed,
   upsertGoogleOAuthToken,
-} from "../../src/plugins/google/testing";
-import { markUpdateSeen } from "../../src/chat-adapters/telegram/repo";
+} from "../../../src/plugins/google/testing";
+import { markUpdateSeen } from "../../../src/chat-adapters/telegram/repo";
 
 type Statement = {
   bind: (...args: unknown[]) => Statement;

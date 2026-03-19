@@ -3,7 +3,7 @@ import {
   getBuiltinSkillByName,
   listBuiltinSkills,
   parseSkillDocument,
-} from "../../src/core/skills";
+} from "../../../src/core/skills";
 
 describe("skills", () => {
   it("lists builtin skills", () => {

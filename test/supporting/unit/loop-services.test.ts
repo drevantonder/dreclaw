@@ -24,15 +24,15 @@ vi.mock("ai", () => ({
   generateText: mocks.generateText,
 }));
 
-vi.mock("../../src/chat-adapters/telegram/api", () => ({
+vi.mock("../../../src/chat-adapters/telegram/api", () => ({
   streamTelegramReply: mocks.streamTelegramReply,
 }));
 
-import { createConversationLoopService } from "../../src/core/runtime/services/conversation";
-import { createProactiveWakeService } from "../../src/core/runtime/services/proactive-wake";
-import { normalizeBotThreadState } from "../../src/core/loop/state";
-import type { CreateAgentTools } from "../../src/core/runtime/tools/toolbox";
-import { createEnv } from "../helpers/fakes";
+import { createConversationLoopService } from "../../../src/core/runtime/services/conversation";
+import { createProactiveWakeService } from "../../../src/core/runtime/services/proactive-wake";
+import { normalizeBotThreadState } from "../../../src/core/loop/state";
+import type { CreateAgentTools } from "../../../src/core/runtime/tools/toolbox";
+import { createEnv } from "../../helpers/fakes";
 
 function emptyStream(): AsyncIterable<string> {
   return {

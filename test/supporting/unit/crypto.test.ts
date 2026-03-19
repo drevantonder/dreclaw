@@ -3,7 +3,7 @@ import {
   decodeEncryptionKey,
   decryptSecret,
   encryptSecret,
-} from "../../src/plugins/google/testing";
+} from "../../../src/plugins/google/testing";
 
 describe("crypto", () => {
   it("roundtrips encrypted secrets", async () => {

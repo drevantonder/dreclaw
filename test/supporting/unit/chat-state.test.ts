@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createD1StateAdapter } from "../../src/core/loop/chat-state";
-import { FakeD1 } from "../helpers/fakes";
+import { createD1StateAdapter } from "../../../src/core/loop/chat-state";
+import { FakeD1 } from "../../helpers/fakes";
 
 describe("chat state adapter", () => {
   it("stores subscriptions, kv values, and locks", async () => {

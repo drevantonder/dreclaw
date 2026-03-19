@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createEnv } from "../helpers/fakes";
+import { createEnv } from "../../helpers/fakes";
 
 const mocks = vi.hoisted(() => {
   const controlsInstance = {
@@ -25,29 +25,29 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../../src/core/runtime", () => ({
+vi.mock("../../../src/core/runtime", () => ({
   createLoopServices: mocks.createLoopServices,
 }));
 
-vi.mock("../../src/chat-adapters/telegram/api", () => ({
+vi.mock("../../../src/chat-adapters/telegram/api", () => ({
   sendTelegramTextMessage: mocks.sendTelegramTextMessage,
 }));
 
-vi.mock("../../src/core/loop/repo", () => ({
+vi.mock("../../../src/core/loop/repo", () => ({
   getPersistedThreadControls: mocks.getPersistedThreadControls,
   getThreadStateSnapshot: mocks.getThreadStateSnapshot,
   setPersistedThreadControls: mocks.setPersistedThreadControls,
   setThreadStateSnapshot: mocks.setThreadStateSnapshot,
 }));
 
-vi.mock("../../src/core/loop/run", () => ({
+vi.mock("../../../src/core/loop/run", () => ({
   createRunCoordinator: mocks.createRunCoordinator,
 }));
 
 import {
   handleAsyncCommand,
   maybeHandleAsyncTelegramCommand,
-} from "../../src/chat-adapters/telegram/commands";
+} from "../../../src/chat-adapters/telegram/commands";
 
 describe("telegram commands", () => {
   beforeEach(() => {

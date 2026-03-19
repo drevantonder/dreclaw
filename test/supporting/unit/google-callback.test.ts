@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createEnv } from "../helpers/fakes";
+import { createEnv } from "../../helpers/fakes";
 
 const mocks = vi.hoisted(() => ({
   decodeEncryptionKey: vi.fn(),
@@ -11,27 +11,27 @@ const mocks = vi.hoisted(() => ({
   getGoogleOAuthConfig: vi.fn(),
 }));
 
-vi.mock("../../src/plugins/google/crypto", () => ({
+vi.mock("../../../src/plugins/google/crypto", () => ({
   decodeEncryptionKey: mocks.decodeEncryptionKey,
   encryptSecret: mocks.encryptSecret,
 }));
 
-vi.mock("../../src/plugins/google/repo", () => ({
+vi.mock("../../../src/plugins/google/repo", () => ({
   getGoogleOAuthState: mocks.getGoogleOAuthState,
   markGoogleOAuthStateUsed: mocks.markGoogleOAuthStateUsed,
   upsertGoogleOAuthToken: mocks.upsertGoogleOAuthToken,
 }));
 
-vi.mock("../../src/plugins/google/oauth", () => ({
+vi.mock("../../../src/plugins/google/oauth", () => ({
   exchangeGoogleOAuthCode: mocks.exchangeGoogleOAuthCode,
 }));
 
-vi.mock("../../src/plugins/google/config", () => ({
+vi.mock("../../../src/plugins/google/config", () => ({
   GOOGLE_OAUTH_DEFAULT_PRINCIPAL: "default",
   getGoogleOAuthConfig: mocks.getGoogleOAuthConfig,
 }));
 
-import { handleGoogleOAuthCallback } from "../../src/plugins/google/testing";
+import { handleGoogleOAuthCallback } from "../../../src/plugins/google/testing";
 
 describe("google callback", () => {
   beforeEach(() => {

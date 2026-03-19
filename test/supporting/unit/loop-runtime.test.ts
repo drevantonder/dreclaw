@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildRuntimeDeps } from "../../src/app/deps";
-import { createLoopServices } from "../../src/core/runtime";
-import { createEnv } from "../helpers/fakes";
+import { buildRuntimeDeps } from "../../../src/app/deps";
+import { createLoopServices } from "../../../src/core/runtime";
+import { createEnv } from "../../helpers/fakes";
 
 describe("loop runtime composition", () => {
   it("assembles explicit services without a runtime facade", () => {
