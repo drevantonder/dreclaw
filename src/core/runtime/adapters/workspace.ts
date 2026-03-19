@@ -365,7 +365,7 @@ function createD1WorkspaceHost(db: D1Database, name: string) {
     name,
     async sqlQuery<T = Record<string, string | number | boolean | null>>(
       strings: TemplateStringsArray,
-      ...values: (string | number | boolean | null)[]
+      ...values: Array<string | number | boolean | null | undefined>
     ): Promise<T[]> {
       const { sql, args } = toSql(strings, values);
       const result = await db
@@ -376,7 +376,7 @@ function createD1WorkspaceHost(db: D1Database, name: string) {
     },
     async sqlRun(
       strings: TemplateStringsArray,
-      ...values: (string | number | boolean | null)[]
+      ...values: Array<string | number | boolean | null | undefined>
     ): Promise<void> {
       const { sql, args } = toSql(strings, values);
       await db
@@ -389,14 +389,17 @@ function createD1WorkspaceHost(db: D1Database, name: string) {
 
 function toSql(
   strings: TemplateStringsArray,
-  values: (string | number | boolean | null)[],
-): { sql: string; args: (string | number | boolean | null)[] } {
+  values: Array<string | number | boolean | null | undefined>,
+): { sql: string; args: Array<string | number | boolean | null> } {
   let sql = "";
   for (let index = 0; index < strings.length; index += 1) {
     sql += strings[index] ?? "";
     if (index < values.length) sql += "?";
   }
-  return { sql, args: values };
+  return {
+    sql,
+    args: values.map((value) => (value === undefined ? null : value)),
+  };
 }
 
 function assertWritablePath(path: string, content?: string): void {
