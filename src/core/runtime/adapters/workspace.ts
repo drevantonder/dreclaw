@@ -82,7 +82,7 @@ export function createWorkspaceGateway(params: {
       const userSkills = (
         await Promise.all(
           userSkillFiles.map(async (file) => {
-            const content = await workspace.readFile(file.path);
+            const content = await readWorkspaceText(workspace, file.path);
             if (!content) return null;
             try {
               const parsed = parseSkillDocument(content);
@@ -154,7 +154,7 @@ class PolicyWorkspaceFileSystem implements FileSystem {
   async readFile(path: string): Promise<string> {
     await this.params.ensureReady();
     const normalized = normalizeWorkspacePath(path, this.params.maxPathLength);
-    const content = await this.params.workspace.readFile(normalized);
+    const content = await readWorkspaceText(this.params.workspace, normalized);
     if (content === null) throw new Error(`ENOENT: no such file or directory: ${normalized}`);
     return content;
   }
@@ -172,7 +172,7 @@ class PolicyWorkspaceFileSystem implements FileSystem {
     const normalized = normalizeWorkspacePath(path, this.params.maxPathLength);
     assertWritablePath(normalized, content);
     assertFileSize(new TextEncoder().encode(content).byteLength, this.params.maxFileBytes);
-    await this.params.workspace.writeFile(normalized, content);
+    await writeWorkspaceText(this.params.workspace, normalized, content);
     this.params.writes.push(`write ${normalized}`);
   }
 
@@ -317,7 +317,7 @@ async function loadSkill(workspace: Workspace, name: string): Promise<SkillRecor
   if (!normalized) return null;
   const builtin = getBuiltinSkillByName(normalized);
   if (builtin) return builtin;
-  const content = await workspace.readFile(`/skills/user/${normalized}/SKILL.md`);
+  const content = await readWorkspaceText(workspace, `/skills/user/${normalized}/SKILL.md`);
   if (!content) return null;
   const parsed = parseSkillDocument(content);
   if (parsed.name !== normalized) throw new Error(`SKILL_INVALID: name mismatch for ${normalized}`);
@@ -334,24 +334,25 @@ async function ensureBuiltinSkills(workspace: Workspace): Promise<void> {
   for (const skill of listBuiltinSkills()) {
     const parent = dirname(skill.path);
     if (parent !== "/") await workspace.mkdir(parent, { recursive: true });
-    const current = await workspace.readFile(skill.path);
-    if (current !== skill.content) await workspace.writeFile(skill.path, skill.content);
+    const current = await readWorkspaceText(workspace, skill.path);
+    if (current !== skill.content) await writeWorkspaceText(workspace, skill.path, skill.content);
   }
 }
 
 async function migrateLegacyVfs(db: D1Database, workspace: Workspace): Promise<void> {
-  if (await workspace.readFile(LEGACY_MIGRATION_MARKER)) return;
+  if (await readWorkspaceText(workspace, LEGACY_MIGRATION_MARKER)) return;
   const rows = await listVfsEntries(db, "/", 10_000);
   for (const row of rows) {
     if (row.path === LEGACY_MIGRATION_MARKER) continue;
     if (row.path.startsWith("/skills/system/")) continue;
     const parent = dirname(row.path);
     if (parent !== "/") await workspace.mkdir(parent, { recursive: true });
-    await workspace.writeFile(row.path, row.content);
+    await writeWorkspaceText(workspace, row.path, row.content);
   }
   const parent = dirname(LEGACY_MIGRATION_MARKER);
   if (parent !== "/") await workspace.mkdir(parent, { recursive: true });
-  await workspace.writeFile(
+  await writeWorkspaceText(
+    workspace,
     LEGACY_MIGRATION_MARKER,
     JSON.stringify({
       migratedAt: new Date().toISOString(),
@@ -481,4 +482,18 @@ function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
   output.set(left, 0);
   output.set(right, left.byteLength);
   return output;
+}
+
+async function readWorkspaceText(workspace: Workspace, path: string): Promise<string | null> {
+  const bytes = await workspace.readFileBytes(path);
+  if (bytes === null) return null;
+  return new TextDecoder().decode(bytes);
+}
+
+async function writeWorkspaceText(
+  workspace: Workspace,
+  path: string,
+  content: string,
+): Promise<void> {
+  await workspace.writeFileBytes(path, new TextEncoder().encode(content));
 }
