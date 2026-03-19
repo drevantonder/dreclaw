@@ -278,7 +278,7 @@ async function runPrompt(client, args) {
 
     if (nonThinkingReplies.length) {
       const quietMs = hasTraceMessages(nonThinkingReplies) ? TRACE_QUIET_MS : DEFAULT_QUIET_MS;
-      if (Date.now() - lastTranscriptChangeAt >= quietMs) {
+      if (Date.now() - lastTranscriptChangeAt >= quietMs && !hasPendingToolTrace(botReplies)) {
         const expectationsMet = transcriptMatches(botReplies, args.expect, args.reject);
         if (!args.expect.length || expectationsMet) {
           assertTranscript(botReplies, args.expect, args.reject);
@@ -313,6 +313,16 @@ function hasTraceMessages(transcript) {
   return transcript.some(
     (item) => item.text.startsWith("Tool: ") || item.text.startsWith("Tool result: "),
   );
+}
+
+function hasPendingToolTrace(transcript) {
+  let started = 0;
+  let finished = 0;
+  for (const item of transcript) {
+    if (item.text.startsWith("Tool: ")) started += 1;
+    if (item.text.startsWith("Tool result: ")) finished += 1;
+  }
+  return started > finished;
 }
 
 function extractCurrentAlias(transcript) {
