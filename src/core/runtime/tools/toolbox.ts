@@ -1,5 +1,5 @@
-import { DynamicWorkerExecutor } from "@cloudflare/codemode";
-import { createCodeTool } from "@cloudflare/codemode/ai";
+import { DynamicWorkerExecutor, normalizeCode } from "@cloudflare/codemode";
+import { createCodeTool, resolveProvider } from "@cloudflare/codemode/ai";
 import { stateToolsFromBackend } from "@cloudflare/shell/workers";
 import { tool } from "ai";
 import { z } from "zod";
@@ -256,8 +256,15 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
     },
   } as const;
 
+  const codemodeProviders = [
+    stateProvider,
+    memoryProvider,
+    googleProvider,
+    remindersProvider,
+    skillsProvider,
+  ] as const;
   const codemode = createCodeTool({
-    tools: [stateProvider, memoryProvider, googleProvider, remindersProvider, skillsProvider],
+    tools: codemodeProviders,
     executor,
     description: [
       "Execute JavaScript to achieve the goal.",
@@ -274,11 +281,9 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
       "Use memory.*, google.execute(...), reminders.*, and skills.* when needed.",
     ].join("\n"),
   } as never);
-  const executeCodemode = (
-    codemode.execute as
-      | ((input: { code: string }, options?: unknown) => Promise<unknown>)
-      | undefined
-  )?.bind(codemode);
+  const resolvedCodemodeProviders = codemodeProviders.map((provider) =>
+    resolveProvider(provider as never),
+  );
 
   return {
     codemode: {
@@ -289,8 +294,17 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
           input as Record<string, unknown>,
           async () => {
             stateWrites.length = 0;
-            if (!executeCodemode) throw new Error("CODEMODE_EXECUTE_UNAVAILABLE");
-            return executeCodemode(input, undefined);
+            const execution = await executor.execute(
+              normalizeCode(input.code),
+              resolvedCodemodeProviders as never,
+            );
+            if (execution.error) {
+              const logCtx = execution.logs?.length
+                ? `\n\nConsole output:\n${execution.logs.join("\n")}`
+                : "";
+              throw new Error(`Code execution failed: ${execution.error}${logCtx}`);
+            }
+            return execution.result;
           },
           stateWrites,
         ),

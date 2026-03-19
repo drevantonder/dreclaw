@@ -392,7 +392,10 @@ vi.mock("@cloudflare/codemode", () => {
     }
   }
 
-  return { DynamicWorkerExecutor };
+  return {
+    DynamicWorkerExecutor,
+    normalizeCode: (code: string) => code,
+  };
 });
 
 vi.mock("@cloudflare/codemode/ai", () => ({
@@ -424,6 +427,17 @@ vi.mock("@cloudflare/codemode/ai", () => ({
       if (result.error) throw new Error(result.error);
       return { code, result: result.result, logs: result.logs };
     },
+  }),
+  resolveProvider: (provider: {
+    name?: string;
+    tools: Record<string, { execute: (...args: any[]) => Promise<unknown> }>;
+    positionalArgs?: boolean;
+  }) => ({
+    name: provider.name ?? "codemode",
+    positionalArgs: Boolean(provider.positionalArgs),
+    fns: Object.fromEntries(
+      Object.entries(provider.tools).map(([name, tool]) => [name, tool.execute]),
+    ),
   }),
 }));
 

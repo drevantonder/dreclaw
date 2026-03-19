@@ -189,11 +189,16 @@ class PolicyWorkspaceFileSystem implements FileSystem {
     await this.params.ensureReady();
     const normalized = normalizeWorkspacePath(path, this.params.maxPathLength);
     assertWritablePath(normalized, typeof content === "string" ? content : undefined);
+    if (typeof content === "string") {
+      const existing = await readWorkspaceText(this.params.workspace, normalized);
+      const next = `${existing ?? ""}${content}`;
+      assertFileSize(new TextEncoder().encode(next).byteLength, this.params.maxFileBytes);
+      await writeWorkspaceText(this.params.workspace, normalized, next);
+      this.params.writes.push(`write ${normalized}`);
+      return;
+    }
     const existing = (await this.params.workspace.readFileBytes(normalized)) ?? new Uint8Array();
-    const next =
-      typeof content === "string"
-        ? new TextEncoder().encode(new TextDecoder().decode(existing) + content)
-        : concatBytes(existing, content);
+    const next = concatBytes(existing, content);
     assertFileSize(next.byteLength, this.params.maxFileBytes);
     await this.params.workspace.writeFileBytes(normalized, next);
     this.params.writes.push(`write ${normalized}`);
@@ -485,9 +490,7 @@ function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
 }
 
 async function readWorkspaceText(workspace: Workspace, path: string): Promise<string | null> {
-  const bytes = await workspace.readFileBytes(path);
-  if (bytes === null) return null;
-  return new TextDecoder().decode(bytes);
+  return workspace.readFile(path);
 }
 
 async function writeWorkspaceText(
@@ -495,5 +498,5 @@ async function writeWorkspaceText(
   path: string,
   content: string,
 ): Promise<void> {
-  await workspace.writeFileBytes(path, new TextEncoder().encode(content));
+  await workspace.writeFile(path, content);
 }
