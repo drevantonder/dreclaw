@@ -342,7 +342,7 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
           async () => {
             stateWrites.length = 0;
             const execution = await executor.execute(
-              normalizeCode(input.code),
+              prepareCodemodeCode(input.code),
               resolvedCodemodeProviders as never,
             );
             if (execution.error) {
@@ -357,4 +357,18 @@ export function createAgentTools(params: AgentToolsParams, deps: AgentToolsDeps)
         ),
     },
   };
+}
+
+function prepareCodemodeCode(code: string): string {
+  const normalized = normalizeCode(code).trim();
+  if (!normalized) return "async () => undefined";
+  if (
+    /^(async\s*)?\([^)]*\)\s*=>/.test(normalized) ||
+    /^(async\s+)?[A-Za-z_$][\w$]*\s*=>/.test(normalized) ||
+    /^async\s+function\b/.test(normalized) ||
+    /^function\b/.test(normalized)
+  ) {
+    return normalized;
+  }
+  return `async () => {\n${normalized}\n}`;
 }
