@@ -7,7 +7,7 @@
 - Telegram private chat-only, single-user (me)
 - Chat SDK + Telegram adapter runtime
 - Commands: `/help`, `/status`, `/model`, `/new`, `/reset`, `/factory-reset`, `/stop`, `/verbose`, `/thinking`, `/reasoning`, `/google ...`
-- Core tools: `search`, `codemode`
+- Core tool: `codemode`
 - Persistent memory: D1 episodic/fact memory + Vectorize semantic recall
 - Hybrid memory pipeline: D1 episodic/fact memory + Vectorize semantic recall (Workers AI embeddings)
 - AI SDK provider switch: `opencode`, `opencode-go`, or `workers` (Workers AI)
@@ -20,7 +20,7 @@ flowchart TD
   W --> C[Chat SDK]
   C --> M[Model Loop]
   M --> MM[Memory: episodes/facts]
-  M --> T[Tools: search/codemode]
+  M --> T[Tool: codemode]
   C --> W --> U
 ```
 
@@ -30,7 +30,7 @@ flowchart TD
 - Agent loop runs on AI SDK `ToolLoopAgent` with runtime-managed memory persistence.
 - OpenCode uses `AI_PROVIDER=opencode` (Zen default URL) or `AI_PROVIDER=opencode-go` (Go default URL).
 - Workers AI runs via `workers-ai-provider` binding (`env.AI`) when `AI_PROVIDER=workers`.
-- Agent can run sandboxed JS with `codemode`; `search` lists runtime limits/capabilities and installed packages.
+- Agent can run sandboxed JS with `codemode`.
 
 ## Setup
 
@@ -116,7 +116,7 @@ Normal messages stream a single assistant reply.
 - Memory writes are salience-gated and consolidated through reflection.
 - `codemode` runs JavaScript in a sandboxed dynamic Worker powered by `@cloudflare/codemode`.
 - Filesystem and workspace state are provided by `@cloudflare/shell` via `state.*`.
-- `codemode` exposes `web.fetch`, `state.*`, `memory.find/save/remove`, `google.execute`, `reminders.query/update`, and `skills.list/load`.
+- `codemode` exposes `state.*`, `web.fetch`, `memory.find/save/remove`, `google.execute`, `reminders.query/update`, and `skills.list/load`.
 - Built-in skills live under `/skills/system/*`; user skills live under `/skills/user/*`.
 - Workspace writes are durable and traced through the state backend.
 

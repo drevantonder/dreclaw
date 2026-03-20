@@ -6,5 +6,6 @@ Promoted requirement suites currently cover:
 
 - the command surface under `test/requirements/commands/...`
 - plain assistant chat usage under `test/requirements/assistant/...`
+- direct tool behavior under `test/requirements/tools/...`
 
 Add tests here only when the behavior has been intentionally elevated from supporting coverage under `test/supporting/...`.
