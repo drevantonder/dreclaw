@@ -12,6 +12,8 @@ export type TelegramTransportCall = {
   text: string;
 };
 
+type FetchOverrideResult = Response | undefined | void;
+
 function createExecutionTracker() {
   const pending: Promise<unknown>[] = [];
   return {
@@ -69,6 +71,23 @@ function makeUpdate(updateId: number, text?: string) {
   };
 }
 
+function makePhotoUpdate(
+  updateId: number,
+  input: { caption?: string; photo?: Array<{ file_id: string; file_size?: number }> },
+) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      date: 170000,
+      chat: { id: 777, type: "private" },
+      from: { id: 42, is_bot: false, username: "andre", first_name: "Andre" },
+      ...(input.caption !== undefined ? { text: input.caption, caption: input.caption } : {}),
+      photo: input.photo ?? [{ file_id: "test-photo-large", file_size: 20 }],
+    },
+  };
+}
+
 function makeWebhookRequest(secret: string, updateId: number, text?: string) {
   return new Request("https://test.local/telegram/webhook", {
     method: "POST",
@@ -84,6 +103,10 @@ export function createAssistantHarness(options?: {
   envOverrides?: Partial<Env>;
   draftUnsupported?: boolean;
   nowStepMs?: number;
+  onFetch?: (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => Promise<FetchOverrideResult> | FetchOverrideResult;
 }) {
   const { env, db } = createEnv(options?.envOverrides);
   const tracker = createExecutionTracker();
@@ -139,6 +162,20 @@ export function createAssistantHarness(options?: {
         calls.push({ method: "editMessageText", text: body.text ?? "" });
         return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
       }
+      if (url.includes("/getFile?file_id=")) {
+        return new Response(
+          JSON.stringify({ ok: true, result: { file_path: "photos/test-image.png" } }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/file/bottest-token/photos/test-image.png")) {
+        return new Response(Uint8Array.from([137, 80, 78, 71]), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        });
+      }
+      const override = await options?.onFetch?.(input, init);
+      if (override instanceof Response) return override;
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }),
   );
@@ -153,6 +190,25 @@ export function createAssistantHarness(options?: {
     async send(text: string) {
       const response = await app.fetch(
         makeWebhookRequest(env.TELEGRAM_WEBHOOK_SECRET, updateId++, text) as unknown as Request,
+        env,
+        tracker.ctx,
+      );
+      await tracker.wait();
+      return response;
+    },
+    async sendImage(input: {
+      caption?: string;
+      photo?: Array<{ file_id: string; file_size?: number }>;
+    }) {
+      const response = await app.fetch(
+        new Request("https://test.local/telegram/webhook", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-telegram-bot-api-secret-token": env.TELEGRAM_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify(makePhotoUpdate(updateId++, input)),
+        }) as unknown as Request,
         env,
         tracker.ctx,
       );

@@ -68,7 +68,9 @@ export function createProactiveWakeService(params: {
         [
           "You are waking proactively on your own reminders.",
           "You woke because an internal reminder became due.",
-          `If no user-facing message is needed after any background work, reply exactly with ${PROACTIVE_NO_MESSAGE}.`,
+          input.item.delivery === "silent"
+            ? `This reminder is silent. If no user-facing message is needed after any background work, reply exactly with ${PROACTIVE_NO_MESSAGE}.`
+            : "This reminder is visible. Send a concise, user-facing message after any background work.",
           "If a message is useful, make it concise and action-oriented.",
           "Keep your reminders tidy by updating, rescheduling, snoozing, or completing items.",
         ].join(" "),
@@ -140,7 +142,10 @@ export function createProactiveWakeService(params: {
       for (const trace of toolTraces)
         state = pushHistory(state, "tool", renderToolTranscript(trace));
 
-      const messageText = normalizeProactiveMessage(finalText);
+      const messageText =
+        input.item.delivery === "silent"
+          ? null
+          : (normalizeProactiveMessage(finalText) ?? `Reminder: ${input.item.title}`);
       if (messageText) state = pushHistory(state, "assistant", messageText);
       return {
         state: stripEphemeralState(state),

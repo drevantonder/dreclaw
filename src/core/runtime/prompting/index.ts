@@ -33,6 +33,7 @@ export function renderWakePacket(item: Reminder, recentWakeSummaries: string[]):
     "Proactive wake packet:",
     `title: ${item.title}`,
     `kind: ${item.kind}`,
+    `delivery: ${item.delivery}`,
     `priority: ${item.priority}`,
     `notes: ${item.notes || "-"}`,
     `scheduled_for: ${item.nextWakeAt ?? "-"}`,

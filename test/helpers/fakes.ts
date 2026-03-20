@@ -1,6 +1,9 @@
 import type { Env } from "../../src/cloudflare/env";
-import { runConversationWorkflow } from "../../src/app/cloudflare";
-import type { ConversationWorkflowPayload } from "../../src/cloudflare/env";
+import { runConversationWorkflow, runRemindersWakeWorkflow } from "../../src/app/cloudflare";
+import type {
+  ConversationWorkflowPayload,
+  ReminderWakeWorkflowPayload,
+} from "../../src/cloudflare/env";
 
 type SqlResult = { meta: { changes?: number } };
 
@@ -61,18 +64,19 @@ export class FakeD1 {
         kind: String(args[1]),
         title: String(args[2]),
         notes: String(args[3]),
-        status: String(args[4]),
-        priority: Number(args[5]),
-        schedule_json: stringifyPrimitive(args[6]),
-        next_wake_at: stringifyPrimitive(args[7]),
-        last_wake_at: stringifyPrimitive(args[8]),
-        snooze_until: stringifyPrimitive(args[9]),
-        source_chat_id: args[10] == null ? null : Number(args[10]),
+        delivery_mode: String(args[4]),
+        status: String(args[5]),
+        priority: Number(args[6]),
+        schedule_json: stringifyPrimitive(args[7]),
+        next_wake_at: stringifyPrimitive(args[8]),
+        last_wake_at: stringifyPrimitive(args[9]),
+        snooze_until: stringifyPrimitive(args[10]),
+        source_chat_id: args[11] == null ? null : Number(args[11]),
         claimed_at: null,
         claim_token: null,
         workflow_id: null,
-        created_at: String(args[11]),
-        updated_at: String(args[12]),
+        created_at: String(args[12]),
+        updated_at: String(args[13]),
       });
       return { meta: { changes: 1 } };
     }
@@ -349,6 +353,9 @@ export function createEnv(overrides?: Partial<Env>) {
   env.CONVERSATION_WORKFLOW ??= createImmediateConversationWorkflow(
     env,
   ) as unknown as Env["CONVERSATION_WORKFLOW"];
+  env.REMINDERS_WAKE_WORKFLOW ??= createImmediateReminderWakeWorkflow(
+    env,
+  ) as unknown as Env["REMINDERS_WAKE_WORKFLOW"];
   return { env, db };
 }
 
@@ -360,6 +367,41 @@ function createImmediateConversationWorkflow(env: Env) {
       const task = (async () => {
         try {
           await runConversationWorkflow(
+            env,
+            createWorkflowCtx(),
+            { payload: input.params } as never,
+            { do: async (_name: string, execute: () => Promise<unknown>) => execute() } as never,
+          );
+          statuses.set(input.id, "complete");
+        } catch (error) {
+          statuses.set(input.id, "failed");
+          throw error;
+        }
+      })();
+      pendingWorkflowTasks.push(task);
+      return { id: input.id };
+    },
+    async get(id: string) {
+      return {
+        async terminate() {
+          statuses.set(id, "terminated");
+        },
+        async status() {
+          return { status: statuses.get(id) ?? "unknown" };
+        },
+      };
+    },
+  };
+}
+
+function createImmediateReminderWakeWorkflow(env: Env) {
+  const statuses = new Map<string, string>();
+  return {
+    async create(input: { id: string; params: ReminderWakeWorkflowPayload }) {
+      statuses.set(input.id, "running");
+      const task = (async () => {
+        try {
+          await runRemindersWakeWorkflow(
             env,
             createWorkflowCtx(),
             { payload: input.params } as never,

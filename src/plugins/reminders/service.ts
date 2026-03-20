@@ -72,6 +72,7 @@ export class RemindersService {
           kind: (input.item.kind ?? "follow_up").trim() || "follow_up",
           title: input.item.title.trim(),
           notes: (input.item.notes ?? "").trim(),
+          delivery: input.item.delivery === "silent" ? "silent" : "visible",
           status: "open",
           priority: normalizePriority(input.item.priority),
           scheduleJson: stringifySchedule(input.item.schedule ?? null),
@@ -100,6 +101,7 @@ export class RemindersService {
           kind: normalizeOptionalString(input.patch.kind),
           title: normalizeOptionalString(input.patch.title),
           notes: input.patch.notes === undefined ? undefined : input.patch.notes.trim(),
+          delivery: input.patch.delivery,
           status: input.patch.status,
           priority:
             input.patch.priority === undefined

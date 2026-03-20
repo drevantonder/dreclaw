@@ -129,6 +129,7 @@ describe("loop services", () => {
         id: "reminder-1",
         title: "Follow up",
         kind: "task",
+        delivery: "silent",
         priority: 3,
         notes: "",
         nextWakeAt: "2026-03-17T00:00:00.000Z",

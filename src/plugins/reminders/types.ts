@@ -1,4 +1,5 @@
 export type ReminderStatus = "open" | "done" | "cancelled";
+export type ReminderDelivery = "visible" | "silent";
 
 export type ReminderOutcome = "sent_message" | "silent" | "completed" | "cancelled" | "failed";
 
@@ -27,6 +28,7 @@ export interface Reminder {
   kind: string;
   title: string;
   notes: string;
+  delivery: ReminderDelivery;
   status: ReminderStatus;
   priority: number;
   schedule: ReminderSchedule | null;
@@ -68,6 +70,7 @@ export type ReminderUpdateInput =
         kind?: string;
         title: string;
         notes?: string;
+        delivery?: ReminderDelivery;
         priority?: number;
         schedule?: ReminderSchedule | null;
         nextWakeAt?: string | null;
@@ -81,6 +84,7 @@ export type ReminderUpdateInput =
         kind?: string;
         title?: string;
         notes?: string;
+        delivery?: ReminderDelivery;
         priority?: number;
         schedule?: ReminderSchedule | null;
         nextWakeAt?: string | null;

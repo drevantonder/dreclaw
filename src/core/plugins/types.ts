@@ -7,6 +7,7 @@ export interface ReminderRecord {
   title: string;
   notes: string;
   kind: string;
+  delivery: "visible" | "silent";
   priority: number;
   nextWakeAt: string | null;
   sourceChatId: number | null;
@@ -28,6 +29,7 @@ export type ReminderUpdateCommand =
         kind?: string;
         title: string;
         notes?: string;
+        delivery?: "visible" | "silent";
         priority?: number;
         schedule?: unknown;
         nextWakeAt?: string | null;
@@ -41,6 +43,7 @@ export type ReminderUpdateCommand =
         kind?: string;
         title?: string;
         notes?: string;
+        delivery?: "visible" | "silent";
         priority?: number;
         schedule?: unknown;
         nextWakeAt?: string | null;

@@ -37,6 +37,7 @@ export async function insertReminder(
     kind: string;
     title: string;
     notes: string;
+    delivery: string;
     status: string;
     priority: number;
     scheduleJson: string | null;
@@ -51,13 +52,14 @@ export async function insertReminder(
   await retryOnce(async () => {
     await db
       .prepare(
-        "INSERT INTO reminders_items (id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
+        "INSERT INTO reminders_items (id, kind, title, notes, delivery_mode, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
       )
       .bind(
         input.id,
         input.kind,
         input.title,
         input.notes,
+        input.delivery,
         input.status,
         input.priority,
         input.scheduleJson,
@@ -76,7 +78,7 @@ export async function getReminder(db: D1Database, id: string): Promise<Reminder 
   return retryOnce(async () => {
     const row = await db
       .prepare(
-        "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items WHERE id = ?",
+        "SELECT id, kind, title, notes, delivery_mode, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items WHERE id = ?",
       )
       .bind(id)
       .first<Record<string, unknown>>();
@@ -113,7 +115,7 @@ export async function listReminders(
   }
   binds.push(Math.max(1, Math.min(100, Math.trunc(params.limit))));
   const sql = [
-    "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items",
+    "SELECT id, kind, title, notes, delivery_mode, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items",
     conditions.length ? `WHERE ${conditions.join(" AND ")}` : "",
     "ORDER BY CASE WHEN status = 'open' THEN 0 ELSE 1 END, priority ASC, COALESCE(next_wake_at, updated_at) ASC LIMIT ?",
   ]
@@ -135,6 +137,7 @@ export async function updateReminder(
     kind?: string;
     title?: string;
     notes?: string;
+    delivery?: string;
     status?: string;
     priority?: number;
     scheduleJson?: string | null;
@@ -154,6 +157,7 @@ export async function updateReminder(
     ["kind", input.kind],
     ["title", input.title],
     ["notes", input.notes],
+    ["delivery_mode", input.delivery],
     ["status", input.status],
     ["priority", input.priority],
     ["schedule_json", input.scheduleJson],
@@ -209,7 +213,7 @@ export async function listDueReminders(
   return retryOnce(async () => {
     const rows = await db
       .prepare(
-        "SELECT id, kind, title, notes, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items WHERE status = 'open' AND next_wake_at IS NOT NULL AND next_wake_at <= ? AND workflow_id IS NULL ORDER BY priority ASC, next_wake_at ASC LIMIT ?",
+        "SELECT id, kind, title, notes, delivery_mode, status, priority, schedule_json, next_wake_at, last_wake_at, snooze_until, source_chat_id, claimed_at, claim_token, workflow_id, created_at, updated_at FROM reminders_items WHERE status = 'open' AND next_wake_at IS NOT NULL AND next_wake_at <= ? AND workflow_id IS NULL ORDER BY priority ASC, next_wake_at ASC LIMIT ?",
       )
       .bind(input.nowIso, input.limit)
       .all<Record<string, unknown>>();
@@ -317,6 +321,7 @@ function mapReminder(row: Record<string, unknown>): Reminder {
     kind: stringValue(row.kind, "follow_up"),
     title: stringValue(row.title),
     notes: stringValue(row.notes),
+    delivery: normalizeDelivery(row.delivery_mode),
     status: normalizeStatus(row.status),
     priority: Number(row.priority ?? 3),
     schedule: parseSchedule(row.schedule_json),
@@ -357,6 +362,10 @@ function parseSchedule(value: unknown) {
 
 function normalizeStatus(value: unknown): Reminder["status"] {
   return value === "done" || value === "cancelled" ? value : "open";
+}
+
+function normalizeDelivery(value: unknown): Reminder["delivery"] {
+  return value === "silent" ? "silent" : "visible";
 }
 
 function normalizeOutcome(value: unknown): ReminderRun["outcome"] {
