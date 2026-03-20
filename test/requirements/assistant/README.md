@@ -8,6 +8,8 @@ Current promoted coverage:
 - semantic final reply behavior
 - incremental visible output before completion
 - visible reasoning on/off behavior
+- multi-turn continuity across plain text chat
+- visible continuity boundaries after `/new`, `/reset`, and `/factory-reset`
 
 Explicitly not promoted yet:
 
