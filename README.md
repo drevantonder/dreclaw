@@ -92,7 +92,6 @@ Normal messages stream a single assistant reply.
 - Run full tests: `vp test`
 - Run supporting tests only: `vp run test:supporting`
 - Run requirement tests only: `vp run test:requirements`
-- Run tests related to changed files: `vp run test:related`
 - Check format, lint, and types: `vp check`
 - Run live model smoke test (real OpenCode Go + tool loop): `vp run smoke:live -- --prompt "hey"`
 - Run Telegram live test via GramJS: `vp run live:telegram -- --prompt "hey"`

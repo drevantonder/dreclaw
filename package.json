@@ -12,7 +12,6 @@
     "smoke:live": "node scripts/smoke-live.mjs",
     "test:requirements": "vp test test/requirements --passWithNoTests",
     "test:supporting": "vp test test/supporting",
-    "test:related": "vp test related",
     "cf:verify:predeploy": "vp check && vp test && vp run smoke:live",
     "prepare": "vp config"
   },
