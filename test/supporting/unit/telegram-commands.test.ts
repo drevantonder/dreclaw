@@ -7,7 +7,14 @@ const mocks = vi.hoisted(() => {
     status: vi.fn(async () => "status text"),
     reset: vi.fn((state) => ({ ...state, history: [] })),
     setVerbose: vi.fn((state, enabled) => ({ ...state, verbose: enabled })),
-    factoryReset: vi.fn(async () => ({ history: [], verbose: false, runStatus: {} })),
+    factoryReset: vi.fn(async () => ({
+      history: [],
+      verbose: false,
+      thinking: true,
+      reasoning: false,
+      modelAlias: null,
+      runStatus: {},
+    })),
   };
   return {
     controlsInstance,
@@ -55,10 +62,17 @@ describe("telegram commands", () => {
     mocks.getThreadStateSnapshot.mockResolvedValue({
       history: ["old"],
       verbose: false,
+      thinking: true,
+      reasoning: false,
       modelAlias: null,
       runStatus: { running: false },
     });
-    mocks.getPersistedThreadControls.mockResolvedValue({ verbose: false, modelAlias: null });
+    mocks.getPersistedThreadControls.mockResolvedValue({
+      verbose: false,
+      thinking: true,
+      reasoning: false,
+      modelAlias: null,
+    });
     mocks.createRunCoordinator.mockReturnValue({
       recoverState: vi.fn(async (_threadId: string, state: unknown) => state),
       getStatus: vi.fn(async () => ({ busy: "no", runStatus: { running: false } })),
@@ -115,6 +129,8 @@ describe("telegram commands", () => {
     mocks.getThreadStateSnapshot.mockResolvedValue({
       history: [],
       verbose: true,
+      thinking: true,
+      reasoning: false,
       modelAlias: null,
       runStatus: { running: false },
     });
@@ -200,12 +216,16 @@ describe("telegram commands", () => {
 
     expect(mocks.setPersistedThreadControls).toHaveBeenCalledWith(env.DRECLAW_DB, "telegram:777", {
       verbose: false,
+      thinking: true,
+      reasoning: false,
       modelAlias: "kimi",
     });
     expect(mocks.setThreadStateSnapshot).toHaveBeenCalledWith(env.DRECLAW_DB, "telegram:777", {
       history: [],
       memoryTurns: 0,
       verbose: false,
+      thinking: true,
+      reasoning: false,
       modelAlias: "kimi",
       codeRuntime: {},
       loadedSkills: [],
@@ -228,10 +248,17 @@ describe("telegram commands", () => {
 
   it("clears saved model alias on factory reset", async () => {
     const { env } = createEnv();
-    mocks.getPersistedThreadControls.mockResolvedValue({ verbose: true, modelAlias: "kimi" });
+    mocks.getPersistedThreadControls.mockResolvedValue({
+      verbose: true,
+      thinking: false,
+      reasoning: true,
+      modelAlias: "kimi",
+    });
     mocks.controlsInstance.factoryReset.mockResolvedValue({
       history: [],
       verbose: false,
+      thinking: true,
+      reasoning: false,
       modelAlias: null,
       runStatus: {},
     } as never);
@@ -247,6 +274,8 @@ describe("telegram commands", () => {
 
     expect(mocks.setPersistedThreadControls).toHaveBeenCalledWith(env.DRECLAW_DB, "telegram:777", {
       verbose: false,
+      thinking: true,
+      reasoning: false,
       modelAlias: null,
     });
   });

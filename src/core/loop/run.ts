@@ -65,6 +65,8 @@ export class RunCoordinator {
       state: {
         ...state,
         verbose: controls?.verbose ?? state.verbose,
+        thinking: controls?.thinking ?? state.thinking,
+        reasoning: controls?.reasoning ?? state.reasoning,
         modelAlias:
           typeof controls?.modelAlias === "string" && controls.modelAlias.trim()
             ? controls.modelAlias.trim().toLowerCase()

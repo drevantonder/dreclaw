@@ -36,6 +36,8 @@ export interface PersistedRunStatus {
 
 export interface PersistedThreadControls {
   verbose: boolean;
+  thinking?: boolean;
+  reasoning?: boolean;
   modelAlias?: string | null;
 }
 

@@ -7,7 +7,11 @@ import {
   setPersistedThreadControls,
   setThreadStateSnapshot,
 } from "../loop/repo";
-import { normalizeBotThreadState, type BotThreadState } from "../loop/state";
+import {
+  normalizeBotThreadState,
+  THREAD_CONTROL_DEFAULTS,
+  type BotThreadState,
+} from "../loop/state";
 import { createRunCoordinator } from "../loop/run";
 import type { RuntimeControlsService } from "../runtime";
 import {
@@ -107,19 +111,39 @@ export async function handleAsyncCommand(params: {
     return { messages: ["Stopped."] };
   }
 
-  if (lowered === "/reset") {
+  if (lowered === "/new") {
     if (busy) return { messages: [busyMessage(lowered)] };
     const next = controls.reset(controlledState);
-    await saveThreadControls(runtimeDeps, threadId, { verbose: false });
     await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
-    return { messages: ["Session reset. Conversation context cleared."] };
+    return { messages: ["New session started. Conversation context cleared and settings kept."] };
+  }
+
+  if (lowered === "/reset") {
+    if (busy) return { messages: [busyMessage(lowered)] };
+    const next = {
+      ...controls.reset(controlledState),
+      verbose: THREAD_CONTROL_DEFAULTS.verbose,
+      thinking: THREAD_CONTROL_DEFAULTS.thinking,
+      reasoning: THREAD_CONTROL_DEFAULTS.reasoning,
+    };
+    await saveThreadControls(runtimeDeps, threadId, {
+      verbose: THREAD_CONTROL_DEFAULTS.verbose,
+      thinking: THREAD_CONTROL_DEFAULTS.thinking,
+      reasoning: THREAD_CONTROL_DEFAULTS.reasoning,
+    });
+    await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
+    return {
+      messages: ["Session reset. Conversation context cleared and chat defaults restored."],
+    };
   }
 
   if (lowered === "/factory-reset") {
     if (busy) return { messages: [busyMessage(lowered)] };
     const next = await controls.factoryReset(channelId);
     await setPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId, {
-      verbose: false,
+      verbose: THREAD_CONTROL_DEFAULTS.verbose,
+      thinking: THREAD_CONTROL_DEFAULTS.thinking,
+      reasoning: THREAD_CONTROL_DEFAULTS.reasoning,
       modelAlias: null,
     });
     await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
@@ -129,15 +153,36 @@ export async function handleAsyncCommand(params: {
   }
 
   if (lowered === "/verbose") {
-    if (value !== "on" && value !== "off") {
-      return {
-        messages: [`verbose: ${snapshot.verbose ? "on" : "off"}\nusage: /verbose on|off`],
-      };
-    }
-    const next = controls.setVerbose(controlledState, value === "on");
-    await saveThreadControls(runtimeDeps, threadId, { verbose: value === "on" });
-    await setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next);
-    return { messages: [`verbose ${value === "on" ? "enabled" : "disabled"}.`] };
+    return applyBooleanControl({
+      control: "verbose",
+      value,
+      currentState: controlledState,
+      updateState: (enabled) => controls.setVerbose(controlledState, enabled),
+      persist: async (enabled) => saveThreadControls(runtimeDeps, threadId, { verbose: enabled }),
+      saveSnapshot: async (next) => setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next),
+    });
+  }
+
+  if (lowered === "/thinking") {
+    return applyBooleanControl({
+      control: "thinking",
+      value,
+      currentState: controlledState,
+      updateState: (enabled) => ({ ...controlledState, thinking: enabled }),
+      persist: async (enabled) => saveThreadControls(runtimeDeps, threadId, { thinking: enabled }),
+      saveSnapshot: async (next) => setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next),
+    });
+  }
+
+  if (lowered === "/reasoning") {
+    return applyBooleanControl({
+      control: "reasoning",
+      value,
+      currentState: controlledState,
+      updateState: (enabled) => ({ ...controlledState, reasoning: enabled }),
+      persist: async (enabled) => saveThreadControls(runtimeDeps, threadId, { reasoning: enabled }),
+      saveSnapshot: async (next) => setThreadStateSnapshot(runtimeDeps.DRECLAW_DB, threadId, next),
+    });
   }
 
   const pluginCommand = pluginRegistry.listCommands().find((item) => item.match(text));
@@ -159,11 +204,20 @@ function busyMessage(command: string): string {
 async function saveThreadControls(
   runtimeDeps: RuntimeDeps,
   threadId: string,
-  patch: Partial<{ verbose: boolean; modelAlias: string | null }>,
+  patch: Partial<{
+    verbose: boolean;
+    thinking: boolean;
+    reasoning: boolean;
+    modelAlias: string | null;
+  }>,
 ): Promise<void> {
-  const current = (await getPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId)) ?? {
-    verbose: false,
+  const persisted = await getPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId);
+  const current = {
+    verbose: THREAD_CONTROL_DEFAULTS.verbose,
+    thinking: THREAD_CONTROL_DEFAULTS.thinking,
+    reasoning: THREAD_CONTROL_DEFAULTS.reasoning,
     modelAlias: null,
+    ...persisted,
   };
   await setPersistedThreadControls(runtimeDeps.DRECLAW_DB, threadId, {
     ...current,
@@ -184,4 +238,26 @@ function renderModelStatus(
   ];
   if (includeUsage) lines.push("usage: /model <alias>");
   return lines.join("\n");
+}
+
+async function applyBooleanControl(params: {
+  control: "verbose" | "thinking" | "reasoning";
+  value?: string;
+  currentState: BotThreadState;
+  updateState: (enabled: boolean) => BotThreadState;
+  persist: (enabled: boolean) => Promise<void>;
+  saveSnapshot: (state: BotThreadState) => Promise<void>;
+}): Promise<CommandResult> {
+  if (params.value !== "on" && params.value !== "off") {
+    return {
+      messages: [
+        `${params.control}: ${params.currentState[params.control] ? "on" : "off"}\nusage: /${params.control} on|off`,
+      ],
+    };
+  }
+  const enabled = params.value === "on";
+  const next = params.updateState(enabled);
+  await params.persist(enabled);
+  await params.saveSnapshot(next);
+  return { messages: [`${params.control} ${enabled ? "enabled" : "disabled"}.`] };
 }

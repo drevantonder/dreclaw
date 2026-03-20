@@ -1,5 +1,11 @@
 import { normalizeCodeRuntimeState, type CodeRuntimeState } from "../tools/code-exec";
 
+export const THREAD_CONTROL_DEFAULTS = {
+  verbose: false,
+  thinking: true,
+  reasoning: false,
+} as const;
+
 export type ConversationEntry = {
   role: "user" | "assistant" | "tool";
   content: string;
@@ -19,6 +25,8 @@ export interface BotThreadState {
   history: ConversationEntry[];
   memoryTurns: number;
   verbose: boolean;
+  thinking: boolean;
+  reasoning: boolean;
   modelAlias: string | null;
   codeRuntime: CodeRuntimeState;
   loadedSkills: string[];
@@ -43,7 +51,14 @@ export function normalizeBotThreadState(input: BotThreadState | null | undefined
     memoryTurns: Number.isFinite(source?.memoryTurns)
       ? Math.max(0, Math.trunc(source?.memoryTurns ?? 0))
       : 0,
-    verbose: Boolean(source?.verbose),
+    verbose:
+      source?.verbose === undefined ? THREAD_CONTROL_DEFAULTS.verbose : Boolean(source?.verbose),
+    thinking:
+      source?.thinking === undefined ? THREAD_CONTROL_DEFAULTS.thinking : Boolean(source?.thinking),
+    reasoning:
+      source?.reasoning === undefined
+        ? THREAD_CONTROL_DEFAULTS.reasoning
+        : Boolean(source?.reasoning),
     modelAlias:
       typeof source?.modelAlias === "string" && source.modelAlias.trim()
         ? source.modelAlias.trim().toLowerCase()

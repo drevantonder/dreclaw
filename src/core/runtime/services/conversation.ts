@@ -140,7 +140,10 @@ export function createConversationLoopService(params: {
         model,
         stopWhen: stepCountIs(getRunSliceSteps(params.runtimeDeps.RUN_SLICE_STEPS)),
         maxOutputTokens: getMaxOutputTokens(runtime, "conversation"),
-        providerOptions: getAgentProviderOptions(runtime, params.runtimeDeps.REASONING_EFFORT),
+        providerOptions: getAgentProviderOptions(
+          runtime,
+          state.thinking ? params.runtimeDeps.REASONING_EFFORT : "none",
+        ),
         tools: enableTools
           ? params.createTools({
               chatId: input.chatId,
@@ -202,6 +205,14 @@ export function createConversationLoopService(params: {
           runTimeoutMs,
           "Assistant text timed out",
         );
+        const reasoningText = await withTimeout(
+          Promise.resolve(
+            (stream as unknown as { reasoningText?: Promise<string | undefined> }).reasoningText ??
+              undefined,
+          ),
+          runTimeoutMs,
+          "Assistant reasoning timed out",
+        ).catch(() => undefined);
         await params.runs.throwIfCancelled(thread.id);
         const responseMessages = isModelMessageArray(response.messages) ? response.messages : [];
         const nextMessages = mergeContinuationMessages(inputMessages, responseMessages);
@@ -216,6 +227,13 @@ export function createConversationLoopService(params: {
           (value): value is string => typeof value === "string" && value.trim().length > 0,
         );
         const assistantText = assistantCandidate?.trim() ?? "";
+        if (state.reasoning && typeof reasoningText === "string" && reasoningText.trim()) {
+          try {
+            await thread.post(`Reasoning:\n${reasoningText.trim()}`);
+          } catch {
+            // noop
+          }
+        }
         if (assistantText && !stepHadToolCalls && !streamedText) {
           try {
             await thread.post(assistantText);

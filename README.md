@@ -6,7 +6,7 @@
 
 - Telegram private chat-only, single-user (me)
 - Chat SDK + Telegram adapter runtime
-- Commands: `/help`, `/status`, `/reset`, `/factory-reset`, `/verbose`, `/google ...`
+- Commands: `/help`, `/status`, `/model`, `/new`, `/reset`, `/factory-reset`, `/stop`, `/verbose`, `/thinking`, `/reasoning`, `/google ...`
 - Core tools: `search`, `codemode`
 - Persistent memory: D1 episodic/fact memory + Vectorize semantic recall
 - Hybrid memory pipeline: D1 episodic/fact memory + Vectorize semantic recall (Workers AI embeddings)
@@ -75,9 +75,13 @@ vp run cf:deploy
 - `/help` lists commands.
 - `/status` shows model/provider/memory/google/verbose status.
 - `/model` lists aliases including `glm`, `workers-kimi`, `kimi`, `fireworks-kimi`, and `fireworks-minimax`.
-- `/reset` clears conversation context only (keeps memory).
+- `/new` starts a fresh session and keeps thread settings.
+- `/reset` clears conversation context and restores chat defaults.
 - `/factory-reset` clears conversation, memory, runtime state, and workspace files.
+- `/stop` cooperatively stops the current run.
 - `/verbose on|off` toggles tool traces, including codemode code, writes, and result summaries.
+- `/thinking on|off` controls model thinking effort for the chat.
+- `/reasoning on|off` toggles visible reasoning text when available.
 - `/google connect` starts Google OAuth linking flow.
 - `/google status` shows current Google link status and scopes.
 - `/google disconnect` removes stored Google OAuth token.
