@@ -4,8 +4,7 @@ These tests define the promoted product contract for plain assistant chat usage.
 
 Current promoted coverage:
 
-- single-turn text chat only
-- semantic final reply behavior
+- semantic final reply behavior for plain chat
 - incremental visible output before completion
 - visible reasoning on/off behavior
 - multi-turn continuity across plain text chat

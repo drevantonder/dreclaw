@@ -98,6 +98,50 @@ describe("loop services", () => {
     expect(result.state.history.map((entry) => entry.role)).toEqual(["user", "assistant"]);
   });
 
+  it("returns a visible proactive message for visible reminders", async () => {
+    const { env } = createEnv();
+    mocks.stream.mockImplementation(async () => ({
+      textStream: emptyStream(),
+      response: Promise.resolve({ messages: [] }),
+      text: Promise.resolve("Follow up now."),
+    }));
+
+    const service = createProactiveWakeService({
+      runtimeDeps: env as never,
+      runs: {
+        throwIfCancelled: async () => undefined,
+      } as never,
+      workspaceGateway: {
+        listSkills: vi.fn(async () => []),
+        getLoadedSkills: vi.fn(async () => []),
+      } as never,
+      memoryGateway: {
+        renderContext: vi.fn(async () => ""),
+      } as never,
+      createTools: vi.fn(() => ({})) as unknown as CreateAgentTools,
+    });
+
+    const result = await service.runProactiveWake({
+      threadId: "telegram:777",
+      chatId: 777,
+      state: normalizeBotThreadState(undefined),
+      item: {
+        id: "reminder-1",
+        title: "Follow up",
+        kind: "task",
+        delivery: "visible",
+        priority: 3,
+        notes: "",
+        nextWakeAt: "2026-03-17T00:00:00.000Z",
+      } as never,
+      recentWakeSummaries: [],
+    });
+
+    expect(result.messageText).toBe("Follow up now.");
+    expect(result.summary).toContain("Follow up now.");
+    expect(result.state.history).toEqual([{ role: "assistant", content: "Follow up now." }]);
+  });
+
   it("keeps proactive wakes silent when the model replies NO_MESSAGE", async () => {
     const { env } = createEnv();
     mocks.stream.mockImplementation(async () => ({

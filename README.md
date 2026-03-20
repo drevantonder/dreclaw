@@ -86,13 +86,13 @@ vp run cf:deploy
 - `/google status` shows current Google link status and scopes.
 - `/google disconnect` removes stored Google OAuth token.
 
-Normal messages stream a single assistant reply.
+Normal text messages stream a single assistant reply per turn.
 
 ## Testing
 
 - Testing policy lives in [`docs/testing.md`](docs/testing.md).
 - Requirement tests are promoted intentionally under `test/requirements/...`.
-- All existing automated tests currently live under `test/supporting/...`.
+- Automated tests are split between `test/requirements/...` and `test/supporting/...`.
 - Run full tests: `vp test`
 - Run supporting tests only: `vp run test:supporting`
 - Run requirement tests only: `vp run test:requirements`
