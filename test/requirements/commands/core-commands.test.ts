@@ -341,7 +341,31 @@ describe("command requirements", () => {
   });
 
   it("busy-sensitive commands refuse to run while the thread is busy", async () => {
-    const { env } = createEnv();
+    const { env, db } = createEnv();
+    await setPersistedThreadControls(env.DRECLAW_DB, THREAD_ID, {
+      verbose: true,
+      thinking: false,
+      reasoning: true,
+      modelAlias: "kimi",
+    });
+    await setThreadStateSnapshot(env.DRECLAW_DB, THREAD_ID, {
+      ...normalizeBotThreadState(undefined),
+      history: [
+        { role: "user", content: "keep this context" },
+        { role: "assistant", content: "still here" },
+      ],
+      verbose: true,
+      thinking: false,
+      reasoning: true,
+      modelAlias: "kimi",
+    });
+    const workspace = createWorkspaceGateway({
+      db: env.DRECLAW_DB,
+      maxFileBytes: 10_000,
+      maxPathLength: 255,
+    });
+    const backend = workspace.createStateBackend();
+    await backend.writeFile("/tmp/requirement-busy-reset.txt", "hello");
     await setPersistedRunStatus(env.DRECLAW_DB, THREAD_ID, {
       running: true,
       startedAt: "2026-03-20T10:00:00.000Z",
@@ -352,9 +376,36 @@ describe("command requirements", () => {
       workflowInstanceId: null,
     });
 
+    expect(joined(await runCommand(env, "/model workers-kimi"))).toContain(
+      "Currently busy. Not executed.",
+    );
     expect(joined(await runCommand(env, "/new"))).toContain("Currently busy. Not executed.");
+    expect(joined(await runCommand(env, "/reset"))).toContain("Currently busy. Not executed.");
+    expect(joined(await runCommand(env, "/factory-reset"))).toContain(
+      "Currently busy. Not executed.",
+    );
     expect(joined(await runCommand(env, "/google connect"))).toContain(
       "Currently busy. Not executed.",
     );
+
+    const controls = await getPersistedThreadControls(env.DRECLAW_DB, THREAD_ID);
+    const snapshot = await getThreadStateSnapshot<ReturnType<typeof normalizeBotThreadState>>(
+      env.DRECLAW_DB,
+      THREAD_ID,
+    );
+
+    expect(controls).toEqual({
+      verbose: true,
+      thinking: false,
+      reasoning: true,
+      modelAlias: "kimi",
+    });
+    expect(snapshot?.history).toEqual([
+      { role: "user", content: "keep this context" },
+      { role: "assistant", content: "still here" },
+    ]);
+    expect(snapshot?.modelAlias).toBe("kimi");
+    expect(await backend.exists("/tmp/requirement-busy-reset.txt")).toBe(true);
+    expect(db.oauthStates.size).toBe(0);
   });
 });

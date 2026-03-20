@@ -33,6 +33,7 @@ We follow the Testing Library principle that the more tests resemble the way the
 ## Project Notes
 
 - New and existing tests default to `test/supporting/...` in this repo unless explicitly promoted.
+- There are no taxonomy READMEs under `test/...`; the requirement boundary is defined by placement plus this document.
 - Live verification harnesses in `scripts/telegram-live.mjs` and `scripts/smoke-live.mjs` are not requirement tests.
 
 Sources:
