@@ -442,7 +442,13 @@ function createImmediateConversationWorkflow(env: Env) {
             env,
             createWorkflowCtx(),
             { payload: input.params } as never,
-            { do: async (_name: string, execute: () => Promise<unknown>) => execute() } as never,
+            {
+              do: async (_name: string, execute: () => Promise<unknown>) => execute(),
+              sleep: async (_name: string, duration: number | string) => {
+                const ms = typeof duration === "number" ? duration : Number(duration);
+                await new Promise((resolve) => setTimeout(resolve, Number.isFinite(ms) ? ms : 0));
+              },
+            } as never,
           );
           statuses.set(input.id, "complete");
         } catch (error) {

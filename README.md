@@ -99,6 +99,7 @@ Normal text messages stream a single assistant reply per turn.
 - Check format, lint, and types: `vp check`
 - Run live model smoke test (real OpenCode Go + tool loop): `vp run smoke:live -- --prompt "hey"`
 - Run Telegram live test via GramJS: `vp run live:telegram -- --prompt "hey"`
+- Run staging long-run Cloudflare verification: `vp run live:telegram:long-run -- --bot <staging-bot> --timeout-ms 120000 --scenario-secret <secret>`
 - Run pre-deploy gate: `vp run cf:verify:predeploy`
 
 ### Telegram live harness
@@ -108,6 +109,25 @@ Normal text messages stream a single assistant reply per turn.
 - Get `TELEGRAM_TEST_API_ID` and `TELEGRAM_TEST_API_HASH` from `https://my.telegram.org/apps`.
 - First-time login: `vp run live:telegram -- --login` and save the printed session string into `.env` as `TELEGRAM_TEST_SESSION`.
 - Keep these values local only; do not sync them as Worker secrets.
+
+### Staging long-run reality check
+
+- This check is manual and intended for a dedicated staging bot/worker, not production.
+- Enable the scenario only in staging by setting `LIVE_TEST_SCENARIOS_ENABLED=true` and a Worker secret `LIVE_TEST_SCENARIO_SECRET`.
+- The scenario does not use a real LLM. It keeps the workflow-backed run alive for a controlled duration and verifies that a second queued turn still completes afterward.
+- Example:
+
+```bash
+vp run live:telegram:long-run -- \
+  --bot dreclaw-staging-bot \
+  --timeout-ms 120000 \
+  --scenario-secret "$LIVE_TEST_SCENARIO_SECRET"
+```
+
+- Expected pass conditions:
+  - `/status` reports `busy: yes` while the first run is active
+  - the second normal message is queued, not rejected with the busy message
+  - both deterministic completion markers arrive in order
 
 ## Persistence model
 

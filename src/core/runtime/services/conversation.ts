@@ -117,7 +117,6 @@ export function createConversationLoopService(params: {
       const runtime = getRuntimeConfig(params.runtimeDeps, state);
       const toolTraces: ToolTrace[] = [];
       const tracer = new VerboseTracer(params.runtimeDeps.DRECLAW_DB, thread);
-      const model = createRuntimeModel(runtime);
       const enableTools = shouldEnableAgentTools(userText);
       const includeMemory = shouldIncludeMemoryContext(userText);
       const inputMessages = isModelMessageArray(input.baseMessages)
@@ -136,24 +135,6 @@ export function createConversationLoopService(params: {
       const runTimeoutMs = input.runTimeoutMs ?? getRunTimeoutMs(userText);
       let stepHadToolCalls = false;
       let stepText = "";
-
-      const agent = new ToolLoopAgent({
-        model,
-        stopWhen: stepCountIs(getRunSliceSteps(params.runtimeDeps.RUN_SLICE_STEPS)),
-        maxOutputTokens: getMaxOutputTokens(runtime, "conversation"),
-        providerOptions: getAgentProviderOptions(
-          runtime,
-          state.thinking ? params.runtimeDeps.REASONING_EFFORT : "none",
-        ),
-        tools: enableTools
-          ? params.createTools({
-              chatId: input.chatId,
-              threadId: thread.id,
-              tracer,
-              toolTraces,
-            })
-          : {},
-      });
 
       const heartbeat = params.runs.createHeartbeat({
         thread,
@@ -174,6 +155,24 @@ export function createConversationLoopService(params: {
 
       try {
         await params.runs.throwIfCancelled(thread.id);
+        const model = createRuntimeModel(runtime);
+        const agent = new ToolLoopAgent({
+          model,
+          stopWhen: stepCountIs(getRunSliceSteps(params.runtimeDeps.RUN_SLICE_STEPS)),
+          maxOutputTokens: getMaxOutputTokens(runtime, "conversation"),
+          providerOptions: getAgentProviderOptions(
+            runtime,
+            state.thinking ? params.runtimeDeps.REASONING_EFFORT : "none",
+          ),
+          tools: enableTools
+            ? params.createTools({
+                chatId: input.chatId,
+                threadId: thread.id,
+                tracer,
+                toolTraces,
+              })
+            : {},
+        });
         const stream = await withTimeout(
           agent.stream({
             messages: inputMessages,

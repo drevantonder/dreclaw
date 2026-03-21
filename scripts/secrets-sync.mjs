@@ -16,6 +16,7 @@ const secretKeys = [
   "GOOGLE_OAUTH_ENCRYPTION_KEY",
   "MODEL",
   "BASE_URL",
+  "LIVE_TEST_SCENARIO_SECRET",
 ];
 
 const payload = {};

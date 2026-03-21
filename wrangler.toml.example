@@ -34,6 +34,7 @@ MEMORY_MAX_INJECT_TOKENS = "1500"
 MEMORY_REFLECTION_EVERY_TURNS = "8"
 MEMORY_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 REASONING_EFFORT = "medium"
+LIVE_TEST_SCENARIOS_ENABLED = "false"
 
 [observability]
 enabled = true
@@ -55,3 +56,40 @@ class_name = "ConversationWorkflow"
 name = "dreclaw-proactive-wake"
 binding = "PROACTIVE_WAKE_WORKFLOW"
 class_name = "ProactiveWakeWorkflow"
+
+[env.staging]
+name = "dreclaw-staging"
+workers_dev = true
+routes = []
+
+[env.staging.ai]
+binding = "AI"
+
+[[env.staging.vectorize]]
+binding = "VECTORIZE_MEMORY"
+index_name = "REPLACE_WITH_VECTORIZE_INDEX_NAME"
+
+[[env.staging.worker_loaders]]
+binding = "LOADER"
+
+[env.staging.vars]
+USER_TIMEZONE = "Australia/Brisbane"
+LIVE_TEST_SCENARIOS_ENABLED = "true"
+
+[[env.staging.d1_databases]]
+binding = "DRECLAW_DB"
+database_name = "dreclaw"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[env.staging.workflows]]
+name = "dreclaw-staging-conversation"
+binding = "CONVERSATION_WORKFLOW"
+class_name = "ConversationWorkflow"
+
+[[env.staging.workflows]]
+name = "dreclaw-staging-reminders-wake"
+binding = "REMINDERS_WAKE_WORKFLOW"
+class_name = "RemindersWakeWorkflow"
+
+[[env.staging.migrations]]
+tag = "v1"

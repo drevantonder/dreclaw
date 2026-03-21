@@ -57,6 +57,8 @@ export interface Env {
   INLINE_BURST_MS?: string;
   QUEUE_BURST_MS?: string;
   TYPING_PULSE_MS?: string;
+  LIVE_TEST_SCENARIOS_ENABLED?: string;
+  LIVE_TEST_SCENARIO_SECRET?: string;
   PROFILING_ENABLED?: string;
   PROFILING_SAMPLE_RATE?: string;
   REASONING_EFFORT?: string;

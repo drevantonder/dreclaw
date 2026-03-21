@@ -15,7 +15,7 @@ import {
   type ChatInboxRecord,
 } from "../core/loop/repo";
 import { createLoopServices } from "../core/runtime";
-import { normalizeBotThreadState, type BotThreadState } from "../core/loop/state";
+import { normalizeBotThreadState, pushHistory, type BotThreadState } from "../core/loop/state";
 import type {
   ConversationWorkflowPayload,
   QueuedConversationTurnPayload,
@@ -28,6 +28,12 @@ import { createRunCoordinator } from "../core/loop/run";
 import { createProfiler, parseProfilingEnabled, parseProfilingSampleRate } from "../core/profiling";
 import { getRunTimeoutMs } from "../core/runtime/policy/model";
 import { isRunCancelledError } from "../core/runtime/lib/errors";
+
+const LIVE_TEST_PREFIX = "LIVE_TEST_SCENARIO";
+const LIVE_TEST_SCENARIO_NAME = "long-run-queue";
+const LIVE_TEST_MAX_DURATION_MS = 300_000;
+const LIVE_TEST_DEFAULT_STEP_MS = 5_000;
+const LIVE_TEST_MAX_STEP_MS = 10_000;
 
 export async function handleHttpRequest(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
@@ -98,48 +104,67 @@ export async function runConversationWorkflow(
   let outcome = "completed";
   try {
     while (true) {
-      let messages: unknown[] | undefined;
-      let shouldContinue = true;
-      for (let stepIndex = 0; stepIndex < 64 && shouldContinue; stepIndex += 1) {
-        await sendTelegramTypingAction(env.TELEGRAM_BOT_TOKEN, chatId).catch(() => null);
-        const rawResult = await step.do(
-          `conversation-step-${currentMessage.id}-${stepIndex}`,
-          async () => {
-            const stepResult = await services.conversation.runConversationStep({
-              thread,
-              message: currentMessage,
-              chatId,
-              state,
-              imageBlocks: currentImageBlocks,
-              baseMessages: Array.isArray(messages) ? (messages as any) : undefined,
-              isFirstStep: stepIndex === 0,
-              runTimeoutMs: Math.max(
-                getWorkflowBurstMs(runtimeDeps, stepIndex === 0),
-                getRunTimeoutMs(currentMessage.text.trim()),
-              ),
-              profiler,
-              stepIndex,
-            });
-            await thread.setState(stepResult.state as any, { replace: true });
-            return {
-              stateJson: JSON.stringify(stepResult.state),
-              nextMessagesJson: JSON.stringify(stepResult.nextMessages),
-              shouldContinue: stepResult.shouldContinue,
-            };
-          },
-        );
-        const result = rawResult as {
-          stateJson: string;
-          nextMessagesJson: string;
-          shouldContinue: boolean;
-        };
-        state = await runs.restoreWorkflowState({
-          threadId: event.payload.thread.id,
+      const liveTestScenario = parseLiveTestScenario({
+        enabled: env.LIVE_TEST_SCENARIOS_ENABLED,
+        configuredSecret: env.LIVE_TEST_SCENARIO_SECRET,
+        text: currentMessage.text.trim(),
+      });
+
+      if (liveTestScenario) {
+        state = await runLiveTestScenario({
+          env,
+          step,
+          thread,
+          messageText: currentMessage.text.trim(),
+          chatId,
           state,
-          payloadState: JSON.parse(String(result.stateJson ?? "{}")),
+          runs,
+          scenario: liveTestScenario,
         });
-        messages = JSON.parse(String(result.nextMessagesJson ?? "[]")) as unknown[];
-        shouldContinue = Boolean(result.shouldContinue);
+      } else {
+        let messages: unknown[] | undefined;
+        let shouldContinue = true;
+        for (let stepIndex = 0; stepIndex < 64 && shouldContinue; stepIndex += 1) {
+          await sendTelegramTypingAction(env.TELEGRAM_BOT_TOKEN, chatId).catch(() => null);
+          const rawResult = await step.do(
+            `conversation-step-${currentMessage.id}-${stepIndex}`,
+            async () => {
+              const stepResult = await services.conversation.runConversationStep({
+                thread,
+                message: currentMessage,
+                chatId,
+                state,
+                imageBlocks: currentImageBlocks,
+                baseMessages: Array.isArray(messages) ? (messages as any) : undefined,
+                isFirstStep: stepIndex === 0,
+                runTimeoutMs: Math.max(
+                  getWorkflowBurstMs(runtimeDeps, stepIndex === 0),
+                  getRunTimeoutMs(currentMessage.text.trim()),
+                ),
+                profiler,
+                stepIndex,
+              });
+              await thread.setState(stepResult.state as any, { replace: true });
+              return {
+                stateJson: JSON.stringify(stepResult.state),
+                nextMessagesJson: JSON.stringify(stepResult.nextMessages),
+                shouldContinue: stepResult.shouldContinue,
+              };
+            },
+          );
+          const result = rawResult as {
+            stateJson: string;
+            nextMessagesJson: string;
+            shouldContinue: boolean;
+          };
+          state = await runs.restoreWorkflowState({
+            threadId: event.payload.thread.id,
+            state,
+            payloadState: JSON.parse(String(result.stateJson ?? "{}")),
+          });
+          messages = JSON.parse(String(result.nextMessagesJson ?? "[]")) as unknown[];
+          shouldContinue = Boolean(result.shouldContinue);
+        }
       }
 
       await thread.setState(state as any, { replace: true });
@@ -333,4 +358,131 @@ function parsePositiveMs(value: string | undefined, fallback: number): number {
 export async function handleScheduled(env: Env): Promise<void> {
   const runtimeDeps = buildRuntimeDeps(env);
   await runtimeDeps.pluginRegistry.runScheduled({ nowIso: new Date().toISOString() });
+}
+
+type LiveTestScenario =
+  | { kind: "unauthorized" }
+  | {
+      kind: "long-run-queue";
+      runId: string;
+      durationMs: number;
+      stepMs: number;
+    };
+
+function parseLiveTestScenario(params: {
+  enabled?: string;
+  configuredSecret?: string;
+  text: string;
+}): LiveTestScenario | null {
+  const text = String(params.text ?? "").trim();
+  if (!text.startsWith(LIVE_TEST_PREFIX)) return null;
+  if (!parseBooleanFlag(params.enabled)) return null;
+
+  const parts = text.split(/\s+/);
+  if (parts[1] !== LIVE_TEST_SCENARIO_NAME) return null;
+  const values = new Map<string, string>();
+  for (const entry of parts.slice(2)) {
+    const separator = entry.indexOf("=");
+    if (separator <= 0) continue;
+    values.set(entry.slice(0, separator), entry.slice(separator + 1));
+  }
+
+  const secret = values.get("secret") ?? "";
+  const expectedSecret = String(params.configuredSecret ?? "");
+  if (!secret || !expectedSecret || secret !== expectedSecret) return { kind: "unauthorized" };
+
+  const runId = sanitizeLiveTestValue(values.get("run"), 64);
+  if (!runId) return { kind: "unauthorized" };
+
+  return {
+    kind: "long-run-queue",
+    runId,
+    durationMs: clampDurationMs(values.get("duration_ms")),
+    stepMs: clampStepMs(values.get("step_ms")),
+  };
+}
+
+async function runLiveTestScenario(params: {
+  env: Env;
+  step: WorkflowStep;
+  thread: ThreadImpl<BotThreadState>;
+  messageText: string;
+  chatId: number;
+  state: BotThreadState;
+  runs: ReturnType<typeof createRunCoordinator>;
+  scenario: LiveTestScenario;
+}): Promise<BotThreadState> {
+  let state = pushHistory(params.state, "user", params.messageText || "[image]");
+
+  if (params.scenario.kind === "unauthorized") {
+    const text = "Live test scenario unauthorized.";
+    await params.thread.post(text).catch(() => null);
+    state = pushHistory(state, "assistant", text);
+    state = params.runs.finishRun(state);
+    await Promise.allSettled([
+      params.thread.setState(state as any, { replace: true }),
+      params.runs.persistRunState(params.thread.id, state),
+    ]);
+    return state;
+  }
+
+  let remainingMs = params.scenario.durationMs;
+  for (let sliceIndex = 0; remainingMs > 0; sliceIndex += 1) {
+    await params.runs.throwIfCancelled(params.thread.id);
+    await sendTelegramTypingAction(params.env.TELEGRAM_BOT_TOKEN, params.chatId).catch(() => null);
+    const chunkMs = Math.min(remainingMs, params.scenario.stepMs);
+    await params.step.sleep(`live-test-${params.scenario.runId}-${sliceIndex}`, chunkMs);
+    remainingMs -= chunkMs;
+    state = params.runs.touchHeartbeat(state);
+    await Promise.allSettled([
+      params.thread.setState(state as any, { replace: true }),
+      params.runs.persistRunState(params.thread.id, state),
+    ]);
+  }
+
+  await params.runs.throwIfCancelled(params.thread.id);
+  const text = renderLiveTestCompletionText(params.scenario);
+  await params.thread.post(text).catch(() => null);
+  state = pushHistory(state, "assistant", text);
+  state = params.runs.finishRun(state);
+  await Promise.allSettled([
+    params.thread.setState(state as any, { replace: true }),
+    params.runs.persistRunState(params.thread.id, state),
+  ]);
+  return state;
+}
+
+function renderLiveTestCompletionText(
+  scenario: Extract<LiveTestScenario, { kind: "long-run-queue" }>,
+): string {
+  return `LIVE_TEST ${scenario.kind} complete run=${scenario.runId} duration_ms=${scenario.durationMs}`;
+}
+
+function parseBooleanFlag(value: string | undefined): boolean {
+  return /^(1|true|yes|on)$/i.test(String(value ?? "").trim());
+}
+
+function clampDurationMs(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 65_000;
+  return Math.min(LIVE_TEST_MAX_DURATION_MS, Math.max(1_000, Math.floor(parsed)));
+}
+
+function clampStepMs(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return LIVE_TEST_DEFAULT_STEP_MS;
+  return Math.min(LIVE_TEST_MAX_STEP_MS, Math.max(500, Math.floor(parsed)));
+}
+
+function sanitizeLiveTestValue(value: unknown, maxLength: number): string {
+  const text =
+    typeof value === "string"
+      ? value
+      : typeof value === "number" || typeof value === "boolean" || typeof value === "bigint"
+        ? String(value)
+        : "";
+  return text
+    .trim()
+    .slice(0, maxLength)
+    .replace(/[^a-zA-Z0-9_-]/g, "");
 }

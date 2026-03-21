@@ -8,6 +8,7 @@
     "cf:dev": "node scripts/wrangler-run.mjs dev",
     "cf:d1:migrate": "node scripts/wrangler-run.mjs d1 migrations apply DRECLAW_DB",
     "live:telegram": "node scripts/telegram-live.mjs",
+    "live:telegram:long-run": "node scripts/telegram-live.mjs --scenario long-run-queue",
     "cf:secrets:sync": "node scripts/secrets-sync.mjs | node scripts/wrangler-run.mjs secret bulk",
     "smoke:live": "node scripts/smoke-live.mjs",
     "test:requirements": "vp test test/requirements --passWithNoTests",

@@ -256,7 +256,7 @@ export class RunCoordinator {
 
     await requestPersistedRunStop(this.deps.db, threadId);
     if (workflowInstanceId && this.deps.workflow) {
-      await (await this.deps.workflow.get(workflowInstanceId)).terminate().catch(() => null);
+      await this.terminateWorkflowInstance(workflowInstanceId);
     }
     await clearPersistedWorkflowInstanceId(this.deps.db, threadId);
     const finalized = await finalizePersistedRunStop(this.deps.db, threadId);
@@ -287,10 +287,7 @@ export class RunCoordinator {
   async getWorkflowStatus(threadId: string, fallbackState: BotThreadState): Promise<string | null> {
     const { workflowInstanceId } = await this.inspect(threadId, fallbackState);
     if (!workflowInstanceId || !this.deps.workflow) return null;
-    return (await this.deps.workflow.get(workflowInstanceId))
-      .status()
-      .then((value: { status: string }) => value.status)
-      .catch(() => null);
+    return this.readWorkflowStatus(workflowInstanceId);
   }
 
   async restoreWorkflowState(params: {
@@ -309,7 +306,7 @@ export class RunCoordinator {
   ): Promise<{ runStatus: RunStatus; workflowInstanceId: string | null }> {
     const workflowInstanceId = runStatus.workflowInstanceId ?? null;
     if (workflowInstanceId && this.deps.workflow) {
-      await (await this.deps.workflow.get(workflowInstanceId)).terminate().catch(() => null);
+      await this.terminateWorkflowInstance(workflowInstanceId);
     }
     await clearPersistedWorkflowInstanceId(this.deps.db, threadId);
     const nowIso = new Date().toISOString();
@@ -331,6 +328,29 @@ export class RunCoordinator {
       runStatus: nextRunStatus,
       workflowInstanceId: null,
     };
+  }
+
+  private async terminateWorkflowInstance(workflowInstanceId: string): Promise<void> {
+    if (!this.deps.workflow) return;
+    try {
+      const instance = await this.deps.workflow.get(workflowInstanceId);
+      await instance.terminate().catch(() => null);
+    } catch {
+      return;
+    }
+  }
+
+  private async readWorkflowStatus(workflowInstanceId: string): Promise<string | null> {
+    if (!this.deps.workflow) return null;
+    try {
+      const instance = await this.deps.workflow.get(workflowInstanceId);
+      return instance
+        .status()
+        .then((value: { status: string }) => value.status)
+        .catch(() => null);
+    } catch {
+      return null;
+    }
   }
 }
 

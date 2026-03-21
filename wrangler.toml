@@ -10,6 +10,7 @@ PROFILING_ENABLED = "true"
 PROFILING_SAMPLE_RATE = "1"
 AI_PROVIDER = "opencode-go"
 MODEL = "kimi-k2.5"
+LIVE_TEST_SCENARIOS_ENABLED = "false"
 
 [ai]
 binding = "AI"
@@ -48,3 +49,44 @@ cpu_ms = 300_000
 [[migrations]]
 tag = "v4"
 deleted_classes = ["SessionRuntime"]
+
+[env.staging]
+name = "dreclaw-staging"
+workers_dev = true
+routes = []
+
+[env.staging.ai]
+binding = "AI"
+
+[[env.staging.vectorize]]
+binding = "VECTORIZE_MEMORY"
+index_name = "dreclaw-memory"
+
+[[env.staging.worker_loaders]]
+binding = "LOADER"
+
+[env.staging.vars]
+USER_TIMEZONE = "Australia/Brisbane"
+PROFILING_ENABLED = "true"
+PROFILING_SAMPLE_RATE = "1"
+AI_PROVIDER = "opencode-go"
+MODEL = "kimi-k2.5"
+LIVE_TEST_SCENARIOS_ENABLED = "true"
+
+[[env.staging.d1_databases]]
+binding = "DRECLAW_DB"
+database_name = "dreclaw"
+database_id = "24da6057-43e2-4997-a96d-843b746ab001"
+
+[[env.staging.workflows]]
+name = "dreclaw-staging-conversation"
+binding = "CONVERSATION_WORKFLOW"
+class_name = "ConversationWorkflow"
+
+[[env.staging.workflows]]
+name = "dreclaw-staging-reminders-wake"
+binding = "REMINDERS_WAKE_WORKFLOW"
+class_name = "RemindersWakeWorkflow"
+
+[[env.staging.migrations]]
+tag = "v1"

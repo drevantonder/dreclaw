@@ -11,6 +11,10 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_POLL_MS = 800;
 const DEFAULT_QUIET_MS = 1200;
 const TRACE_QUIET_MS = 4000;
+const DEFAULT_SCENARIO_DURATION_MS = 65000;
+const DEFAULT_SCENARIO_STEP_MS = 5000;
+const DEFAULT_SCENARIO_SECOND_DELAY_MS = 1200;
+const DEFAULT_SCENARIO_SECOND_DURATION_MS = 5000;
 const AUTH_STATE_PATH = path.join(process.cwd(), ".telegram-test-auth.json");
 const LIVE_LOCK_PATH = path.join(process.cwd(), ".telegram-live.lock");
 
@@ -29,6 +33,12 @@ function parseArgs(argv) {
     restorePreviousModel: false,
     withVerbose: "",
     restorePreviousVerbose: false,
+    scenario: "",
+    scenarioSecret: process.env.LIVE_TEST_SCENARIO_SECRET ?? "",
+    scenarioDurationMs: DEFAULT_SCENARIO_DURATION_MS,
+    scenarioStepMs: DEFAULT_SCENARIO_STEP_MS,
+    scenarioSecondDelayMs: DEFAULT_SCENARIO_SECOND_DELAY_MS,
+    scenarioSecondDurationMs: DEFAULT_SCENARIO_SECOND_DURATION_MS,
     phone: process.env.TELEGRAM_TEST_PHONE ?? "",
     code: process.env.TELEGRAM_TEST_CODE ?? "",
     password: process.env.TELEGRAM_TEST_PASSWORD ?? "",
@@ -49,6 +59,16 @@ function parseArgs(argv) {
     else if (part === "--restore-previous-model") args.restorePreviousModel = true;
     else if (part === "--with-verbose") args.withVerbose = argv[++i] ?? "";
     else if (part === "--restore-previous-verbose") args.restorePreviousVerbose = true;
+    else if (part === "--scenario") args.scenario = argv[++i] ?? "";
+    else if (part === "--scenario-secret") args.scenarioSecret = argv[++i] ?? "";
+    else if (part === "--scenario-duration-ms")
+      args.scenarioDurationMs = Number(argv[++i] ?? args.scenarioDurationMs);
+    else if (part === "--scenario-step-ms")
+      args.scenarioStepMs = Number(argv[++i] ?? args.scenarioStepMs);
+    else if (part === "--scenario-second-delay-ms")
+      args.scenarioSecondDelayMs = Number(argv[++i] ?? args.scenarioSecondDelayMs);
+    else if (part === "--scenario-second-duration-ms")
+      args.scenarioSecondDurationMs = Number(argv[++i] ?? args.scenarioSecondDurationMs);
     else if (part === "--phone") args.phone = argv[++i] ?? "";
     else if (part === "--code") args.code = argv[++i] ?? "";
     else if (part === "--password") args.password = argv[++i] ?? "";
@@ -83,6 +103,12 @@ function printHelp() {
       "  --restore-previous-model",
       "  --with-verbose <on|off>",
       "  --restore-previous-verbose",
+      "  --scenario <name>",
+      "  --scenario-secret <token>",
+      "  --scenario-duration-ms <n>",
+      "  --scenario-step-ms <n>",
+      "  --scenario-second-delay-ms <n>",
+      "  --scenario-second-duration-ms <n>",
       "  --phone <number>",
       "  --code <login-code>",
       "  --password <2fa-password>",
@@ -345,6 +371,99 @@ async function runPrompt(client, args) {
   );
 }
 
+async function sendPromptMessage(client, bot, prompt) {
+  const entity = await client.getEntity(bot);
+  const sent = await client.sendMessage(entity, { message: prompt });
+  return { entity, messageId: Number(sent?.id ?? 0) };
+}
+
+function createScenarioId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildLongRunScenarioPrompt(args, runId, durationMs) {
+  return [
+    "LIVE_TEST_SCENARIO",
+    "long-run-queue",
+    `run=${runId}`,
+    `secret=${args.scenarioSecret}`,
+    `duration_ms=${durationMs}`,
+    `step_ms=${args.scenarioStepMs}`,
+  ].join(" ");
+}
+
+async function runLongRunQueueScenario(client, args) {
+  const bot = normalizeUsername(args.bot);
+  if (!bot) fail("Missing bot username. Set TELEGRAM_TEST_BOT_USERNAME or pass --bot");
+  if (!args.scenarioSecret.trim()) {
+    fail(
+      "Missing live test scenario secret. Pass --scenario-secret or set LIVE_TEST_SCENARIO_SECRET",
+    );
+  }
+
+  const firstRunId = `${createScenarioId()}-1`;
+  const secondRunId = `${createScenarioId()}-2`;
+  const firstPrompt = buildLongRunScenarioPrompt(args, firstRunId, args.scenarioDurationMs);
+  const secondPrompt = buildLongRunScenarioPrompt(args, secondRunId, args.scenarioSecondDurationMs);
+  const expectedFirst = `LIVE_TEST long-run-queue complete run=${firstRunId}`;
+  const expectedSecond = `LIVE_TEST long-run-queue complete run=${secondRunId}`;
+
+  const first = await sendPromptMessage(client, bot, firstPrompt);
+  await sleep(args.scenarioSecondDelayMs);
+  const second = await sendPromptMessage(client, bot, secondPrompt);
+
+  const sentIds = new Set([first.messageId, second.messageId]);
+  const deadline = Date.now() + args.timeoutMs;
+  let transcript = [];
+
+  while (Date.now() < deadline) {
+    const messages = await client.getMessages(first.entity, { limit: 50 });
+    transcript = pickReply(messages, first.messageId - 1);
+    const joined = transcript.map((item) => item.text).join("\n");
+
+    const extraOutgoing = transcript.find(
+      (message) => message.direction === "me" && !sentIds.has(message.id),
+    );
+    if (extraOutgoing) {
+      throw new Error(
+        `Detected another outbound message in the same chat while waiting for a live reply: ${extraOutgoing.text}`,
+      );
+    }
+
+    if (joined.includes("Currently busy. Not executed. Use /status or /stop.")) {
+      throw new Error("Second message was rejected as busy instead of being queued.");
+    }
+    if (joined.includes("Live test scenario unauthorized.")) {
+      throw new Error("Live test scenario was rejected by the staging worker.");
+    }
+
+    const firstIndex = joined.indexOf(expectedFirst);
+    const secondIndex = joined.indexOf(expectedSecond);
+    if (firstIndex >= 0 && secondIndex > firstIndex) {
+      return {
+        ok: true,
+        bot,
+        prompt: `scenario:${args.scenario}`,
+        transcript,
+        scenario: {
+          name: "long-run-queue",
+          firstRunId,
+          secondRunId,
+        },
+      };
+    }
+
+    await sleep(args.pollMs);
+  }
+
+  const transcriptText = transcript.length
+    ? transcript.map((item) => `- ${item.direction}#${item.id}: ${item.text}`).join("\n")
+    : "(no transcript)";
+  throw new Error(
+    `Timed out after ${args.timeoutMs}ms waiting for scenario completion\nTranscript so far:\n${transcriptText}`,
+  );
+}
+
 function transcriptMatches(transcript, expect, reject) {
   const joined = transcript.map((item) => item.text).join("\n");
   for (const needle of expect) {
@@ -429,6 +548,15 @@ async function main() {
   try {
     if (args.loginOnly) {
       if (await client.isUserAuthorized()) process.stdout.write("Telegram test session ready.\n");
+      return;
+    }
+
+    if (args.scenario.trim()) {
+      if (args.scenario !== "long-run-queue") {
+        fail(`Unknown scenario: ${args.scenario}`);
+      }
+      const result = await runLongRunQueueScenario(client, args);
+      printResult(result, args.json);
       return;
     }
 
