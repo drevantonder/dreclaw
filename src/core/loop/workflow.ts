@@ -9,6 +9,11 @@ export interface ConversationWorkflowPayload {
   imageBlocks?: string[];
 }
 
+export interface QueuedConversationTurnPayload {
+  message: SerializedMessage;
+  imageBlocks: string[];
+}
+
 export interface ReminderWakeWorkflowPayload {
   reminderId: string;
   claimToken: string;

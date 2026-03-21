@@ -20,6 +20,7 @@ export class FakeD1 {
   readonly subscriptions = new Map<string, Record<string, unknown>>();
   readonly kv = new Map<string, Record<string, unknown>>();
   readonly locks = new Map<string, Record<string, unknown>>();
+  readonly chatInbox = new Map<string, Record<string, unknown>>();
   readonly remindersProfile = new Map<number, Record<string, unknown>>();
   readonly remindersItems = new Map<string, Record<string, unknown>>();
   readonly reminderRuns = new Map<string, Record<string, unknown>>();
@@ -194,6 +195,64 @@ export class FakeD1 {
     if (sql.includes("DELETE FROM chat_state_subscriptions")) {
       return { meta: { changes: this.subscriptions.delete(String(args[0])) ? 1 : 0 } };
     }
+    if (sql.includes("INSERT OR IGNORE INTO chat_inbox")) {
+      const key = String(args[0]);
+      const updateId = Number(args[2]);
+      if (
+        this.chatInbox.has(key) ||
+        [...this.chatInbox.values()].some((row) => Number(row.update_id) === updateId)
+      ) {
+        return { meta: { changes: 0 } };
+      }
+      this.chatInbox.set(key, {
+        id: key,
+        chat_id: Number(args[1]),
+        update_id: updateId,
+        text_json: String(args[3]),
+        created_at: String(args[4]),
+        consumed_at: null,
+        consumed_by_run_id: null,
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (
+      sql.includes(
+        "UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = ? WHERE id = ? AND consumed_at IS NULL",
+      )
+    ) {
+      const row = this.chatInbox.get(String(args[2]));
+      if (!row || row.consumed_at != null) return { meta: { changes: 0 } };
+      row.consumed_at = String(args[0]);
+      row.consumed_by_run_id = String(args[1]);
+      return { meta: { changes: 1 } };
+    }
+    if (
+      sql.includes(
+        "UPDATE chat_inbox SET consumed_at = NULL, consumed_by_run_id = NULL WHERE id = ? AND consumed_by_run_id = ?",
+      )
+    ) {
+      const row = this.chatInbox.get(String(args[0]));
+      if (!row || String(row.consumed_by_run_id) !== String(args[1])) {
+        return { meta: { changes: 0 } };
+      }
+      row.consumed_at = null;
+      row.consumed_by_run_id = null;
+      return { meta: { changes: 1 } };
+    }
+    if (
+      sql.includes(
+        "UPDATE chat_inbox SET consumed_at = ?, consumed_by_run_id = 'cancelled' WHERE chat_id = ? AND consumed_at IS NULL",
+      )
+    ) {
+      let changes = 0;
+      for (const row of this.chatInbox.values()) {
+        if (Number(row.chat_id) !== Number(args[1]) || row.consumed_at != null) continue;
+        row.consumed_at = String(args[0]);
+        row.consumed_by_run_id = "cancelled";
+        changes += 1;
+      }
+      return { meta: { changes } };
+    }
     if (
       sql.includes("INSERT INTO chat_state_kv") ||
       sql.includes("INSERT OR IGNORE INTO chat_state_kv")
@@ -264,6 +323,11 @@ export class FakeD1 {
       return this.oauthStates.get(String(args[0])) ?? null;
     if (sql.includes("FROM google_oauth_tokens"))
       return this.oauthTokens.get(String(args[0])) ?? null;
+    if (sql.includes("FROM chat_state_locks WHERE thread_id = ? AND expires_at > ?")) {
+      const row = this.locks.get(String(args[0]));
+      if (!row || String(row.expires_at) <= String(args[1])) return null;
+      return row;
+    }
     if (sql.includes("FROM reminders_profile")) return this.remindersProfile.get(1) ?? null;
     if (sql.includes("FROM reminders_items WHERE id = ?"))
       return this.remindersItems.get(String(args[0])) ?? null;
@@ -280,6 +344,14 @@ export class FakeD1 {
     sql: string,
     args: unknown[],
   ): Promise<{ results: Array<Record<string, unknown>> }> {
+    if (sql.includes("FROM chat_inbox WHERE chat_id = ? AND consumed_at IS NULL")) {
+      return {
+        results: [...this.chatInbox.values()]
+          .filter((row) => Number(row.chat_id) === Number(args[0]) && row.consumed_at == null)
+          .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+          .slice(0, Number(args[1] ?? 1)),
+      };
+    }
     if (sql.includes("FROM reminders_items")) {
       let rows = [...this.remindersItems.values()];
       if (sql.includes("status = 'open'")) rows = rows.filter((row) => row.status === "open");

@@ -18,7 +18,7 @@ export interface ChatInboxRecord {
   id: string;
   chatId: number;
   updateId: number;
-  textJson: string;
+  payloadJson: string;
   createdAt: string;
   consumedAt: string | null;
   consumedByRunId: string | null;
@@ -234,6 +234,21 @@ export async function clearPendingChatInbox(
   }, 150);
 }
 
+export async function releaseClaimedChatInboxMessage(
+  db: D1Database,
+  input: { id: string; runId: string },
+): Promise<boolean> {
+  return retryOnce(async () => {
+    const result = await db
+      .prepare(
+        "UPDATE chat_inbox SET consumed_at = NULL, consumed_by_run_id = NULL WHERE id = ? AND consumed_by_run_id = ?",
+      )
+      .bind(input.id, input.runId)
+      .run();
+    return Boolean(result.meta.changes && result.meta.changes > 0);
+  }, 150);
+}
+
 export async function getAgentRun(db: D1Database, id: string): Promise<AgentRunRecord | null> {
   return retryOnce(async () => {
     const row = await db
@@ -413,7 +428,7 @@ function mapChatInboxRecord(row: Record<string, unknown>): ChatInboxRecord {
     id: toStringValue(row.id),
     chatId: Number(row.chat_id ?? 0),
     updateId: Number(row.update_id ?? 0),
-    textJson: toStringValue(row.text_json, "{}"),
+    payloadJson: toStringValue(row.text_json, "{}"),
     createdAt: toStringValue(row.created_at),
     consumedAt: toNullableStringValue(row.consumed_at),
     consumedByRunId: toNullableStringValue(row.consumed_by_run_id),

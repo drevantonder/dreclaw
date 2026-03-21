@@ -7,10 +7,17 @@ import type { Env } from "../../cloudflare/env";
 import { sendTelegramTypingAction } from "./api";
 import { hasValidTelegramWebhookSecret } from "./auth";
 import { maybeHandleAsyncTelegramCommand } from "./commands";
-import { isPrivateTelegramUpdate } from "./message";
+import {
+  isPrivateTelegramUpdate,
+  loadTelegramImageBlocks,
+  serializeTelegramMessage,
+} from "./message";
 import { markUpdateSeen } from "./repo";
 import type { TelegramUpdate } from "./types";
 import { createBot, rememberTelegramExecutionContext } from "./gateway";
+import { enqueueChatInboxMessage, getThreadStateSnapshot } from "../../core/loop/repo";
+import { createRunCoordinator } from "../../core/loop/run";
+import { normalizeBotThreadState } from "../../core/loop/state";
 
 export async function handleTelegramWebhookRequest(
   request: Request,
@@ -54,6 +61,35 @@ export async function handleTelegramWebhookRequest(
     : true;
   if (!firstSeen) return new Response("ok");
 
+  if (update?.message && isPrivateTelegramUpdate(update) && !isSlashCommandUpdate(update)) {
+    const chatId = update.message.chat.id;
+    const threadId = `telegram:${chatId}`;
+    const runs = createRunCoordinator({
+      db: env.DRECLAW_DB,
+      workflow: env.CONVERSATION_WORKFLOW,
+    });
+    const state = normalizeBotThreadState(await getThreadStateSnapshot(env.DRECLAW_DB, threadId));
+    const run = await runs.inspect(threadId, state);
+    if (run.busy || (await hasActiveThreadLock(env.DRECLAW_DB, threadId))) {
+      const imageBlocks = await loadTelegramImageBlocks(
+        env.TELEGRAM_BOT_TOKEN,
+        update.message,
+      ).catch(() => []);
+      await enqueueChatInboxMessage(env.DRECLAW_DB, {
+        id: crypto.randomUUID(),
+        chatId,
+        updateId: update.update_id,
+        textJson: JSON.stringify({
+          message: serializeTelegramMessage(update, threadId),
+          imageBlocks,
+        }),
+        nowIso: new Date().toISOString(),
+      });
+      profiler.flush("telegram_webhook", { outcome: "queued_busy_turn", chatId });
+      return new Response("ok");
+    }
+  }
+
   if (
     update &&
     (await profiler.span("async_command_check", async () =>
@@ -72,4 +108,17 @@ export async function handleTelegramWebhookRequest(
   );
   profiler.flush("telegram_webhook", { outcome: "dispatched" });
   return response;
+}
+
+function isSlashCommandUpdate(update: TelegramUpdate): boolean {
+  const text = String(update.message?.text ?? update.message?.caption ?? "").trim();
+  return text.startsWith("/");
+}
+
+async function hasActiveThreadLock(db: D1Database, threadId: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT thread_id FROM chat_state_locks WHERE thread_id = ? AND expires_at > ?")
+    .bind(threadId, new Date().toISOString())
+    .first<Record<string, unknown>>();
+  return Boolean(row?.thread_id);
 }
