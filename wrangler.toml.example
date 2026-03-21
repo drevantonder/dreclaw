@@ -78,8 +78,8 @@ LIVE_TEST_SCENARIOS_ENABLED = "true"
 
 [[env.staging.d1_databases]]
 binding = "DRECLAW_DB"
-database_name = "dreclaw"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_name = "dreclaw-staging"
+database_id = "REPLACE_WITH_STAGING_D1_DATABASE_ID"
 
 [[env.staging.workflows]]
 name = "dreclaw-staging-conversation"
