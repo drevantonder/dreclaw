@@ -20,6 +20,7 @@ import {
 } from "../prompting";
 import { VerboseTracer, renderToolTranscript, type ToolTrace } from "../tools/tracing";
 import { createRunCoordinator } from "../../loop/run";
+import { getPersistedThreadControls } from "../../loop/repo";
 import { normalizeBotThreadState, pushHistory, type BotThreadState } from "../../loop/state";
 import type { MemoryGateway } from "../adapters/memory";
 import {
@@ -227,7 +228,11 @@ export function createConversationLoopService(params: {
           (value): value is string => typeof value === "string" && value.trim().length > 0,
         );
         const assistantText = assistantCandidate?.trim() ?? "";
-        if (state.reasoning && typeof reasoningText === "string" && reasoningText.trim()) {
+        if (
+          (await isReasoningVisible(params.runtimeDeps.DRECLAW_DB, thread.id, state)) &&
+          typeof reasoningText === "string" &&
+          reasoningText.trim()
+        ) {
           try {
             await thread.post(`Reasoning:\n${reasoningText.trim()}`);
           } catch {
@@ -268,6 +273,15 @@ export function createConversationLoopService(params: {
       }
     },
   };
+}
+
+async function isReasoningVisible(
+  db: D1Database,
+  threadId: string,
+  state: BotThreadState,
+): Promise<boolean> {
+  const controls = await getPersistedThreadControls(db, threadId);
+  return controls?.reasoning ?? state.reasoning;
 }
 
 async function buildConversationMessages(params: {
