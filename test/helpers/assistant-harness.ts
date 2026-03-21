@@ -187,20 +187,23 @@ export function createAssistantHarness(options?: {
     env,
     db,
     calls,
-    async send(text: string) {
-      const response = await app.fetch(
+    async dispatch(text: string) {
+      return app.fetch(
         makeWebhookRequest(env.TELEGRAM_WEBHOOK_SECRET, updateId++, text) as unknown as Request,
         env,
         tracker.ctx,
       );
+    },
+    async send(text: string) {
+      const response = await this.dispatch(text);
       await tracker.wait();
       return response;
     },
-    async sendImage(input: {
+    async dispatchImage(input: {
       caption?: string;
       photo?: Array<{ file_id: string; file_size?: number }>;
     }) {
-      const response = await app.fetch(
+      return app.fetch(
         new Request("https://test.local/telegram/webhook", {
           method: "POST",
           headers: {
@@ -212,8 +215,17 @@ export function createAssistantHarness(options?: {
         env,
         tracker.ctx,
       );
+    },
+    async sendImage(input: {
+      caption?: string;
+      photo?: Array<{ file_id: string; file_size?: number }>;
+    }) {
+      const response = await this.dispatchImage(input);
       await tracker.wait();
       return response;
+    },
+    async waitForIdle() {
+      await tracker.wait();
     },
     clearCalls() {
       calls.splice(0);
