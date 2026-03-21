@@ -408,4 +408,100 @@ describe("command requirements", () => {
     expect(await backend.exists("/tmp/requirement-busy-reset.txt")).toBe(true);
     expect(db.oauthStates.size).toBe(0);
   });
+
+  it("busy-allowed commands still run while the thread is active", async () => {
+    const { env } = createEnv();
+    await setPersistedThreadControls(env.DRECLAW_DB, THREAD_ID, {
+      verbose: false,
+      thinking: true,
+      reasoning: false,
+      modelAlias: "kimi",
+    });
+    await setPersistedRunStatus(env.DRECLAW_DB, THREAD_ID, {
+      running: true,
+      startedAt: "2026-03-20T10:00:00.000Z",
+      lastHeartbeatAt: new Date().toISOString(),
+      cancelRequested: false,
+      cancelRequestedAt: null,
+      stoppedAt: null,
+      workflowInstanceId: null,
+    });
+
+    const help = joined(await runCommand(env, "/help"));
+    const status = joined(await runCommand(env, "/status"));
+    const model = joined(await runCommand(env, "/model"));
+    const googleHelp = joined(await runCommand(env, "/google help"));
+    const googleStatus = joined(await runCommand(env, "/google status"));
+
+    expect(help).toContain("Commands:");
+    expect(status).toContain("busy: yes");
+    expect(model).toContain("current: kimi");
+    expect(googleHelp).toContain("/google connect");
+    expect(googleStatus).toContain("google: not linked");
+  });
+
+  it("busy-allowed control toggles acknowledge, persist, and show in status immediately", async () => {
+    const { env } = createEnv();
+    await setPersistedThreadControls(env.DRECLAW_DB, THREAD_ID, {
+      verbose: false,
+      thinking: true,
+      reasoning: false,
+      modelAlias: null,
+    });
+    await setPersistedRunStatus(env.DRECLAW_DB, THREAD_ID, {
+      running: true,
+      startedAt: "2026-03-20T10:00:00.000Z",
+      lastHeartbeatAt: new Date().toISOString(),
+      cancelRequested: false,
+      cancelRequestedAt: null,
+      stoppedAt: null,
+      workflowInstanceId: null,
+    });
+
+    expect(joined(await runCommand(env, "/verbose on"))).toContain("verbose enabled.");
+    expect(joined(await runCommand(env, "/thinking off"))).toContain("thinking disabled.");
+    expect(joined(await runCommand(env, "/reasoning on"))).toContain("reasoning enabled.");
+
+    const status = joined(await runCommand(env, "/status"));
+    const controls = await getPersistedThreadControls(env.DRECLAW_DB, THREAD_ID);
+
+    expect(status).toContain("busy: yes");
+    expect(status).toContain("verbose: on");
+    expect(status).toContain("thinking: off");
+    expect(status).toContain("reasoning: on");
+    expect(controls).toEqual({
+      verbose: true,
+      thinking: false,
+      reasoning: true,
+      modelAlias: null,
+    });
+  });
+
+  it("busy google disconnect refuses to run and preserves link state", async () => {
+    const { env } = createEnv();
+    await upsertGoogleOAuthToken(env.DRECLAW_DB, {
+      principal: GOOGLE_OAUTH_DEFAULT_PRINCIPAL,
+      telegramUserId: CHAT_ID,
+      refreshTokenCiphertext: "cipher",
+      nonce: "nonce",
+      scopes: "scope-a scope-b",
+      updatedAt: "2026-03-20T00:00:00.000Z",
+    });
+    await setPersistedRunStatus(env.DRECLAW_DB, THREAD_ID, {
+      running: true,
+      startedAt: "2026-03-20T10:00:00.000Z",
+      lastHeartbeatAt: new Date().toISOString(),
+      cancelRequested: false,
+      cancelRequestedAt: null,
+      stoppedAt: null,
+      workflowInstanceId: null,
+    });
+
+    expect(joined(await runCommand(env, "/google disconnect"))).toContain(
+      "Currently busy. Not executed.",
+    );
+
+    const token = await runCommand(env, "/google status");
+    expect(joined(token)).toContain("google: linked");
+  });
 });
