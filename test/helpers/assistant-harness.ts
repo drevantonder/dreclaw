@@ -10,6 +10,8 @@ const app = worker as unknown as {
 export type TelegramTransportCall = {
   method: string;
   text: string;
+  atMs: number;
+  action?: string;
 };
 
 type FetchOverrideResult = Response | undefined | void;
@@ -138,11 +140,12 @@ export function createAssistantHarness(options?: {
         );
       }
       if (url.includes("/sendChatAction")) {
+        calls.push({ method: "sendChatAction", text: "", atMs: Date.now(), action: "typing" });
         return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
       }
       if (url.includes("/sendMessageDraft")) {
         const body = requestJsonBody(init);
-        calls.push({ method: "sendMessageDraft", text: body.text ?? "" });
+        calls.push({ method: "sendMessageDraft", text: body.text ?? "", atMs: Date.now() });
         if (options?.draftUnsupported) {
           return new Response(JSON.stringify({ ok: false, description: "method not found" }), {
             status: 404,
@@ -152,14 +155,14 @@ export function createAssistantHarness(options?: {
       }
       if (url.includes("/sendMessage")) {
         const body = requestJsonBody(init);
-        calls.push({ method: "sendMessage", text: body.text ?? "" });
+        calls.push({ method: "sendMessage", text: body.text ?? "", atMs: Date.now() });
         return new Response(JSON.stringify(telegramMessageResult(body.text ?? "", messageId++)), {
           status: 200,
         });
       }
       if (url.includes("/editMessageText")) {
         const body = requestJsonBody(init);
-        calls.push({ method: "editMessageText", text: body.text ?? "" });
+        calls.push({ method: "editMessageText", text: body.text ?? "", atMs: Date.now() });
         return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
       }
       if (url.includes("/getFile?file_id=")) {

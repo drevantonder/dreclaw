@@ -257,6 +257,7 @@ export async function runRemindersWakeWorkflow(
     });
     await setThreadStateSnapshot(env.DRECLAW_DB, threadId, result.state);
     if (result.messageText) {
+      await sendTelegramTypingAction(env.TELEGRAM_BOT_TOKEN, chatId).catch(() => null);
       await flushTelegramEffects(env, [
         {
           type: "send-text",
